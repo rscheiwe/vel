@@ -20,13 +20,13 @@ class ToolRegistry:
         self._tools: Dict[str, ToolSpec] = {}
 
     @classmethod
-    def default(cls) -> "ToolRegistry":
+    def default(cls) -> 'ToolRegistry':
         reg = cls()
         reg.register(ToolSpec(
-            name="get_weather",
-            input_schema={"type":"object","properties":{"city":{"type":"string"}}, "required":["city"]},
-            output_schema={"type":"object","properties":{"temp_f":{"type":"number"}}, "required":["temp_f"]},
-            handler=lambda inp, ctx: {"temp_f": 72.0}
+            name='get_weather',
+            input_schema={'type':'object','properties':{'city':{'type':'string'}}, 'required':['city']},
+            output_schema={'type':'object','properties':{'temp_f':{'type':'number'}}, 'required':['temp_f']},
+            handler=lambda inp, ctx: {'temp_f': 72.0}
         ))
         return reg
 
@@ -37,7 +37,7 @@ class ToolRegistry:
         return self._tools[name]
 
     def schemas(self):
-        return {name: {"input": t.input_schema, "output": t.output_schema} for name,t in self._tools.items()}
+        return {name: {'input': t.input_schema, 'output': t.output_schema} for name,t in self._tools.items()}
 
 _registry = ToolRegistry.default()
 
