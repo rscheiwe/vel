@@ -1,0 +1,13 @@
+from __future__ import annotations
+from typing import Any, Dict, List
+
+class ContextManager:
+    def __init__(self):
+        self._by_run: Dict[str, List[Dict[str,Any]]] = {}
+
+    def messages_for_llm(self, run_id: str):
+        # minimal skeleton context
+        return self._by_run.get(run_id, [{"role":"user","content":"Hello"}])
+
+    def append(self, run_id: str, item: Dict[str,Any]):
+        self._by_run.setdefault(run_id, []).append(item)
