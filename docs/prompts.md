@@ -144,8 +144,8 @@ Use Jinja2 syntax for dynamic content:
 {% endfor %}
 
 # Filters
-{{ text|upper }}
-{{ text|truncate(100) }}
+{{ text | upcase }}
+{{ text | truncate: 100 }}
 ```
 
 ### 4. Environment-Based Prompts
