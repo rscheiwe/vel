@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio, json
 from typing import Dict, Any
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from agents import Agent
 
@@ -11,16 +11,23 @@ app = FastAPI(title="Vel Service")
 class RunRequest(BaseModel):
     agent_id: str = "chat-general:v1"
     input: Dict[str, Any] = {"message":"hello"}
+    provider: str = "openai"
+    model: str = "gpt-4o"
 
 @app.get("/", response_class=HTMLResponse)
 def ui():
-    return "<h1>Vel</h1><p>POST /runs to stream SSE.</p>"
+    return """
+    <h1>Vel</h1>
+    <p>POST /runs - streaming SSE</p>
+    <p>POST /runs/sync - non-streaming JSON</p>
+    """
 
 @app.post("/runs")
 async def start_run(req: RunRequest):
+    """Streaming endpoint - returns SSE events"""
     agent = Agent(
         id=req.agent_id,
-        model={"provider":"openai", "model":"gpt-4o"},
+        model={"provider": req.provider, "model": req.model},
         tools=["get_weather"],
         policies={"max_steps": 12}
     )
@@ -29,6 +36,27 @@ async def start_run(req: RunRequest):
             yield f"data: {json.dumps(e)}\n\n"
             await asyncio.sleep(0)
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@app.post("/runs/sync")
+async def start_run_sync(req: RunRequest):
+    """Non-streaming endpoint - returns final answer only"""
+    agent = Agent(
+        id=req.agent_id,
+        model={"provider": req.provider, "model": req.model},
+        tools=["get_weather"],
+        policies={"max_steps": 12}
+    )
+    try:
+        answer = await agent.run(req.input)
+        return JSONResponse({
+            "status": "completed",
+            "answer": answer
+        })
+    except Exception as e:
+        return JSONResponse({
+            "status": "failed",
+            "error": str(e)
+        }, status_code=500)
 
 @app.get("/healthz")
 def healthz():
