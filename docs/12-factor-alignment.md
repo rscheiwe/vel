@@ -2,19 +2,43 @@
 layout: default
 title: 12-Factor Alignment
 nav_order: 9
+has_children: true
 ---
 
 # 12-Factor Agent Alignment
+{: .no_toc }
 
 How Vel aligns with the [12-Factor Agents](https://github.com/humanlayer/12-factor-agents) principles for building reliable, production-ready LLM applications.
+{: .fs-6 .fw-300 }
+
+---
 
 ## Overview
 
 The 12-Factor Agents methodology, created by [Dex](https://github.com/humanlayer) and contributors, provides principles for building LLM-powered software that is reliable, scalable, and maintainable. Vel is designed from the ground up to embody these principles, giving developers full control over their AI agents while maintaining simplicity and production-readiness.
 
+**Core Philosophy:** "The fastest way to get good AI software in the hands of customers is to take small, modular concepts from agent building, and incorporate them into existing products."
+
 This document describes how Vel implements these principles. The original 12-Factor Agents content is available at [github.com/humanlayer/12-factor-agents](https://github.com/humanlayer/12-factor-agents) and is licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 
-**Core Philosophy (from 12-Factor Agents):** "The fastest way to get good AI software in the hands of customers is to take small, modular concepts from agent building, and incorporate them into existing products."
+---
+
+## The 12 Factors
+
+Each factor represents a key principle for building production-ready AI agents. Click on any factor to learn how Vel implements it:
+
+1. [**Natural Language to Tool Calls**](12-factor/factor-01) - Translate natural language into structured tool calls for reliable execution
+2. [**Own Your Prompts**](12-factor/factor-02) - Take direct control of prompts instead of outsourcing to framework abstractions
+3. [**Own Your Context Window**](12-factor/factor-03) - Structure information to maximize LLM understanding
+4. [**Tools are Structured Outputs**](12-factor/factor-04) - JSON outputs that trigger deterministic code
+5. [**Unify Execution and Business State**](12-factor/factor-05) - Integrate AI execution state with business logic
+6. [**Launch/Pause/Resume**](12-factor/factor-06) - Flexible control over agent workflows with simple APIs
+7. [**Contact Humans with Tool Calls**](12-factor/factor-07) - Integrate human intervention directly into AI workflows
+8. [**Own Your Control Flow**](12-factor/factor-08) - Maintain explicit control over agent decision-making
+9. [**Compact Errors into Context**](12-factor/factor-09) - Efficiently handle and communicate errors
+10. [**Small, Focused Agents**](12-factor/factor-10) - Create specialized agents rather than monolithic ones
+11. [**Trigger from Anywhere**](12-factor/factor-11) - Enable flexible initiation of AI tasks across platforms
+12. [**Stateless Reducer**](12-factor/factor-12) - Design agents as stateless reducers for predictable behavior
 
 ---
 

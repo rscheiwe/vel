@@ -1,0 +1,16 @@
+---
+---
+
+@import "{{ site.theme }}";
+
+// Custom navigation separator before 12-Factor Alignment
+.side-bar nav > ul > li:nth-child(9) {
+  border-top: 2px solid rgba(0, 0, 0, 0.15);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+// Style for 12-Factor child pages in sidebar
+.side-bar nav ul ul li a {
+  font-size: 13px !important;
+}

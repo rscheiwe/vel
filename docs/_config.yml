@@ -11,7 +11,7 @@ url: "https://rscheiwe.github.io"
 remote_theme: just-the-docs/just-the-docs@v0.8.2
 
 # Color scheme
-color_scheme: dark
+color_scheme: light
 
 # Logo (optional - uncomment and add logo file if desired)
 # logo: "/assets/images/logo.png"
