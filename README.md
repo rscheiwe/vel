@@ -15,15 +15,15 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 
 ## Documentation
 
-**📚 [Complete Documentation](docs/README.md)**
+**📚 [Complete Documentation](https://rscheiwe.github.io/vel)**
 
-- [Getting Started](docs/getting-started.md) - Installation and quick start
-- [Session Management](docs/sessions.md) - Multi-turn conversations
-- [Providers](docs/providers.md) - OpenAI, Gemini, and Claude configuration
-- [Tools](docs/tools.md) - Custom tool creation
-- [Stream Protocol](docs/stream-protocol.md) - Event streaming reference
-- [API Reference](docs/api-reference.md) - Complete API docs
-- [12-Factor Alignment](docs/12-factor-alignment.md) - Production-ready agent principles
+- [Getting Started](https://rscheiwe.github.io/vel/getting-started) - Installation and quick start
+- [Session Management](https://rscheiwe.github.io/vel/sessions) - Multi-turn conversations
+- [Providers](https://rscheiwe.github.io/vel/providers) - OpenAI, Gemini, and Claude configuration
+- [Tools](https://rscheiwe.github.io/vel/tools) - Custom tool creation
+- [Stream Protocol](https://rscheiwe.github.io/vel/stream-protocol) - Event streaming reference
+- [API Reference](https://rscheiwe.github.io/vel/api-reference) - Complete API docs
+- [12-Factor Alignment](https://rscheiwe.github.io/vel/12-factor-alignment) - Production-ready agent principles
 
 ## Project Structure
 
