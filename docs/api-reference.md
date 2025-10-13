@@ -1,3 +1,9 @@
+---
+layout: default
+title: API Reference
+nav_order: 8
+---
+
 # API Reference
 
 Complete API documentation for all Vel classes and functions.

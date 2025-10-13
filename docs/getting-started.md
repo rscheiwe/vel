@@ -1,3 +1,9 @@
+---
+layout: default
+title: Getting Started
+nav_order: 2
+---
+
 # Getting Started with Vel
 
 Complete guide to installing and using Vel for the first time.

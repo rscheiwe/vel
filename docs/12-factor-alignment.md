@@ -1,3 +1,9 @@
+---
+layout: default
+title: 12-Factor Alignment
+nav_order: 9
+---
+
 # 12-Factor Agent Alignment
 
 How Vel aligns with the [12-Factor Agents](https://github.com/humanlayer/12-factor-agents) principles for building reliable, production-ready LLM applications.

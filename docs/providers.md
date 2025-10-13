@@ -1,3 +1,9 @@
+---
+layout: default
+title: Providers
+nav_order: 5
+---
+
 # Providers
 
 Complete guide to LLM providers in Vel: OpenAI, Google Gemini, and Anthropic Claude.

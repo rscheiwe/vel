@@ -4,7 +4,9 @@
       "WebFetch(domain:ai-sdk.dev)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:www.anthropic.com)",
+      "Bash(python3:*)"
     ],
     "deny": [],
     "ask": []

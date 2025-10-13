@@ -3,6 +3,21 @@ from .tools import ToolSpec, register_tool
 from .providers import ProviderRegistry, BaseProvider, OpenAIProvider, GeminiProvider
 from .storage import RunStore
 from .core import State, Effect, reduce, ContextManager, StatelessContextManager
+from .prompts import (
+    PromptTemplate,
+    SystemPromptBuilder,
+    PromptRegistry,
+    register_prompt,
+    get_prompt,
+    has_prompt,
+    list_prompts,
+    PromptManager,
+    PromptContextManager,
+    XMLFormatter,
+    MarkdownFormatter,
+    ContextCompactor,
+    MessageFormatter
+)
 
 __all__ = [
     'Agent',
@@ -18,5 +33,19 @@ __all__ = [
     'Effect',
     'reduce',
     'ContextManager',
-    'StatelessContextManager'
+    'StatelessContextManager',
+    # Prompt module
+    'PromptTemplate',
+    'SystemPromptBuilder',
+    'PromptRegistry',
+    'register_prompt',
+    'get_prompt',
+    'has_prompt',
+    'list_prompts',
+    'PromptManager',
+    'PromptContextManager',
+    'XMLFormatter',
+    'MarkdownFormatter',
+    'ContextCompactor',
+    'MessageFormatter'
 ]

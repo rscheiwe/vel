@@ -1,3 +1,9 @@
+---
+layout: default
+title: Session Management
+nav_order: 3
+---
+
 # Session Management
 
 Complete guide to managing multi-turn conversations in Vel.

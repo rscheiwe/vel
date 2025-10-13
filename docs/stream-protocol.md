@@ -1,3 +1,9 @@
+---
+layout: default
+title: Stream Protocol
+nav_order: 7
+---
+
 # Stream Protocol
 
 Complete reference for the Vel streaming event protocol, based on the Vercel AI SDK stream protocol.

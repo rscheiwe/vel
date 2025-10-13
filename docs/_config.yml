@@ -1,0 +1,97 @@
+# Jekyll configuration for Vel documentation
+# Uses Just the Docs theme - https://just-the-docs.github.io/just-the-docs/
+
+# Site settings
+title: Vel Documentation
+description: 12-Factor Agent Runtime with streaming responses, multiple LLM providers, and flexible prompt management
+baseurl: "/vel"
+url: "https://rscheiwe.github.io"
+
+# Theme
+remote_theme: just-the-docs/just-the-docs@v0.8.2
+
+# Color scheme
+color_scheme: dark
+
+# Logo (optional - uncomment and add logo file if desired)
+# logo: "/assets/images/logo.png"
+
+# Footer content
+footer_content: 'Copyright &copy; 2024 Richard Scheiwe. Distributed under the <a href="https://github.com/rscheiwe/vel/blob/main/LICENSE">MIT License</a>.'
+
+# Back to top button
+back_to_top: true
+back_to_top_text: "Back to top"
+
+# Footer last edited timestamp
+last_edit_timestamp: true
+last_edit_time_format: "%b %e %Y at %I:%M %p"
+
+# Enable search
+search_enabled: true
+search:
+  heading_level: 2
+  previews: 3
+  preview_words_before: 5
+  preview_words_after: 10
+  tokenizer_separator: /[\s/]+/
+  rel_url: true
+  button: false
+
+# Enable copy code button
+enable_copy_code_button: true
+
+# Heading anchor links
+heading_anchors: true
+
+# Navigation structure
+nav_sort: case_insensitive
+nav_fold: false
+
+# Aux links (top right)
+aux_links:
+  "Vel on GitHub":
+    - "//github.com/rscheiwe/vel"
+
+aux_links_new_tab: true
+
+# Code highlighting
+kramdown:
+  syntax_highlighter: rouge
+  syntax_highlighter_opts:
+    block:
+      line_numbers: false
+
+# Plugins
+plugins:
+  - jekyll-seo-tag
+  - jekyll-github-metadata
+  - jekyll-include-cache
+
+# Exclude from processing
+exclude:
+  - node_modules/
+  - vendor/
+  - .sass-cache/
+  - .jekyll-cache/
+  - gemfiles/
+  - Gemfile
+  - Gemfile.lock
+  - "*.gem"
+  - "*.gemspec"
+  - tools/
+  - README.md
+  - package.json
+  - package-lock.json
+  - script/
+  - LICENSE.txt
+  - lib/
+  - bin/
+  - Rakefile
+  - docs/tests/
+
+# Collections for organizing docs (optional)
+# collections:
+#   docs:
+#     permalink: "/:collection/:path/"
+#     output: true

@@ -1,3 +1,9 @@
+---
+layout: default
+title: Tools
+nav_order: 6
+---
+
 # Tools
 
 Complete guide to the Vel tool system for enabling function calling in agents.

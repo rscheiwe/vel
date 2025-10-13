@@ -10,6 +10,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 - **Multiple LLM Providers**: OpenAI, Google Gemini, and Anthropic Claude with plug-and-play architecture
 - **Stream Protocol**: Vercel AI SDK-compatible event system for provider-agnostic streaming
 - **Tool System**: JSON schema-validated tools with async support
+- **Flexible Prompts**: Jinja2 templating with XML formatting, environment-based configuration, and version control
 - **Persistent Storage**: PostgreSQL for durability, Redis for caching
 - **FastAPI Service**: Production-ready REST API with health checks
 
@@ -19,6 +20,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 
 - [Getting Started](https://rscheiwe.github.io/vel/getting-started) - Installation and quick start
 - [Session Management](https://rscheiwe.github.io/vel/sessions) - Multi-turn conversations
+- [Prompt Templates](https://rscheiwe.github.io/vel/prompts) - Flexible prompt management with Jinja2 and XML
 - [Providers](https://rscheiwe.github.io/vel/providers) - OpenAI, Gemini, and Claude configuration
 - [Tools](https://rscheiwe.github.io/vel/tools) - Custom tool creation
 - [Stream Protocol](https://rscheiwe.github.io/vel/stream-protocol) - Event streaming reference
@@ -29,9 +31,10 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 
 ```
 agents/
-├── providers/      # LLM provider implementations (OpenAI, Gemini)
+├── providers/      # LLM provider implementations (OpenAI, Gemini, Anthropic)
 ├── storage/        # Storage layer (Postgres, Redis)
 ├── tools/          # Tool registry and specifications
+├── prompts/        # Prompt templates with Jinja2 and XML formatting
 ├── core/           # State management, reducer, context
 ├── events.py       # Stream protocol event definitions
 └── agent.py        # Main Agent class

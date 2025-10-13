@@ -9,12 +9,15 @@ from .events import (
     StreamEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
     ErrorEvent, FinishMessageEvent
 )
+from .prompts import PromptContextManager
 
 class Agent:
     def __init__(self, id: str, model: Dict[str, Any], prompt_env: str='prod',
                  tools: List[str]|None=None, policies: Dict[str, Any]|None=None,
                  context_manager: Optional[ContextManager]=None,
-                 session_storage: Literal['memory', 'database']='memory'):
+                 session_storage: Literal['memory', 'database']='memory',
+                 prompt_id: Optional[str]=None,
+                 prompt_vars: Optional[Dict[str, Any]]=None):
         """
         Initialize an Agent.
 
@@ -32,6 +35,8 @@ class Agent:
             session_storage: Where to store session context:
                 - 'memory': Sessions stored in-memory only (default, fast, not persistent)
                 - 'database': Sessions backed by Postgres (persistent, survives restarts)
+            prompt_id: Optional prompt template ID (e.g., 'chat-agent:v1')
+            prompt_vars: Optional variables for prompt template rendering
         """
         self.id = id
         self.model_cfg = model
@@ -41,7 +46,22 @@ class Agent:
         self.session_storage = session_storage
         self.providers = ProviderRegistry.default()
         self.toolreg = ToolRegistry.default()
-        self.ctxmgr = context_manager if context_manager is not None else ContextManager()
+
+        # Context manager setup with prompt support
+        if context_manager is not None:
+            # User provided custom context manager - use as-is
+            self.ctxmgr = context_manager
+        elif prompt_id:
+            # Prompt template provided - use PromptContextManager
+            self.ctxmgr = PromptContextManager(
+                prompt_id=prompt_id,
+                prompt_vars=prompt_vars,
+                prompt_env=prompt_env
+            )
+        else:
+            # Default context manager (backwards compatible)
+            self.ctxmgr = ContextManager()
+
         self.store = RunStore.default()
 
     async def _load_session(self, session_id: str):
