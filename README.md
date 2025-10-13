@@ -280,6 +280,14 @@ Vel is designed following the [12-Factor Agent principles](https://github.com/hu
 - ✓ Stateless reducer - Predictable, reproducible behavior
 - ✓ Small, focused agents - Composable design
 
+## TODO
+
+- [ ] Add features from OpenAI Agent SDK (tool responses, e.g.)
+- [ ] Test Gemini tool calling
+- [ ] Add knowledge-graph memory layer
+- [ ] Add example of how to create Vel agents via a tool
+- [ ] Test ReasoningBank for self-evolving with reasoning memory feature
+
 ## License
 
 MIT

@@ -92,3 +92,6 @@ celerybeat.pid
 
 # Redis dump
 dump.rdb
+
+# LLM related
+CLAUDE.md
