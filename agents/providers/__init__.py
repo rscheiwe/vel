@@ -4,6 +4,7 @@ from typing import Dict
 from .base import BaseProvider
 from .openai import OpenAIProvider
 from .google import GeminiProvider
+from .anthropic import AnthropicProvider
 
 class ProviderRegistry:
     """Registry for LLM providers"""
@@ -16,6 +17,11 @@ class ProviderRegistry:
             self._providers['google'] = GeminiProvider()
         except ImportError:
             # Gemini not available, skip
+            pass
+        try:
+            self._providers['anthropic'] = AnthropicProvider()
+        except (ImportError, ValueError):
+            # Anthropic not available or API key not set, skip
             pass
 
     @classmethod
@@ -36,4 +42,4 @@ class ProviderRegistry:
         """List available provider names"""
         return list(self._providers.keys())
 
-__all__ = ['BaseProvider', 'OpenAIProvider', 'GeminiProvider', 'ProviderRegistry']
+__all__ = ['BaseProvider', 'OpenAIProvider', 'GeminiProvider', 'AnthropicProvider', 'ProviderRegistry']

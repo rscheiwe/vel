@@ -6,10 +6,11 @@ Comprehensive documentation for the Vel agent runtime.
 
 - [Getting Started](getting-started.md) - Installation and quick start
 - [Session Management](sessions.md) - Multi-turn conversations and memory
-- [Providers](providers.md) - LLM providers (OpenAI, Gemini)
+- [Providers](providers.md) - LLM providers (OpenAI, Gemini, Claude)
 - [Tools](tools.md) - Tool system and custom tools
 - [Stream Protocol](stream-protocol.md) - Event streaming specification
 - [API Reference](api-reference.md) - Complete API documentation
+- [12-Factor Alignment](12-factor-alignment.md) - How Vel aligns with 12-Factor Agent principles
 
 ## Quick Links
 
@@ -25,7 +26,7 @@ Comprehensive documentation for the Vel agent runtime.
 ### Key Features
 
 ✓ **Dual Execution Modes** - Streaming (SSE) and non-streaming (JSON)
-✓ **Multiple Providers** - OpenAI and Google Gemini
+✓ **Multiple Providers** - OpenAI, Google Gemini, and Anthropic Claude
 ✓ **Session Management** - Persistent or in-memory multi-turn conversations
 ✓ **Stream Protocol** - Vercel AI SDK-compatible events
 ✓ **Tool System** - JSON schema-validated tools
@@ -52,7 +53,8 @@ Comprehensive documentation for the Vel agent runtime.
     ┌──────▼──────┐      ┌─────▼─────┐
     │   OpenAI    │      │  Session  │
     │   Gemini    │      │  Storage  │
-    └─────────────┘      └───────────┘
+    │   Claude    │      └───────────┘
+    └─────────────┘
                                │
                         ┌──────▼──────┐
                         │   Postgres  │
@@ -68,6 +70,7 @@ All examples are in the `examples/` directory:
 - `quickstart.py` - Basic agent usage
 - `test_both_modes.py` - Streaming vs non-streaming with tools
 - `context_modes.py` - Session management demonstrations
+- `test_claude.py` - Anthropic Claude provider examples
 
 ## Contributing
 

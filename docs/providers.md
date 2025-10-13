@@ -1,6 +1,6 @@
 # Providers
 
-Complete guide to LLM providers in Vel: OpenAI and Google Gemini.
+Complete guide to LLM providers in Vel: OpenAI, Google Gemini, and Anthropic Claude.
 
 ## Overview
 
@@ -9,6 +9,7 @@ Vel uses a provider abstraction layer that allows you to switch between differen
 **Supported Providers:**
 - OpenAI (gpt-4o, gpt-4-turbo, gpt-3.5-turbo, etc.)
 - Google Gemini (gemini-1.5-pro, gemini-1.5-flash, etc.)
+- Anthropic Claude (claude-opus-4, claude-sonnet-4, claude-3.5-sonnet, etc.)
 
 ## Provider Selection
 
@@ -27,6 +28,12 @@ agent = Agent(
 agent = Agent(
     id='my-agent',
     model={'provider': 'google', 'model': 'gemini-1.5-pro'}
+)
+
+# Anthropic Claude
+agent = Agent(
+    id='my-agent',
+    model={'provider': 'anthropic', 'model': 'claude-sonnet-4-20250514'}
 )
 ```
 
@@ -180,17 +187,101 @@ async def main():
 asyncio.run(main())
 ```
 
+---
+
+## Anthropic Claude Provider
+
+### Configuration
+
+**Required Environment Variable:**
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+**Optional Environment Variable:**
+```bash
+ANTHROPIC_API_BASE=https://api.anthropic.com  # Custom endpoint
+```
+
+### Available Models
+
+```python
+# Claude 4 models (latest)
+model={'provider': 'anthropic', 'model': 'claude-opus-4-20250514'}
+model={'provider': 'anthropic', 'model': 'claude-sonnet-4-20250514'}
+
+# Claude 3.5 models
+model={'provider': 'anthropic', 'model': 'claude-3-5-sonnet-20241022'}
+model={'provider': 'anthropic', 'model': 'claude-3-5-haiku-20241022'}
+
+# Claude 3 models
+model={'provider': 'anthropic', 'model': 'claude-3-opus-20240229'}
+model={'provider': 'anthropic', 'model': 'claude-3-sonnet-20240229'}
+model={'provider': 'anthropic', 'model': 'claude-3-haiku-20240307'}
+```
+
+### Features
+
+**Streaming:**
+- ✓ Text streaming with delta events
+- ✓ Tool call streaming with incremental arguments
+- ✓ Extended thinking support (reasoning blocks)
+- ✓ Multi-turn conversations
+
+**Non-streaming:**
+- ✓ Single response generation
+- ✓ Tool calling
+- ✓ Multimodal support (text, images, PDFs)
+- ✓ Extended context window (200K tokens)
+
+**Differences from OpenAI:**
+- Supports system messages separately (via `system` parameter)
+- Tool arguments streamed incrementally like OpenAI
+- Supports extended thinking/reasoning blocks
+- More explicit role structure (`user` and `assistant`)
+
+### Example
+
+```python
+import asyncio
+from dotenv import load_dotenv
+from agents import Agent
+
+load_dotenv()
+
+async def main():
+    agent = Agent(
+        id='claude-agent',
+        model={'provider': 'anthropic', 'model': 'claude-sonnet-4-20250514'}
+    )
+
+    # Non-streaming
+    answer = await agent.run({'message': 'Explain quantum entanglement'})
+    print(answer)
+
+    # Streaming
+    async for event in agent.run_stream({'message': 'Write a haiku about AI'}):
+        if event['type'] == 'text-delta':
+            print(event['delta'], end='', flush=True)
+
+asyncio.run(main())
+```
+
+---
+
 ## Provider Comparison
 
-| Feature | OpenAI | Gemini |
-|---------|--------|--------|
-| Streaming text | ✓ | ✓ |
-| Streaming tool args | ✓ Incremental | ✓ Complete |
-| Multiple tool calls | ✓ | ✓ |
-| Custom endpoint | ✓ | ✗ |
-| Multimodal input | ✓ (Vision models) | ✓ (Native) |
-| JSON mode | ✓ | ✗ |
-| Cost | $$$ | $$ |
+| Feature | OpenAI | Gemini | Claude |
+|---------|--------|--------|--------|
+| Streaming text | ✓ | ✓ | ✓ |
+| Streaming tool args | ✓ Incremental | ✓ Complete | ✓ Incremental |
+| Multiple tool calls | ✓ | ✓ | ✓ |
+| Custom endpoint | ✓ | ✗ | ✓ |
+| Multimodal input | ✓ (Vision models) | ✓ (Native) | ✓ (Native) |
+| Extended thinking | ✗ | ✗ | ✓ |
+| JSON mode | ✓ | ✗ | ✗ |
+| Max context | 128K | 2M | 200K |
+| Cost | $$$ | $$ | $$$ |
 
 ## Environment Variables
 
@@ -211,6 +302,16 @@ OPENAI_API_BASE=https://api.openai.com/v1
 GOOGLE_API_KEY=...
 ```
 
+### Anthropic Claude
+
+```bash
+# Required
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Optional
+ANTHROPIC_API_BASE=https://api.anthropic.com
+```
+
 ### Example .env File
 
 ```bash
@@ -220,9 +321,11 @@ cp .env.example .env
 # Edit .env
 OPENAI_API_KEY=sk-proj-...
 GOOGLE_API_KEY=AIza...
+ANTHROPIC_API_KEY=sk-ant-...
 
 # Optional
 OPENAI_API_BASE=https://api.openai.com/v1
+ANTHROPIC_API_BASE=https://api.anthropic.com
 POSTGRES_DSN=postgresql+psycopg://user:pass@localhost:5432/vel
 ```
 

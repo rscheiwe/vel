@@ -9,7 +9,7 @@ Tools allow agents to perform actions and retrieve information beyond text gener
 - **JSON Schema Validation**: Automatic input/output validation
 - **Async Support**: Both sync and async tool handlers
 - **Type Safety**: Schema-enforced parameter types
-- **Provider Agnostic**: Works with OpenAI and Gemini
+- **Provider Agnostic**: Works with OpenAI, Gemini, and Claude
 - **Simple Registration**: Global tool registry
 
 ## Quick Start

@@ -45,6 +45,9 @@ OPENAI_API_KEY=sk-...
 
 # OR for Google Gemini
 GOOGLE_API_KEY=...
+
+# OR for Anthropic Claude
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 #### Optional Variables
@@ -213,7 +216,7 @@ curl -X POST http://localhost:8000/runs/sync \
 ## Next Steps
 
 - [Session Management](sessions.md) - Learn about multi-turn conversations
-- [Providers](providers.md) - Configure OpenAI and Gemini
+- [Providers](providers.md) - Configure OpenAI, Gemini, and Claude
 - [Tools](tools.md) - Create custom tools
 - [Stream Protocol](stream-protocol.md) - Understand streaming events
 - [API Reference](api-reference.md) - Complete API documentation
@@ -222,7 +225,7 @@ curl -X POST http://localhost:8000/runs/sync \
 
 ### "Illegal header value b'Bearer '"
 
-Your `OPENAI_API_KEY` or `GOOGLE_API_KEY` is not set. Check your `.env` file.
+Your `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or `ANTHROPIC_API_KEY` is not set. Check your `.env` file.
 
 ### "Connection refused" (Postgres/Redis)
 

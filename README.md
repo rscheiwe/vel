@@ -1,11 +1,13 @@
-# Vel — Agent Runtime (12-Factor Agents aligned)
+# VEL
 
-A 12-Factor inspired AI agent runtime with streaming responses, multiple LLM providers, and event-driven architecture.
+## Agent Runtime (12-Factor Agents Aligned)
+
+A production-ready AI agent runtime aligned with [12-Factor Agent principles](https://github.com/humanlayer/12-factor-agents) by Dex and contributors. Built for reliability, scalability, and maintainability with streaming responses, multiple LLM providers, and event-driven architecture.
 
 ## Features
 
 - **Dual Execution Modes**: Streaming (SSE) and non-streaming (JSON) responses
-- **Multiple LLM Providers**: OpenAI and Google Gemini with plug-and-play architecture
+- **Multiple LLM Providers**: OpenAI, Google Gemini, and Anthropic Claude with plug-and-play architecture
 - **Stream Protocol**: Vercel AI SDK-compatible event system for provider-agnostic streaming
 - **Tool System**: JSON schema-validated tools with async support
 - **Persistent Storage**: PostgreSQL for durability, Redis for caching
@@ -17,10 +19,11 @@ A 12-Factor inspired AI agent runtime with streaming responses, multiple LLM pro
 
 - [Getting Started](docs/getting-started.md) - Installation and quick start
 - [Session Management](docs/sessions.md) - Multi-turn conversations
-- [Providers](docs/providers.md) - OpenAI and Gemini configuration
+- [Providers](docs/providers.md) - OpenAI, Gemini, and Claude configuration
 - [Tools](docs/tools.md) - Custom tool creation
 - [Stream Protocol](docs/stream-protocol.md) - Event streaming reference
 - [API Reference](docs/api-reference.md) - Complete API docs
+- [12-Factor Alignment](docs/12-factor-alignment.md) - Production-ready agent principles
 
 ## Project Structure
 
@@ -118,6 +121,7 @@ Each provider translates native events into these standardized events.
 ## Providers
 
 ### OpenAI
+
 ```python
 agent = Agent(
     id='my-agent',
@@ -126,10 +130,20 @@ agent = Agent(
 ```
 
 ### Google Gemini
+
 ```python
 agent = Agent(
     id='my-agent',
     model={'provider': 'google', 'model': 'gemini-1.5-pro'}
+)
+```
+
+### Anthropic Claude
+
+```python
+agent = Agent(
+    id='my-agent',
+    model={'provider': 'anthropic', 'model': 'claude-sonnet-4-20250514'}
 )
 ```
 
@@ -138,6 +152,7 @@ agent = Agent(
 Sessions enable multi-turn conversations where the agent remembers context across multiple calls.
 
 ### Basic Session Usage
+
 ```python
 agent = Agent(
     id='my-agent',
@@ -158,6 +173,7 @@ answer2 = await agent.run({'message': 'What is my name?'}, session_id=session_id
 ### Session Storage Modes
 
 #### In-Memory (Default - Fast, Not Persistent)
+
 ```python
 agent = Agent(
     id='my-agent',
@@ -167,6 +183,7 @@ agent = Agent(
 ```
 
 #### Database (Persistent, Survives Restarts)
+
 ```python
 # Requires POSTGRES_DSN configured
 agent = Agent(
@@ -219,6 +236,9 @@ OPENAI_API_BASE=https://api.openai.com/v1
 # Google Gemini
 GOOGLE_API_KEY=...
 
+# Anthropic Claude
+ANTHROPIC_API_KEY=sk-ant-...
+
 # Runner mode
 VEL_RUNNER=local-async
 ```
@@ -242,12 +262,20 @@ mypy agents/
 
 ## Architecture
 
+Vel is designed following the [12-Factor Agent principles](https://github.com/humanlayer/12-factor-agents) (by Dex and contributors) for production-ready AI applications. See our [implementation guide](docs/12-factor-alignment.md) for details.
+
 - **Agent**: Main orchestrator with dual execution modes (streaming/non-streaming)
 - **ContextManager**: Memory layer for conversation history (configurable: full/stateless/limited)
-- **Reducer**: Pure function for state transitions and effect generation (used in non-streaming mode)
+- **Reducer**: Pure function for state transitions and effect generation (stateless, reproducible)
 - **Providers**: LLM-specific implementations with stream protocol translation
-- **Tools**: Validated, async-capable function execution
+- **Tools**: Validated, async-capable function execution (structured outputs)
 - **Storage**: Dual-layer persistence (Postgres + Redis) with in-memory fallback
+
+**Key Principles:**
+- ✓ Own your prompts - Direct control, no abstractions
+- ✓ Own your context window - Custom context managers
+- ✓ Stateless reducer - Predictable, reproducible behavior
+- ✓ Small, focused agents - Composable design
 
 ## License
 

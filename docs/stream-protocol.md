@@ -4,7 +4,7 @@ Complete reference for the Vel streaming event protocol, based on the Vercel AI 
 
 ## Overview
 
-Vel uses a standardized stream protocol for real-time agent responses. This protocol is **provider-agnostic**, meaning the same event structure works across OpenAI, Gemini, and any future providers.
+Vel uses a standardized stream protocol for real-time agent responses. This protocol is **provider-agnostic**, meaning the same event structure works across OpenAI, Gemini, Claude, and any future providers.
 
 **Key Benefits:**
 - ✓ Consistent events across all providers
@@ -140,7 +140,7 @@ async for event in agent.run_stream({'message': 'Tell me a story'}):
 
 ### tool-input-delta
 
-**When:** Tool argument chunk arrives (OpenAI streams arguments incrementally)
+**When:** Tool argument chunk arrives (OpenAI and Claude stream arguments incrementally)
 
 **Fields:**
 - `type`: `"tool-input-delta"`
@@ -156,7 +156,7 @@ async for event in agent.run_stream({'message': 'Tell me a story'}):
 }
 ```
 
-**Note:** Gemini doesn't stream tool arguments; only emits `tool-input-available`.
+**Note:** Gemini doesn't stream tool arguments incrementally; only emits `tool-input-available` with complete arguments.
 
 ---
 
@@ -505,7 +505,13 @@ async def websocket_handler(websocket, path):
 - ✓ `tool-input-available` emitted with complete arguments
 - ✓ Text streaming at sentence/phrase level
 
-**Both providers emit identical event types**, just with different granularity.
+### Claude
+- ✓ Streams tool arguments incrementally (`tool-input-delta` events)
+- ✓ Supports multiple tool calls per response
+- ✓ Text streaming highly granular (word/character level)
+- ✓ Supports extended thinking/reasoning blocks (future)
+
+**All providers emit identical event types**, just with different granularity and timing.
 
 ## Troubleshooting
 

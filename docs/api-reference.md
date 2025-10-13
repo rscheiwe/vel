@@ -550,6 +550,38 @@ agent = Agent(
 
 ---
 
+### AnthropicProvider
+
+Anthropic Claude provider implementation.
+
+**Environment Variables:**
+- `ANTHROPIC_API_KEY` (required)
+- `ANTHROPIC_API_BASE` (optional, default: `https://api.anthropic.com`)
+
+**Supported Models:**
+- `claude-opus-4-20250514`
+- `claude-sonnet-4-20250514`
+- `claude-3-5-sonnet-20241022`
+- `claude-3-5-haiku-20241022`
+- `claude-3-opus-20240229`
+- `claude-3-sonnet-20240229`
+- `claude-3-haiku-20240307`
+
+**Example:**
+
+```python
+# Set in .env
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Use with agent
+agent = Agent(
+    id='my-agent',
+    model={'provider': 'anthropic', 'model': 'claude-sonnet-4-20250514'}
+)
+```
+
+---
+
 ## Stream Events
 
 All stream events have a `type` field and extend the base `StreamEvent` class.
