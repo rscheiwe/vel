@@ -59,6 +59,7 @@ class OpenAIAPITranslator:
 
     def __init__(self):
         self._text_block_id: Optional[str] = None
+        self._next_block_index: int = 0  # For sequential block IDs
         self._tool_calls: Dict[int, Dict[str, Any]] = {}  # tool_index -> {id, name, args_buffer}
 
     def translate_chunk(self, chunk: Dict[str, Any]) -> Optional[StreamEvent]:
@@ -95,7 +96,8 @@ class OpenAIAPITranslator:
         if 'content' in delta and delta['content']:
             content = delta['content']
             if self._text_block_id is None:
-                self._text_block_id = str(uuid.uuid4())
+                self._text_block_id = str(self._next_block_index)
+                self._next_block_index += 1
                 # Return TextStartEvent first
                 return TextStartEvent(block_id=self._text_block_id)
             return TextDeltaEvent(block_id=self._text_block_id, delta=content)
@@ -162,6 +164,7 @@ class OpenAIAPITranslator:
     def reset(self):
         """Reset translator state between messages."""
         self._text_block_id = None
+        self._next_block_index = 0
         self._tool_calls.clear()
 
 
@@ -185,6 +188,7 @@ class OpenAIAgentsSDKTranslator:
 
     def __init__(self):
         self._text_block_id: Optional[str] = None
+        self._next_block_index: int = 0  # For sequential block IDs
 
     def translate(self, native_event: Any) -> Optional[StreamEvent]:
         """
@@ -225,7 +229,8 @@ class OpenAIAgentsSDKTranslator:
 
         # Start text block if not started
         if self._text_block_id is None:
-            self._text_block_id = str(uuid.uuid4())
+            self._text_block_id = str(self._next_block_index)
+            self._next_block_index += 1
 
         return TextDeltaEvent(
             block_id=self._text_block_id,
@@ -271,6 +276,7 @@ class OpenAIAgentsSDKTranslator:
     def reset(self):
         """Reset translator state between messages."""
         self._text_block_id = None
+        self._next_block_index = 0
 
 
 class AnthropicAPITranslator:
@@ -327,7 +333,7 @@ class AnthropicAPITranslator:
             block_type = content_block.get('type')
 
             if block_type == 'text':
-                block_id = str(uuid.uuid4())
+                block_id = str(index)  # Use index as block ID
                 self._content_blocks[index] = {
                     'type': 'text',
                     'block_id': block_id,
@@ -336,7 +342,7 @@ class AnthropicAPITranslator:
                 return TextStartEvent(block_id=block_id)
 
             elif block_type == 'thinking':
-                block_id = str(uuid.uuid4())
+                block_id = str(index)  # Use index as block ID
                 self._content_blocks[index] = {
                     'type': 'thinking',
                     'block_id': block_id,
@@ -497,6 +503,7 @@ class GeminiAPITranslator:
 
     def __init__(self):
         self._text_block_id: Optional[str] = None
+        self._next_block_index: int = 0  # For sequential block IDs
         self._seen_source_urls: set[str] = set()  # Deduplicate grounding sources
 
     def translate_chunk(self, chunk: Any) -> Optional[StreamEvent]:
@@ -545,7 +552,7 @@ class GeminiAPITranslator:
                         if sources:
                             return SourceEvent(sources=sources)
 
-        # Handle parts (inline data, function calls, etc.)
+        # Handle parts (inline data, function calls, code execution, etc.)
         if hasattr(chunk, 'parts'):
             for part in chunk.parts:
                 # Handle inline data (files)
@@ -555,6 +562,17 @@ class GeminiAPITranslator:
                         content=getattr(inline, 'data', ''),  # base64
                         mime_type=getattr(inline, 'mime_type', '')
                     )
+
+                # Handle code execution (detect but don't emit for now)
+                if hasattr(part, 'executable_code'):
+                    # Log for debugging (optional implementation in future)
+                    # For now, skip - this is a niche feature
+                    pass
+
+                if hasattr(part, 'code_execution_result'):
+                    # Log for debugging (optional implementation in future)
+                    # For now, skip - this is a niche feature
+                    pass
 
                 # Handle function calls
                 if hasattr(part, 'function_call'):
@@ -575,7 +593,8 @@ class GeminiAPITranslator:
         # Handle text content
         if hasattr(chunk, 'text') and chunk.text:
             if self._text_block_id is None:
-                self._text_block_id = str(uuid.uuid4())
+                self._text_block_id = str(self._next_block_index)
+                self._next_block_index += 1
                 return TextStartEvent(block_id=self._text_block_id)
             return TextDeltaEvent(block_id=self._text_block_id, delta=chunk.text)
 
@@ -598,6 +617,7 @@ class GeminiAPITranslator:
     def reset(self):
         """Reset translator state between messages."""
         self._text_block_id = None
+        self._next_block_index = 0
         self._seen_source_urls.clear()
 
 
