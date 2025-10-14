@@ -11,7 +11,9 @@
       "Read(//tmp/**)",
       "WebFetch(domain:arxiv.org)",
       "Bash(python -m pytest tests/test_memory.py tests/test_memory_context.py -v)",
-      "Bash(sort:*)"
+      "Bash(sort:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

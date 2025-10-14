@@ -6,6 +6,18 @@ from .openai import OpenAIProvider
 from .google import GeminiProvider
 from .anthropic import AnthropicProvider
 
+# Export translators
+from .translators import (
+    OpenAIAPITranslator,
+    OpenAIAgentsSDKTranslator,
+    AnthropicAPITranslator,
+    GeminiAPITranslator,
+    get_openai_api_translator,
+    get_openai_agents_translator,
+    get_anthropic_translator,
+    get_gemini_translator,
+)
+
 class ProviderRegistry:
     """Registry for LLM providers"""
 
@@ -46,4 +58,19 @@ class ProviderRegistry:
         """List available provider names"""
         return list(self._providers.keys())
 
-__all__ = ['BaseProvider', 'OpenAIProvider', 'GeminiProvider', 'AnthropicProvider', 'ProviderRegistry']
+__all__ = [
+    'BaseProvider',
+    'OpenAIProvider',
+    'GeminiProvider',
+    'AnthropicProvider',
+    'ProviderRegistry',
+    # Translators
+    'OpenAIAPITranslator',
+    'OpenAIAgentsSDKTranslator',
+    'AnthropicAPITranslator',
+    'GeminiAPITranslator',
+    'get_openai_api_translator',
+    'get_openai_agents_translator',
+    'get_anthropic_translator',
+    'get_gemini_translator',
+]
