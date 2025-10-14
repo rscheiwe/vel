@@ -13,7 +13,14 @@
       "Bash(python -m pytest tests/test_memory.py tests/test_memory_context.py -v)",
       "Bash(sort:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(if [ -f SDK_TRANSLATORS.md ])",
+      "Bash(then rm SDK_TRANSLATORS.md)",
+      "Bash(else echo \"✓ SDK_TRANSLATORS.md already removed\")",
+      "Bash(fi)",
+      "Bash(if [ -f VEL_CHANGES_SUMMARY.md ])",
+      "Bash(then rm VEL_CHANGES_SUMMARY.md)",
+      "Bash(else echo \"✓ VEL_CHANGES_SUMMARY.md already removed\")"
     ],
     "deny": [],
     "ask": []

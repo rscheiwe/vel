@@ -24,7 +24,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 - [Providers](https://rscheiwe.github.io/vel/providers) - OpenAI, Gemini, and Claude configuration
 - [Tools](https://rscheiwe.github.io/vel/tools) - Custom tool creation
 - [Stream Protocol](https://rscheiwe.github.io/vel/stream-protocol) - Event streaming reference
-- [SDK Event Translators](https://rscheiwe.github.io/vel/sdk-translators) - Translate native SDK events to Vel format
+- [Event Translators](https://rscheiwe.github.io/vel/event-translators) - Translate provider events to Vel format (OpenAI, Anthropic, Gemini)
 - [Memory System](https://rscheiwe.github.io/vel/memory) - Optional memory with Fact Store and ReasoningBank
 - [API Reference](https://rscheiwe.github.io/vel/api-reference) - Complete API docs
 - [12-Factor Alignment](https://rscheiwe.github.io/vel/12-factor-alignment) - Production-ready agent principles

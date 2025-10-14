@@ -1,20 +1,25 @@
 ---
 layout: default
-title: SDK Event Translators
+title: Event Translators
 nav_order: 8
 ---
 
-# SDK Event Translators
+# Event Translators
 
 ## Overview
 
-Vel SDK Event Translators provide a clean API for translating native agent SDK events to Vel's standardized stream protocol. This allows orchestration libraries (like Mesh) to:
+Vel Event Translators provide a clean API for translating native provider events to Vel's standardized stream protocol. These translators support:
 
-1. **Use the actual agent/SDK** (e.g., OpenAI Agents SDK, Google's agents, etc.)
-2. **Get consistent event formatting** across all providers
-3. **Avoid duplicating translation logic** - single source of truth in Vel
+1. **Direct API usage** (OpenAI Chat API, Anthropic Messages API, Google Gemini API)
+2. **Agent SDKs** (OpenAI Agents SDK, and more)
+3. **Consistent event formatting** across all providers
+4. **Single source of truth** - no duplicated translation logic
 
-**Important:** These translators only translate events - they do NOT make API calls or replace your SDK.
+Translators can be used:
+- **Internally** by Vel providers (already integrated)
+- **Externally** by orchestration libraries like Mesh
+
+**Important:** Translators only translate events - they do NOT make API calls.
 
 ## Installation
 
@@ -22,32 +27,136 @@ Vel SDK Event Translators provide a clean API for translating native agent SDK e
 pip install vel
 ```
 
+## Available Translators
+
+| Translator | Source | Use Case |
+|------------|--------|----------|
+| `OpenAIAPITranslator` | OpenAI Chat Completions API | Direct API calls to OpenAI |
+| `OpenAIAgentsSDKTranslator` | OpenAI Agents SDK | Using OpenAI's agent framework |
+| `AnthropicAPITranslator` | Anthropic Messages API | Direct API calls to Claude |
+| `GeminiAPITranslator` | Google Gemini API | Direct API calls to Gemini |
+
 ## Quick Start
+
+### OpenAI Chat API
+
+```python
+from vel import get_openai_api_translator
+import httpx
+import json
+
+translator = get_openai_api_translator()
+
+# Make API call (example with httpx)
+async with httpx.AsyncClient() as client:
+    async with client.stream('POST', 'https://api.openai.com/v1/chat/completions', ...) as response:
+        async for line in response.aiter_lines():
+            if line.startswith('data: '):
+                chunk = json.loads(line[6:])
+                vel_event = translator.translate_chunk(chunk)
+                if vel_event:
+                    print(vel_event.to_dict())
+```
+
+### OpenAI Agents SDK
 
 ```python
 from vel import get_openai_agents_translator
 from agents import Agent, Runner
 
-# Create your OpenAI Agents SDK agent
-agent = Agent(
-    name="Assistant",
-    instructions="You are helpful"
-)
-
-# Get translator
 translator = get_openai_agents_translator()
 
-# Run agent with native SDK
+# Use OpenAI Agents SDK
 result = Runner.run_streamed(agent, "Hello!")
-
-# Translate native events to Vel format
 async for native_event in result.stream_events():
     vel_event = translator.translate(native_event)
     if vel_event:
         print(vel_event.to_dict())
 ```
 
+### Anthropic Messages API
+
+```python
+from vel import get_anthropic_translator
+
+translator = get_anthropic_translator()
+
+# Stream from Anthropic API (SSE format)
+async for line in response.aiter_lines():
+    if line.startswith('data: '):
+        data = json.loads(line[6:])
+        vel_event = translator.translate_event(data)
+        if vel_event:
+            yield vel_event
+```
+
+### Google Gemini API
+
+```python
+from vel import get_gemini_translator
+
+translator = get_gemini_translator()
+
+# Stream from Gemini
+async for chunk in response:
+    vel_event = translator.translate_chunk(chunk)
+    if vel_event:
+        yield vel_event
+```
+
 ## API Reference
+
+### Convenience Functions
+
+All translators can be instantiated via convenience functions:
+
+```python
+from vel import (
+    get_openai_api_translator,        # OpenAI Chat API
+    get_openai_agents_translator,     # OpenAI Agents SDK
+    get_anthropic_translator,         # Anthropic Messages API
+    get_gemini_translator,            # Google Gemini API
+)
+```
+
+### `get_openai_api_translator()`
+
+Get a translator for OpenAI Chat Completions API.
+
+**Returns:**
+- `OpenAIAPITranslator` instance
+
+**Example:**
+```python
+from vel import get_openai_api_translator
+translator = get_openai_api_translator()
+```
+
+### `get_anthropic_translator()`
+
+Get a translator for Anthropic Messages API.
+
+**Returns:**
+- `AnthropicAPITranslator` instance
+
+**Example:**
+```python
+from vel import get_anthropic_translator
+translator = get_anthropic_translator()
+```
+
+### `get_gemini_translator()`
+
+Get a translator for Google Gemini API.
+
+**Returns:**
+- `GeminiAPITranslator` instance
+
+**Example:**
+```python
+from vel import get_gemini_translator
+translator = get_gemini_translator()
+```
 
 ### `get_openai_agents_translator()`
 
