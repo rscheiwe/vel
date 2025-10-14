@@ -1,13 +1,10 @@
 """OpenAI provider with stream protocol support"""
 from __future__ import annotations
-import os, httpx, json, uuid
+import os, httpx, json
 from typing import Any, AsyncGenerator, Dict, List
 from .base import BaseProvider, LLMMessage
-from ..events import (
-    StreamEvent, StartEvent, TextStartEvent, TextDeltaEvent, TextEndEvent,
-    ToolInputStartEvent, ToolInputDeltaEvent, ToolInputAvailableEvent,
-    FinishMessageEvent, ErrorEvent
-)
+from .translators import OpenAIAPITranslator
+from ..events import StreamEvent, FinishMessageEvent, ErrorEvent
 
 def _headers():
     api_key = os.getenv('OPENAI_API_KEY', '')
@@ -24,6 +21,7 @@ class OpenAIProvider(BaseProvider):
 
     def __init__(self):
         self.base = os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
+        self.translator = OpenAIAPITranslator()
         # Validate API key is set
         api_key = os.getenv('OPENAI_API_KEY', '')
         if not api_key:
@@ -36,6 +34,9 @@ class OpenAIProvider(BaseProvider):
         tools: Dict[str, Any]
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream OpenAI response as stream protocol events"""
+        # Reset translator state
+        self.translator.reset()
+
         msgs = [{'role': m.get('role', 'user'), 'content': m.get('content', '')} for m in messages]
         oaitools = [
             {'type': 'function', 'function': {'name': n, 'parameters': s['input']}}
@@ -61,9 +62,7 @@ class OpenAIProvider(BaseProvider):
                 ) as response:
                     response.raise_for_status()
 
-                    # Track state for event emission
-                    text_block_id = None
-                    tool_calls = {}  # tool_index -> {id, name, args_buffer}
+                    finish_reason = None
 
                     async for line in response.aiter_lines():
                         if not line.strip() or line.strip() == 'data: [DONE]':
@@ -75,70 +74,24 @@ class OpenAIProvider(BaseProvider):
                             except json.JSONDecodeError:
                                 continue
 
-                            delta = chunk.get('choices', [{}])[0].get('delta', {})
+                            # Translate chunk to Vel event
+                            vel_event = self.translator.translate_chunk(chunk)
+                            if vel_event:
+                                yield vel_event
+
+                            # Check for finish
                             finish_reason = chunk.get('choices', [{}])[0].get('finish_reason')
-
-                            # Handle text content
-                            if 'content' in delta and delta['content']:
-                                content = delta['content']
-                                if text_block_id is None:
-                                    text_block_id = str(uuid.uuid4())
-                                    yield TextStartEvent(block_id=text_block_id)
-                                yield TextDeltaEvent(block_id=text_block_id, delta=content)
-
-                            # Handle tool calls
-                            if 'tool_calls' in delta:
-                                for tc in delta['tool_calls']:
-                                    idx = tc.get('index', 0)
-                                    if idx not in tool_calls:
-                                        # New tool call
-                                        tool_id = tc.get('id', f"call_{uuid.uuid4().hex[:8]}")
-                                        tool_name = tc.get('function', {}).get('name', '')
-                                        tool_calls[idx] = {
-                                            'id': tool_id,
-                                            'name': tool_name,
-                                            'args_buffer': ''
-                                        }
-                                        if tool_name:
-                                            yield ToolInputStartEvent(
-                                                tool_call_id=tool_id,
-                                                tool_name=tool_name
-                                            )
-
-                                    # Accumulate function arguments
-                                    if 'function' in tc and 'arguments' in tc['function']:
-                                        args_delta = tc['function']['arguments']
-                                        tool_calls[idx]['args_buffer'] += args_delta
-                                        yield ToolInputDeltaEvent(
-                                            tool_call_id=tool_calls[idx]['id'],
-                                            input_delta=args_delta
-                                        )
-
-                            # Handle finish
                             if finish_reason:
-                                # End text block if active
-                                if text_block_id:
-                                    yield TextEndEvent(block_id=text_block_id)
-                                    text_block_id = None
-
-                                # Emit tool input available for each tool call
-                                for tc_data in tool_calls.values():
-                                    try:
-                                        args = json.loads(tc_data['args_buffer'] or '{}')
-                                    except json.JSONDecodeError:
-                                        args = {}
-                                    yield ToolInputAvailableEvent(
-                                        tool_call_id=tc_data['id'],
-                                        tool_name=tc_data['name'],
-                                        input=args
-                                    )
+                                # Finalize tool calls
+                                for tool_event in self.translator.finalize_tool_calls():
+                                    yield tool_event
 
                                 yield FinishMessageEvent(finish_reason=finish_reason)
                                 return
 
-                    # Fallback: end text block if stream ended without finish_reason
-                    if text_block_id:
-                        yield TextEndEvent(block_id=text_block_id)
+                    # Fallback if stream ended without finish_reason
+                    for tool_event in self.translator.finalize_tool_calls():
+                        yield tool_event
                     yield FinishMessageEvent(finish_reason='stop')
 
         except Exception as e:

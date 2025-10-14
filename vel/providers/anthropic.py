@@ -1,13 +1,10 @@
 """Anthropic Claude provider with stream protocol support"""
 from __future__ import annotations
-import os, httpx, json, uuid
+import os, httpx, json
 from typing import Any, AsyncGenerator, Dict, List
 from .base import BaseProvider, LLMMessage
-from ..events import (
-    StreamEvent, StartEvent, TextStartEvent, TextDeltaEvent, TextEndEvent,
-    ToolInputStartEvent, ToolInputDeltaEvent, ToolInputAvailableEvent,
-    FinishMessageEvent, ErrorEvent
-)
+from .translators import AnthropicAPITranslator
+from ..events import StreamEvent, ErrorEvent
 
 def _headers():
     api_key = os.getenv('ANTHROPIC_API_KEY', '')
@@ -25,6 +22,7 @@ class AnthropicProvider(BaseProvider):
 
     def __init__(self):
         self.base = os.getenv('ANTHROPIC_API_BASE', 'https://api.anthropic.com')
+        self.translator = AnthropicAPITranslator()
         # Validate API key is set
         api_key = os.getenv('ANTHROPIC_API_KEY', '')
         if not api_key:
@@ -70,6 +68,9 @@ class AnthropicProvider(BaseProvider):
         tools: Dict[str, Any]
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream Anthropic response as stream protocol events"""
+        # Reset translator state
+        self.translator.reset()
+
         system_message, anthropic_messages = self._convert_messages(messages)
         anthropic_tools = self._convert_tools(tools)
 
@@ -96,122 +97,28 @@ class AnthropicProvider(BaseProvider):
                 ) as response:
                     response.raise_for_status()
 
-                    # Track state for event emission
-                    content_blocks = {}  # index -> {type, block_id, buffer}
-                    finish_reason = 'end_turn'
-
                     async for line in response.aiter_lines():
                         if not line.strip():
                             continue
 
-                        # Parse SSE format: "event: <type>\ndata: <json>"
-                        if line.startswith('event: '):
-                            event_type = line[7:].strip()
-                            continue
-                        elif line.startswith('data: '):
+                        # Parse SSE format: "data: <json>"
+                        if line.startswith('data: '):
                             data_str = line[6:].strip()
                             try:
                                 data = json.loads(data_str)
                             except json.JSONDecodeError:
                                 continue
 
-                            event_type = data.get('type')
+                            # Translate event to Vel format
+                            vel_event = self.translator.translate_event(data)
+                            if vel_event:
+                                yield vel_event
 
-                            # Handle message_start
-                            if event_type == 'message_start':
-                                pass  # Could emit StartEvent here if needed
-
-                            # Handle content_block_start
-                            elif event_type == 'content_block_start':
-                                index = data.get('index', 0)
-                                content_block = data.get('content_block', {})
-                                block_type = content_block.get('type')
-
-                                if block_type == 'text':
-                                    block_id = str(uuid.uuid4())
-                                    content_blocks[index] = {
-                                        'type': 'text',
-                                        'block_id': block_id,
-                                        'buffer': []
-                                    }
-                                    yield TextStartEvent(block_id=block_id)
-
-                                elif block_type == 'tool_use':
-                                    tool_id = content_block.get('id', f"call_{uuid.uuid4().hex[:8]}")
-                                    tool_name = content_block.get('name', '')
-                                    content_blocks[index] = {
-                                        'type': 'tool_use',
-                                        'tool_id': tool_id,
-                                        'tool_name': tool_name,
-                                        'input_buffer': ''
-                                    }
-                                    yield ToolInputStartEvent(
-                                        tool_call_id=tool_id,
-                                        tool_name=tool_name
-                                    )
-
-                            # Handle content_block_delta
-                            elif event_type == 'content_block_delta':
-                                index = data.get('index', 0)
-                                delta = data.get('delta', {})
-                                delta_type = delta.get('type')
-
-                                if index in content_blocks:
-                                    block = content_blocks[index]
-
-                                    if delta_type == 'text_delta':
-                                        text = delta.get('text', '')
-                                        block['buffer'].append(text)
-                                        yield TextDeltaEvent(
-                                            block_id=block['block_id'],
-                                            delta=text
-                                        )
-
-                                    elif delta_type == 'input_json_delta':
-                                        partial_json = delta.get('partial_json', '')
-                                        block['input_buffer'] += partial_json
-                                        yield ToolInputDeltaEvent(
-                                            tool_call_id=block['tool_id'],
-                                            input_delta=partial_json
-                                        )
-
-                            # Handle content_block_stop
-                            elif event_type == 'content_block_stop':
-                                index = data.get('index', 0)
-                                if index in content_blocks:
-                                    block = content_blocks[index]
-
-                                    if block['type'] == 'text':
-                                        yield TextEndEvent(block_id=block['block_id'])
-
-                                    elif block['type'] == 'tool_use':
-                                        # Parse accumulated JSON input
-                                        try:
-                                            tool_input = json.loads(block['input_buffer'] or '{}')
-                                        except json.JSONDecodeError:
-                                            tool_input = {}
-
-                                        yield ToolInputAvailableEvent(
-                                            tool_call_id=block['tool_id'],
-                                            tool_name=block['tool_name'],
-                                            input=tool_input
-                                        )
-
-                            # Handle message_delta
-                            elif event_type == 'message_delta':
-                                delta = data.get('delta', {})
-                                finish_reason = delta.get('stop_reason', 'end_turn')
-
-                            # Handle message_stop
-                            elif event_type == 'message_stop':
-                                yield FinishMessageEvent(finish_reason=finish_reason)
-                                return
-
-                            # Handle error
-                            elif event_type == 'error':
-                                error_msg = data.get('error', {}).get('message', 'Unknown error')
-                                yield ErrorEvent(error=error_msg)
-                                return
+                                # Check if this is a stop event
+                                if vel_event.type == 'finish-message':
+                                    return
+                                elif vel_event.type == 'error':
+                                    return
 
         except Exception as e:
             yield ErrorEvent(error=str(e))

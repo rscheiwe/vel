@@ -1,13 +1,10 @@
 """Google Gemini provider with stream protocol support"""
 from __future__ import annotations
-import os, json, uuid
+import os, json
 from typing import Any, AsyncGenerator, Dict, List
 from .base import BaseProvider, LLMMessage
-from ..events import (
-    StreamEvent, StartEvent, TextStartEvent, TextDeltaEvent, TextEndEvent,
-    ToolInputStartEvent, ToolInputAvailableEvent,
-    FinishMessageEvent, ErrorEvent
-)
+from .translators import GeminiAPITranslator
+from ..events import StreamEvent, FinishMessageEvent, ErrorEvent, ToolInputAvailableEvent
 
 try:
     import google.generativeai as genai
@@ -26,6 +23,7 @@ class GeminiProvider(BaseProvider):
         if not api_key:
             raise ValueError("GOOGLE_API_KEY environment variable is not set. Set it in your .env file or export it.")
         genai.configure(api_key=api_key)
+        self.translator = GeminiAPITranslator()
 
     def _convert_messages(self, messages: List[LLMMessage]) -> List[Dict[str, Any]]:
         """Convert messages to Gemini format"""
@@ -62,6 +60,9 @@ class GeminiProvider(BaseProvider):
         tools: Dict[str, Any]
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream Gemini response as stream protocol events"""
+        # Reset translator state
+        self.translator.reset()
+
         try:
             gemini_model = genai.GenerativeModel(model)
             gemini_messages = self._convert_messages(messages)
@@ -72,9 +73,6 @@ class GeminiProvider(BaseProvider):
             if tools:
                 tool_declarations = self._convert_tools(tools)
                 tool_config = {'function_declarations': tool_declarations}
-
-            # Start streaming
-            text_block_id = None
 
             # Gemini chat requires history + current message split
             history = gemini_messages[:-1] if len(gemini_messages) > 1 else []
@@ -89,38 +87,35 @@ class GeminiProvider(BaseProvider):
                 stream=True
             )
 
-            async for chunk in response:
-                # Handle text content
-                if hasattr(chunk, 'text') and chunk.text:
-                    if text_block_id is None:
-                        text_block_id = str(uuid.uuid4())
-                        yield TextStartEvent(block_id=text_block_id)
-                    yield TextDeltaEvent(block_id=text_block_id, delta=chunk.text)
+            tool_calls_seen = []  # Track tool calls to emit ToolInputAvailable after start
 
-                # Handle function calls
+            async for chunk in response:
+                # Translate chunk to Vel event
+                vel_event = self.translator.translate_chunk(chunk)
+                if vel_event:
+                    yield vel_event
+
+                # Handle function calls (Gemini emits complete calls, need to emit available)
                 if hasattr(chunk, 'parts'):
                     for part in chunk.parts:
                         if hasattr(part, 'function_call'):
                             fc = part.function_call
-                            tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
+                            tool_call_id = f"call_{fc.name}_{len(tool_calls_seen)}"
                             tool_name = fc.name
-
-                            # Convert args to dict
                             args = dict(fc.args) if hasattr(fc, 'args') else {}
 
-                            yield ToolInputStartEvent(
-                                tool_call_id=tool_call_id,
-                                tool_name=tool_name
-                            )
+                            # Emit ToolInputAvailableEvent after start event
                             yield ToolInputAvailableEvent(
                                 tool_call_id=tool_call_id,
                                 tool_name=tool_name,
                                 input=args
                             )
+                            tool_calls_seen.append(tool_call_id)
 
             # End text block if active
-            if text_block_id:
-                yield TextEndEvent(block_id=text_block_id)
+            text_end_event = self.translator.finalize_text_block()
+            if text_end_event:
+                yield text_end_event
 
             yield FinishMessageEvent(finish_reason='stop')
 
