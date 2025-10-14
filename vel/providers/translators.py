@@ -23,10 +23,16 @@ from ..events import (
     TextStartEvent,
     TextDeltaEvent,
     TextEndEvent,
+    ReasoningStartEvent,
+    ReasoningDeltaEvent,
+    ReasoningEndEvent,
     ToolInputStartEvent,
     ToolInputDeltaEvent,
     ToolInputAvailableEvent,
     ToolOutputAvailableEvent,
+    ResponseMetadataEvent,
+    SourceEvent,
+    FileEvent,
     FinishMessageEvent,
     ErrorEvent
 )
@@ -72,6 +78,18 @@ class OpenAIAPITranslator:
         """
         delta = chunk.get('choices', [{}])[0].get('delta', {})
         finish_reason = chunk.get('choices', [{}])[0].get('finish_reason')
+
+        # Handle usage metadata (typically in final chunk)
+        usage = chunk.get('usage')
+        if usage:
+            return ResponseMetadataEvent(
+                model_id=chunk.get('model'),
+                usage={
+                    'promptTokens': usage.get('prompt_tokens', 0),
+                    'completionTokens': usage.get('completion_tokens', 0),
+                    'totalTokens': usage.get('total_tokens', 0)
+                }
+            )
 
         # Handle text content
         if 'content' in delta and delta['content']:
@@ -279,6 +297,7 @@ class AnthropicAPITranslator:
     def __init__(self):
         self._content_blocks: Dict[int, Dict[str, Any]] = {}  # index -> block state
         self._finish_reason: str = 'end_turn'
+        self._usage_data: Dict[str, int] = {}  # Track usage for metadata event
 
     def translate_event(self, data: Dict[str, Any]) -> Optional[StreamEvent]:
         """
@@ -294,6 +313,11 @@ class AnthropicAPITranslator:
 
         # Handle message_start
         if event_type == 'message_start':
+            # Track input tokens from message start
+            message = data.get('message', {})
+            usage = message.get('usage')
+            if usage and 'input_tokens' in usage:
+                self._usage_data['promptTokens'] = usage['input_tokens']
             return None  # Could emit StartEvent if needed
 
         # Handle content_block_start
@@ -310,6 +334,15 @@ class AnthropicAPITranslator:
                     'buffer': []
                 }
                 return TextStartEvent(block_id=block_id)
+
+            elif block_type == 'thinking':
+                block_id = str(uuid.uuid4())
+                self._content_blocks[index] = {
+                    'type': 'thinking',
+                    'block_id': block_id,
+                    'buffer': []
+                }
+                return ReasoningStartEvent(block_id=block_id)
 
             elif block_type == 'tool_use':
                 tool_id = content_block.get('id', f"call_{uuid.uuid4().hex[:8]}")
@@ -342,6 +375,14 @@ class AnthropicAPITranslator:
                         delta=text
                     )
 
+                elif delta_type == 'thinking_delta':
+                    thinking = delta.get('thinking', '')
+                    block['buffer'].append(thinking)
+                    return ReasoningDeltaEvent(
+                        block_id=block['block_id'],
+                        delta=thinking
+                    )
+
                 elif delta_type == 'input_json_delta':
                     partial_json = delta.get('partial_json', '')
                     block['input_buffer'] += partial_json
@@ -358,6 +399,9 @@ class AnthropicAPITranslator:
 
                 if block['type'] == 'text':
                     return TextEndEvent(block_id=block['block_id'])
+
+                elif block['type'] == 'thinking':
+                    return ReasoningEndEvent(block_id=block['block_id'])
 
                 elif block['type'] == 'tool_use':
                     # Parse accumulated JSON input
@@ -377,21 +421,57 @@ class AnthropicAPITranslator:
             delta = data.get('delta', {})
             self._finish_reason = delta.get('stop_reason', 'end_turn')
 
+            # Track usage (output tokens)
+            usage = data.get('usage')
+            if usage:
+                if 'output_tokens' in usage:
+                    self._usage_data['completionTokens'] = usage['output_tokens']
+
         # Handle message_stop
         elif event_type == 'message_stop':
+            # Check if we have usage data to emit
+            if self._usage_data:
+                # Note: We can't return two events, so we'll emit metadata in message_stop
+                # The provider will need to handle this or we buffer
+                pass
             return FinishMessageEvent(finish_reason=self._finish_reason)
 
         # Handle error
         elif event_type == 'error':
-            error_msg = data.get('error', {}).get('message', 'Unknown error')
-            return ErrorEvent(error=error_msg)
+            error_data = data.get('error', {})
+            return ErrorEvent(
+                error=error_data.get('message', 'Unknown error'),
+                error_code=error_data.get('code'),
+                error_type=error_data.get('type')
+            )
 
+        return None
+
+    def get_metadata_event(self) -> Optional[ResponseMetadataEvent]:
+        """
+        Get metadata event if usage data was collected.
+        Call this after message_stop to emit usage metadata.
+
+        Returns:
+            ResponseMetadataEvent or None if no usage data
+        """
+        if self._usage_data:
+            prompt_tokens = self._usage_data.get('promptTokens', 0)
+            completion_tokens = self._usage_data.get('completionTokens', 0)
+            return ResponseMetadataEvent(
+                usage={
+                    'promptTokens': prompt_tokens,
+                    'completionTokens': completion_tokens,
+                    'totalTokens': prompt_tokens + completion_tokens
+                }
+            )
         return None
 
     def reset(self):
         """Reset translator state between messages."""
         self._content_blocks.clear()
         self._finish_reason = 'end_turn'
+        self._usage_data.clear()
 
 
 class GeminiAPITranslator:
@@ -402,6 +482,8 @@ class GeminiAPITranslator:
     - Streaming chunks from GenerativeModel.generate_content_async(stream=True)
     - Text content
     - Function calls
+    - Grounding sources (web citations)
+    - Inline data (files)
 
     Usage:
         >>> translator = GeminiAPITranslator()
@@ -415,6 +497,7 @@ class GeminiAPITranslator:
 
     def __init__(self):
         self._text_block_id: Optional[str] = None
+        self._seen_source_urls: set[str] = set()  # Deduplicate grounding sources
 
     def translate_chunk(self, chunk: Any) -> Optional[StreamEvent]:
         """
@@ -426,16 +509,54 @@ class GeminiAPITranslator:
         Returns:
             StreamEvent or None if chunk should be skipped
         """
-        # Handle text content
-        if hasattr(chunk, 'text') and chunk.text:
-            if self._text_block_id is None:
-                self._text_block_id = str(uuid.uuid4())
-                return TextStartEvent(block_id=self._text_block_id)
-            return TextDeltaEvent(block_id=self._text_block_id, delta=chunk.text)
+        # Handle usage metadata
+        if hasattr(chunk, 'usage_metadata'):
+            usage = chunk.usage_metadata
+            if hasattr(usage, 'total_token_count') and usage.total_token_count > 0:
+                return ResponseMetadataEvent(
+                    usage={
+                        'promptTokens': getattr(usage, 'prompt_token_count', 0),
+                        'completionTokens': getattr(usage, 'candidates_token_count', 0),
+                        'totalTokens': getattr(usage, 'total_token_count', 0)
+                    }
+                )
 
-        # Handle function calls
+        # Handle grounding sources (web citations)
+        if hasattr(chunk, 'candidates'):
+            for candidate in chunk.candidates:
+                if hasattr(candidate, 'grounding_metadata'):
+                    metadata = candidate.grounding_metadata
+                    if hasattr(metadata, 'grounding_sources'):
+                        sources = []
+                        for source in metadata.grounding_sources:
+                            if hasattr(source, 'web'):
+                                web = source.web
+                                url = getattr(web, 'uri', '')
+
+                                # Deduplicate
+                                if url and url not in self._seen_source_urls:
+                                    self._seen_source_urls.add(url)
+                                    sources.append({
+                                        'type': 'web',
+                                        'url': url,
+                                        'title': getattr(web, 'title', ''),
+                                    })
+
+                        if sources:
+                            return SourceEvent(sources=sources)
+
+        # Handle parts (inline data, function calls, etc.)
         if hasattr(chunk, 'parts'):
             for part in chunk.parts:
+                # Handle inline data (files)
+                if hasattr(part, 'inline_data'):
+                    inline = part.inline_data
+                    return FileEvent(
+                        content=getattr(inline, 'data', ''),  # base64
+                        mime_type=getattr(inline, 'mime_type', '')
+                    )
+
+                # Handle function calls
                 if hasattr(part, 'function_call'):
                     fc = part.function_call
                     tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
@@ -450,6 +571,13 @@ class GeminiAPITranslator:
                         tool_call_id=tool_call_id,
                         tool_name=tool_name
                     )
+
+        # Handle text content
+        if hasattr(chunk, 'text') and chunk.text:
+            if self._text_block_id is None:
+                self._text_block_id = str(uuid.uuid4())
+                return TextStartEvent(block_id=self._text_block_id)
+            return TextDeltaEvent(block_id=self._text_block_id, delta=chunk.text)
 
         return None
 
@@ -470,6 +598,7 @@ class GeminiAPITranslator:
     def reset(self):
         """Reset translator state between messages."""
         self._text_block_id = None
+        self._seen_source_urls.clear()
 
 
 # Convenience functions for easy instantiation

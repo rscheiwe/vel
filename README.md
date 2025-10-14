@@ -291,6 +291,7 @@ Vel is designed following the [12-Factor Agent principles](https://github.com/hu
 - [ ] Finish Postgres integration
 - [ ] Add knowledge-graph memory layer
 - [ ] Add example of how to create Vel agents via a tool
+- [ ] Add guardrails
 - [x] ~~Update ReasoningBank to include e2e implementation as described in Google's paper~~ (Phase 1 complete, see `docs/Memory/reasoningbank-phase2-roadmap.md` for Phase 2)
 
 ## License

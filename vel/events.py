@@ -19,6 +19,9 @@ EventType = Literal[
     'tool-input-delta',
     'tool-input-available',
     'tool-output-available',
+    'response-metadata',
+    'source',
+    'file',
     'start-step',
     'finish-step',
     'finish-message',
@@ -181,6 +184,66 @@ class ErrorEvent(StreamEvent):
     """Error event"""
     type: Literal['error'] = 'error'
     error: str = ''
+    error_code: Optional[str] = None
+    error_type: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {**super().to_dict(), 'error': self.error}
+        d = {**super().to_dict(), 'error': self.error}
+        if self.error_code:
+            d['errorCode'] = self.error_code
+        if self.error_type:
+            d['errorType'] = self.error_type
+        return d
+
+@dataclass
+class ResponseMetadataEvent(StreamEvent):
+    """Response metadata (usage, model info, timing)"""
+    type: Literal['response-metadata'] = 'response-metadata'
+    id: Optional[str] = None
+    model_id: Optional[str] = None
+    timestamp: Optional[str] = None  # ISO 8601
+    usage: Optional[Dict[str, int]] = None  # {promptTokens, completionTokens, totalTokens}
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = super().to_dict()
+        if self.id:
+            d['id'] = self.id
+        if self.model_id:
+            d['modelId'] = self.model_id
+        if self.timestamp:
+            d['timestamp'] = self.timestamp
+        if self.usage:
+            d['usage'] = self.usage
+        return d
+
+@dataclass
+class SourceEvent(StreamEvent):
+    """Source/citation event (web search results, document references)"""
+    type: Literal['source'] = 'source'
+    sources: list[Dict[str, Any]] = None  # [{type, url, title, snippet}, ...]
+
+    def __post_init__(self):
+        if self.sources is None:
+            self.sources = []
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            **super().to_dict(),
+            'sources': self.sources
+        }
+
+@dataclass
+class FileEvent(StreamEvent):
+    """File attachment event (inline data, images, PDFs)"""
+    type: Literal['file'] = 'file'
+    content: Any = None  # base64 string or bytes
+    name: str = ''
+    mime_type: str = ''
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            **super().to_dict(),
+            'content': self.content,
+            'name': self.name,
+            'mimeType': self.mime_type
+        }
