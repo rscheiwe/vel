@@ -12,11 +12,15 @@ class ProviderRegistry:
     def __init__(self):
         self._providers: Dict[str, BaseProvider] = {}
         # Register default providers
-        self._providers['openai'] = OpenAIProvider()
+        try:
+            self._providers['openai'] = OpenAIProvider()
+        except (ImportError, ValueError):
+            # OpenAI not available or API key not set, skip
+            pass
         try:
             self._providers['google'] = GeminiProvider()
-        except ImportError:
-            # Gemini not available, skip
+        except (ImportError, ValueError):
+            # Gemini not available or API key not set, skip
             pass
         try:
             self._providers['anthropic'] = AnthropicProvider()
