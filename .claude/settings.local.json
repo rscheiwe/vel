@@ -20,7 +20,8 @@
       "Bash(fi)",
       "Bash(if [ -f VEL_CHANGES_SUMMARY.md ])",
       "Bash(then rm VEL_CHANGES_SUMMARY.md)",
-      "Bash(else echo \"✓ VEL_CHANGES_SUMMARY.md already removed\")"
+      "Bash(else echo \"✓ VEL_CHANGES_SUMMARY.md already removed\")",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []
