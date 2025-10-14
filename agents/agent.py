@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import warnings
 from typing import Any, AsyncGenerator, Dict, List, Optional, Literal
 from .core import State, reduce, ContextManager
 from .providers import ProviderRegistry
@@ -15,11 +16,18 @@ class Agent:
     def __init__(self, id: str, model: Dict[str, Any], prompt_env: str='prod',
                  tools: List[str]|None=None, policies: Dict[str, Any]|None=None,
                  context_manager: Optional[ContextManager]=None,
-                 session_storage: Literal['memory', 'database']='memory',
+                 session_persistence: Optional[Literal['transient', 'persistent']]=None,
                  prompt_id: Optional[str]=None,
-                 prompt_vars: Optional[Dict[str, Any]]=None):
+                 prompt_vars: Optional[Dict[str, Any]]=None,
+                 # Deprecated (backwards compatibility)
+                 session_storage: Optional[Literal['memory', 'database']]=None):
         """
         Initialize an Agent.
+
+        Vel has three distinct memory systems:
+        1. **Message History** - Conversation turns (managed by ContextManager)
+        2. **Fact Store** - Long-term structured facts (via MemoryConfig)
+        3. **Session Persistence** - Where message history is saved (this parameter)
 
         Args:
             id: Agent identifier
@@ -27,23 +35,46 @@ class Agent:
             prompt_env: Environment for prompts (default: 'prod')
             tools: List of tool names to enable
             policies: Execution policies (max_steps, retry, etc.)
+
             context_manager: Custom context manager instance. Pass:
-                - None or ContextManager() for default (full memory)
-                - StatelessContextManager() for no memory
-                - ContextManager(max_history=10) for limited memory
+                - None or ContextManager() for default (full message history)
+                - StatelessContextManager() for no message history
+                - ContextManager(max_history=10) for limited message history
                 - Your own custom ContextManager subclass
-            session_storage: Where to store session context:
-                - 'memory': Sessions stored in-memory only (default, fast, not persistent)
-                - 'database': Sessions backed by Postgres (persistent, survives restarts)
+
+            session_persistence: Where message history is saved:
+                - 'transient': In-memory only (default, fast, not persistent)
+                - 'persistent': Database-backed (survives restarts, requires PostgreSQL)
+                - None: defaults to 'transient'
+
             prompt_id: Optional prompt template ID (e.g., 'chat-agent:v1')
             prompt_vars: Optional variables for prompt template rendering
+
+            session_storage: [DEPRECATED] Use session_persistence instead
+                - 'memory' → use 'transient'
+                - 'database' → use 'persistent'
         """
         self.id = id
         self.model_cfg = model
         self.prompt_env = prompt_env
         self.tools = tools or []
         self.policies = policies or {'max_steps': 24, 'retry': {'attempts': 2}}
-        self.session_storage = session_storage
+
+        # Handle backwards compatibility for session_storage
+        if session_storage is not None:
+            warnings.warn(
+                f"Agent parameter 'session_storage' is deprecated and will be removed in v2.0. "
+                f"Use 'session_persistence' instead. "
+                f"('memory' → 'transient', 'database' → 'persistent')",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            # Map old values to new
+            mapping = {'memory': 'transient', 'database': 'persistent'}
+            session_persistence = mapping.get(session_storage, 'transient')
+
+        # Set session persistence (default to 'transient')
+        self.session_persistence = session_persistence or 'transient'
         self.providers = ProviderRegistry.default()
         self.toolreg = ToolRegistry.default()
 
@@ -65,15 +96,15 @@ class Agent:
         self.store = RunStore.default()
 
     async def _load_session(self, session_id: str):
-        """Load session from database if using database storage"""
-        if self.session_storage == 'database':
+        """Load session from database if using persistent storage"""
+        if self.session_persistence == 'persistent':
             context = await self.store.load_session(session_id)
             if context:
                 self.ctxmgr.set_session_context(session_id, context)
 
     async def _save_session(self, session_id: str):
-        """Save session to database if using database storage"""
-        if self.session_storage == 'database':
+        """Save session to database if using persistent storage"""
+        if self.session_persistence == 'persistent':
             context = self.ctxmgr.get_session_context(session_id)
             await self.store.save_session(session_id, context)
 
