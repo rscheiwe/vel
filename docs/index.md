@@ -61,7 +61,7 @@ cp .env.example .env
 
 ```python
 import asyncio
-from agents import Agent
+from vel import Agent
 
 async def main():
     agent = Agent(

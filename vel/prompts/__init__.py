@@ -14,7 +14,7 @@ Follows:
 - XML-first structuring for clear context boundaries
 
 Example:
-    >>> from agents.prompts import PromptTemplate, register_prompt
+    >>> from vel.prompts import PromptTemplate, register_prompt
     >>>
     >>> template = PromptTemplate(
     ...     id="chat-agent:v1",
@@ -27,7 +27,7 @@ Example:
     ... )
     >>> register_prompt(template)
     >>>
-    >>> from agents import Agent
+    >>> from vel import Agent
     >>> agent = Agent(
     ...     id='chat-agent:v1',
     ...     model={'provider': 'anthropic', 'model': 'claude-sonnet-4'},

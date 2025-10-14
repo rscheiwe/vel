@@ -4,7 +4,7 @@ from typing import Dict, Any
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
-from agents import Agent
+from vel import Agent
 
 app = FastAPI(title="Vel Service")
 

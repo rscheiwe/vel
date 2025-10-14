@@ -49,7 +49,7 @@ agent = Agent(
 Vel also provides a flexible prompt template system:
 
 ```python
-from agents import PromptTemplate, register_prompt
+from vel import PromptTemplate, register_prompt
 
 template = PromptTemplate(
     id="assistant:v1",

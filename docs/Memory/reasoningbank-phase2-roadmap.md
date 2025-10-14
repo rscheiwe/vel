@@ -165,7 +165,7 @@ CREATE INDEX idx_traj_extracted ON rb_trajectories(strategies_extracted);
 
 #### 1.2 Implementation
 
-Create `agents/memory/trajectory_store.py`:
+Create `vel/memory/trajectory_store.py`:
 
 ```python
 from __future__ import annotations
@@ -288,7 +288,7 @@ class TrajectoryStore:
 
 #### 1.3 Integration with ContextManager
 
-Update `agents/core/context.py`:
+Update `vel/core/context.py`:
 
 ```python
 class ContextManager:
@@ -326,7 +326,7 @@ Update `build_memory_adapters()` to include trajectory store when mode includes 
 
 #### 2.1 Judge Implementation
 
-Create `agents/memory/llm_judge.py`:
+Create `vel/memory/llm_judge.py`:
 
 ```python
 from __future__ import annotations
@@ -367,7 +367,7 @@ class LLMJudge:
         Returns:
             JudgeResult with success boolean, reasoning, and confidence
         """
-        from agents import Agent
+        from vel import Agent
 
         # Format trajectory for analysis
         trajectory_text = self._format_trajectory(
@@ -484,7 +484,7 @@ Respond ONLY with the JSON object, no other text."""
 
 #### 2.2 Background Evaluation Worker
 
-Create `agents/memory/evaluation_worker.py`:
+Create `vel/memory/evaluation_worker.py`:
 
 ```python
 from __future__ import annotations
@@ -570,7 +570,7 @@ class EvaluationWorker:
 
 #### 3.1 Strategy Extractor Implementation
 
-Create `agents/memory/strategy_extractor.py`:
+Create `vel/memory/strategy_extractor.py`:
 
 ```python
 from __future__ import annotations
@@ -607,7 +607,7 @@ class StrategyExtractor:
         Returns:
             ExtractedStrategy if one can be extracted, None otherwise
         """
-        from agents import Agent
+        from vel import Agent
 
         # Format trajectory
         trajectory_text = self._format_trajectory(
@@ -722,7 +722,7 @@ IMPORTANT:
 
 #### 3.2 Strategy Extraction Worker
 
-Create `agents/memory/extraction_worker.py`:
+Create `vel/memory/extraction_worker.py`:
 
 ```python
 from __future__ import annotations
@@ -843,7 +843,7 @@ class ExtractionWorker:
 
 #### 4.1 Strategy Consolidator
 
-Create `agents/memory/consolidator.py`:
+Create `vel/memory/consolidator.py`:
 
 ```python
 from __future__ import annotations
@@ -1001,7 +1001,7 @@ class MemoryConsolidator:
 
 #### 5.1 Extended Memory Config
 
-Update `agents/core/context.py`:
+Update `vel/core/context.py`:
 
 ```python
 @dataclass
@@ -1042,7 +1042,7 @@ class MemoryConfig:
 
 #### 5.2 Auto-Learning Manager
 
-Create `agents/memory/auto_learning.py`:
+Create `vel/memory/auto_learning.py`:
 
 ```python
 from __future__ import annotations
@@ -1282,7 +1282,7 @@ Run learning once per day on all trajectories:
 
 ```python
 # Cron job
-python -m agents.memory.batch_learn --db .vel/vel.db
+python -m vel.memory.batch_learn --db .vel/vel.db
 ```
 
 **Pros:** Lower cost, easier to monitor
@@ -1319,7 +1319,7 @@ Track these to measure Phase 2 effectiveness:
 ## References
 
 - **Google ReasoningBank Paper:** [arxiv:2509.25140](https://arxiv.org/abs/2509.25140)
-- **Vel Phase 1 Implementation:** `agents/memory/strategy_reasoningbank.py`
+- **Vel Phase 1 Implementation:** `vel/memory/strategy_reasoningbank.py`
 - **claude-flow Implementation:** [github.com/ruvnet/claude-flow](https://github.com/ruvnet/claude-flow)
 
 ---

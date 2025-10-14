@@ -1,7 +1,7 @@
 """Test both streaming and non-streaming modes"""
 import asyncio
 from dotenv import load_dotenv
-from agents import Agent, ToolSpec, register_tool
+from vel import Agent, ToolSpec, register_tool
 
 # Load environment variables from .env file
 load_dotenv()

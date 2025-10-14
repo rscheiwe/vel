@@ -14,7 +14,7 @@ nav_order: 1
 Vel uses LLM function calling to convert natural language into structured tool invocations with JSON schema validation:
 
 ```python
-from agents import Agent, ToolSpec, register_tool
+from vel import Agent, ToolSpec, register_tool
 
 def get_weather_handler(input: dict, ctx: dict) -> dict:
     city = input['city']

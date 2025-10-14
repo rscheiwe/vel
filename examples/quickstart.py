@@ -1,6 +1,6 @@
 import asyncio
 from dotenv import load_dotenv
-from agents import Agent, run_stream
+from vel import Agent, run_stream
 
 # Load environment variables from .env file
 load_dotenv()

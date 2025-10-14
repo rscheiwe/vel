@@ -37,7 +37,7 @@ The memory system includes two complementary components:
 ## Quick Start
 
 ```python
-from agents.core import ContextManager, MemoryConfig
+from vel.core import ContextManager, MemoryConfig
 
 # Configure memory
 mem = MemoryConfig(

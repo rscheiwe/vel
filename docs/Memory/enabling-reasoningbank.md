@@ -27,7 +27,7 @@ Enabling ReasoningBank happens in **two distinct phases**:
 ### Step 1: Configure Memory
 
 ```python
-from agents.core import ContextManager, MemoryConfig
+from vel.core import ContextManager, MemoryConfig
 import numpy as np
 
 # Define embeddings function (required for ReasoningBank)
@@ -87,7 +87,7 @@ Vel doesn't make these decisions automatically behind the scenes.
 Hand-craft strategies based on domain knowledge:
 
 ```python
-from agents.core import ContextManager, MemoryConfig
+from vel.core import ContextManager, MemoryConfig
 
 # ... configure memory (see Phase 1) ...
 
@@ -197,7 +197,7 @@ async def extract_strategy_with_llm(trajectory):
 
     This mimics the academic ReasoningBank paper's approach.
     """
-    from agents import Agent
+    from vel import Agent
 
     # Serialize trajectory
     trajectory_text = format_trajectory(trajectory)
@@ -302,8 +302,8 @@ def learn_from_history(db_path=".vel/vel.db"):
 
     Run this as a cron job or manual script.
     """
-    from agents.memory import ReasoningBankStore, Embeddings
-    from agents.core import MemoryConfig
+    from vel.memory import ReasoningBankStore, Embeddings
+    from vel.core import MemoryConfig
 
     # Load all successful runs from your run store
     successful_runs = load_successful_runs_from_db()

@@ -17,8 +17,8 @@ from datetime import datetime
 import numpy as np
 import hashlib
 
-from agents import Agent
-from agents.core import ContextManager, MemoryConfig
+from vel import Agent
+from vel.core import ContextManager, MemoryConfig
 
 
 def print_section(title: str):

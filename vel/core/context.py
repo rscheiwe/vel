@@ -9,13 +9,13 @@ import warnings
 # --- Optional memory backends (soft imports; safe if modules are absent) ---
 try:
     # Fact store: namespaced key-value store for long-term structured data (SQLite)
-    from agents.memory.fact_store import FactStore  # type: ignore
+    from vel.memory.fact_store import FactStore  # type: ignore
 except Exception:  # pragma: no cover
     FactStore = None  # type: ignore
 
 try:
     # ReasoningBank (strategy memory) over SQLite + embeddings
-    from agents.memory.strategy_reasoningbank import (  # type: ignore
+    from vel.memory.strategy_reasoningbank import (  # type: ignore
         ReasoningBank,
         ReasoningBankStore,
         Embeddings,

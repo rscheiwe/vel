@@ -15,7 +15,7 @@ Sessions enable the agent to remember context across multiple calls, creating na
 ## Basic Usage
 
 ```python
-from agents import Agent
+from vel import Agent
 
 agent = Agent(
     id='my-agent',
@@ -91,7 +91,7 @@ Control how much history is retained in a session.
 Remembers entire conversation history.
 
 ```python
-from agents import ContextManager
+from vel import ContextManager
 
 agent = Agent(
     id='my-agent',
@@ -107,7 +107,7 @@ agent = Agent(
 Each call is independent, no history retained.
 
 ```python
-from agents import StatelessContextManager
+from vel import StatelessContextManager
 
 agent = Agent(
     id='my-agent',
@@ -123,7 +123,7 @@ agent = Agent(
 Only keeps last N messages (sliding window).
 
 ```python
-from agents import ContextManager
+from vel import ContextManager
 
 agent = Agent(
     id='my-agent',
@@ -156,7 +156,7 @@ agent = Agent(
 Implement custom memory logic:
 
 ```python
-from agents import ContextManager
+from vel import ContextManager
 
 class RAGContextManager(ContextManager):
     """Context manager with RAG support"""

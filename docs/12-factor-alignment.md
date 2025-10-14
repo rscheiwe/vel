@@ -51,7 +51,7 @@ Each factor represents a key principle for building production-ready AI agents. 
 Vel uses LLM function calling to convert natural language into structured tool invocations with JSON schema validation:
 
 ```python
-from agents import Agent, ToolSpec, register_tool
+from vel import Agent, ToolSpec, register_tool
 
 def get_weather_handler(input: dict, ctx: dict) -> dict:
     city = input['city']
@@ -316,7 +316,7 @@ Vel provides dual execution modes with async control:
 
 ```python
 import asyncio
-from agents import Agent
+from vel import Agent
 
 agent = Agent(
     id='my-agent',
@@ -384,7 +384,7 @@ task.cancel()  # Graceful cancellation
 Human-in-the-loop as a tool:
 
 ```python
-from agents import ToolSpec, register_tool
+from vel import ToolSpec, register_tool
 
 async def request_human_approval(input: dict, ctx: dict) -> dict:
     """Tool that contacts a human for approval"""
@@ -475,7 +475,7 @@ agent = Agent(
 
 # Explicit state transitions (non-streaming mode)
 # The reducer pattern gives full control over state transitions
-from agents.core import State, reduce
+from vel.core import State, reduce
 
 state = State(run_id='run-123')
 event = {'kind': 'llm_step', 'step': {'tool': 'deploy', 'args': {...}}}
@@ -645,7 +645,7 @@ Vel provides both SDK and REST API interfaces:
 
 ```python
 # SDK: Direct Python integration
-from agents import Agent
+from vel import Agent
 
 agent = Agent(
     id='my-agent',
@@ -713,7 +713,7 @@ Vel implements the reducer pattern for non-streaming execution:
 
 ```python
 # The reducer is a pure function: (State, Event) -> (State, Effects)
-from agents.core import State, reduce
+from vel.core import State, reduce
 
 # Initial state
 state = State(run_id='run-123')

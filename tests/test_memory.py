@@ -7,8 +7,8 @@ import os
 import numpy as np
 from pathlib import Path
 
-from agents.memory.fact_store import FactStore
-from agents.memory.strategy_reasoningbank import (
+from vel.memory.fact_store import FactStore
+from vel.memory.strategy_reasoningbank import (
     ReasoningBank,
     ReasoningBankStore,
     Embeddings,

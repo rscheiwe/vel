@@ -6,7 +6,7 @@ import tempfile
 import os
 import numpy as np
 
-from agents.core import ContextManager, MemoryConfig, load_memory_config_from_env
+from vel.core import ContextManager, MemoryConfig, load_memory_config_from_env
 
 
 # --- Fixtures ---

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Run from the repo root (where pyproject.toml lives)
-mkdir -p scripts alembic/versions agents
+mkdir -p scripts alembic/versions vel
 
 echo ">>> Writing .env.example"
 cat > .env.example <<'ENV'
@@ -138,9 +138,9 @@ def downgrade():
     op.execute("drop table if exists vel_runs;")
 PY
 
-echo ">>> Backing up and writing agents/storage_pg.py (async SQLAlchemy over psycopg)"
-[ -f agents/storage_pg.py ] && cp agents/storage_pg.py agents/storage_pg.py.bak || true
-cat > agents/storage_pg.py <<'PY'
+echo ">>> Backing up and writing vel/storage_pg.py (async SQLAlchemy over psycopg)"
+[ -f vel/storage_pg.py ] && cp vel/storage_pg.py vel/storage_pg.py.bak || true
+cat > vel/storage_pg.py <<'PY'
 from __future__ import annotations
 import json
 from typing import Any, Dict, List
@@ -197,9 +197,9 @@ class PGStore:
             return [row[0] for row in res.fetchall()]
 PY
 
-echo ">>> Backing up and writing agents/storage.py (PG facade + Redis cache)"
-[ -f agents/storage.py ] && cp agents/storage.py agents/storage.py.bak || true
-cat > agents/storage.py <<'PY'
+echo ">>> Backing up and writing vel/storage.py (PG facade + Redis cache)"
+[ -f vel/storage.py ] && cp vel/storage.py vel/storage.py.bak || true
+cat > vel/storage.py <<'PY'
 from __future__ import annotations
 import os, json, uuid
 from typing import Any, Dict, List, Optional
@@ -254,12 +254,12 @@ class RunStore:
         return self._events.get(run_id, [])
 PY
 
-echo ">>> Patching agents/agent.py to persist runs (create_run + update_status)"
+echo ">>> Patching vel/agent.py to persist runs (create_run + update_status)"
 # Create a backup
-cp agents/agent.py agents/agent.py.bak
+cp vel/agent.py vel/agent.py.bak
 
 # Overwrite file with a persistence-aware run loop
-cat > agents/agent.py <<'PY'
+cat > vel/agent.py <<'PY'
 from __future__ import annotations
 import asyncio, uuid
 from typing import Any, AsyncGenerator, Dict, List

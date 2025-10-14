@@ -43,8 +43,8 @@ Vel's design makes **the runtime** — not the LLM — responsible for memory. A
 ## 3. Quick Example
 
 ```python
-from agents.core.context import MemoryConfig
-from agents.prompts.context_manager import vel_context
+from vel.core.context import MemoryConfig
+from vel.prompts.context_manager import vel_context
 
 def encode(texts):
     import numpy as np, hashlib

@@ -6,7 +6,7 @@ Demonstrates three context manager modes:
 """
 import asyncio
 from dotenv import load_dotenv
-from agents import Agent, ContextManager, StatelessContextManager
+from vel import Agent, ContextManager, StatelessContextManager
 
 load_dotenv()
 

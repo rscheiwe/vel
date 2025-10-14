@@ -217,7 +217,7 @@ It’s powered by embeddings for conceptual similarity:
 ## ⚙️ Typical Configuration
 
 ```python
-from agents.core.context import MemoryConfig
+from vel.core.context import MemoryConfig
 
 mem = MemoryConfig(
     mode="all",             # "none" | "facts" | "reasoning" | "all"

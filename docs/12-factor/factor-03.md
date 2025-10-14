@@ -49,7 +49,7 @@ class RAGContextManager(ContextManager):
 Use built-in compaction strategies:
 
 ```python
-from agents import ContextCompactor
+from vel import ContextCompactor
 
 # Sliding window
 compacted = ContextCompactor.sliding_window(

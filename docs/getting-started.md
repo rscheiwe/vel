@@ -78,7 +78,7 @@ OPENAI_API_BASE=https://api.openai.com/v1
 ```python
 import asyncio
 from dotenv import load_dotenv
-from agents import Agent
+from vel import Agent
 
 load_dotenv()
 
@@ -141,7 +141,7 @@ async def session_example():
 ### With Tools
 
 ```python
-from agents import Agent, ToolSpec, register_tool
+from vel import Agent, ToolSpec, register_tool
 
 # Define a custom tool
 def get_weather_handler(input: dict, ctx: dict) -> dict:

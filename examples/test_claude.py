@@ -1,7 +1,7 @@
 """Test Anthropic Claude provider"""
 import asyncio
 from dotenv import load_dotenv
-from agents import Agent
+from vel import Agent
 
 load_dotenv()
 

@@ -30,7 +30,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 ## Project Structure
 
 ```
-agents/
+vel/
 ├── providers/      # LLM provider implementations (OpenAI, Gemini, Anthropic)
 ├── storage/        # Storage layer (Postgres, Redis)
 ├── tools/          # Tool registry and specifications
@@ -62,7 +62,7 @@ cp .env.example .env
 
 ```python
 import asyncio
-from agents import Agent
+from vel import Agent
 
 async def main():
     # Non-streaming mode
@@ -201,7 +201,7 @@ agent = Agent(
 Control how much conversation history is retained:
 
 ```python
-from agents import ContextManager, StatelessContextManager
+from vel import ContextManager, StatelessContextManager
 
 # Full message history (default)
 agent = Agent(..., context_manager=ContextManager())
@@ -256,11 +256,11 @@ pip install -e ".[dev]"
 pytest
 
 # Format code
-black agents/ agents_service/
-ruff check agents/ agents_service/
+black vel/ agents_service/
+ruff check vel/ agents_service/
 
 # Type checking
-mypy agents/
+mypy vel/
 ```
 
 ## Architecture

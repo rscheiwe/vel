@@ -23,7 +23,7 @@ The prompt module provides:
 ### Basic Template
 
 ```python
-from agents import Agent, PromptTemplate, register_prompt
+from vel import Agent, PromptTemplate, register_prompt
 
 # Define a template
 template = PromptTemplate(
@@ -61,7 +61,7 @@ agent = Agent(
 Templates use Jinja2 for variable interpolation and support environment-based variations.
 
 ```python
-from agents import PromptTemplate
+from vel import PromptTemplate
 
 # Single template for all environments
 template = PromptTemplate(
@@ -190,7 +190,7 @@ prod_prompt = template.render(environment='prod')
 Helper for building structured XML prompts:
 
 ```python
-from agents import SystemPromptBuilder
+from vel import SystemPromptBuilder
 
 builder = SystemPromptBuilder()
 builder.add_role("You are a deployment automation assistant")
@@ -215,7 +215,7 @@ prompt = builder.build()
 ### Option 1: Using prompt_id (Recommended)
 
 ```python
-from agents import Agent, PromptTemplate, register_prompt
+from vel import Agent, PromptTemplate, register_prompt
 
 # 1. Create and register template
 template = PromptTemplate(
@@ -257,7 +257,7 @@ answer = await agent.run({'message': 'I need help with my order'})
 ### Option 2: Using PromptContextManager
 
 ```python
-from agents import Agent, PromptContextManager, register_prompt
+from vel import Agent, PromptContextManager, register_prompt
 
 # Register template
 register_prompt(template)
@@ -294,7 +294,7 @@ agent = Agent(
 Centralized management of prompts:
 
 ```python
-from agents import PromptRegistry, register_prompt, get_prompt
+from vel import PromptRegistry, register_prompt, get_prompt
 
 # Register prompts
 register_prompt(template1)
@@ -382,7 +382,7 @@ Utilities for formatting context following Anthropic best practices:
 ### XMLFormatter
 
 ```python
-from agents import XMLFormatter
+from vel import XMLFormatter
 
 # Format conversation history
 messages = [
@@ -416,7 +416,7 @@ formatted = XMLFormatter.format_key_value(data)
 Strategies for compacting context to fit token budgets:
 
 ```python
-from agents import ContextCompactor
+from vel import ContextCompactor
 
 messages = [
     # ... many messages
@@ -515,7 +515,7 @@ if hasattr(agent.ctxmgr, 'update_prompt_vars'):
 ### Custom Context Manager
 
 ```python
-from agents import PromptContextManager
+from vel import PromptContextManager
 
 class CustomPromptContextManager(PromptContextManager):
     def messages_for_llm(self, run_id, session_id=None, additional_prompt_vars=None):
@@ -748,8 +748,8 @@ agent = Agent(..., context_manager=ctx_mgr)
 ## API Reference
 
 See module docstrings for detailed API documentation:
-- `agents.prompts.template.PromptTemplate`
-- `agents.prompts.registry.PromptRegistry`
-- `agents.prompts.manager.PromptManager`
-- `agents.prompts.context_manager.PromptContextManager`
-- `agents.prompts.formatters.*`
+- `vel.prompts.template.PromptTemplate`
+- `vel.prompts.registry.PromptRegistry`
+- `vel.prompts.manager.PromptManager`
+- `vel.prompts.context_manager.PromptContextManager`
+- `vel.prompts.formatters.*`

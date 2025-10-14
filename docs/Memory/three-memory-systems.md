@@ -32,7 +32,7 @@ ctx = ContextManager()
 ctx = ContextManager(max_history=20)
 
 # No history (stateless)
-from agents.core import StatelessContextManager
+from vel.core import StatelessContextManager
 ctx = StatelessContextManager()
 ```
 
@@ -53,7 +53,7 @@ ctx = StatelessContextManager()
 
 **Configuration:**
 ```python
-from agents.core import ContextManager, MemoryConfig
+from vel.core import ContextManager, MemoryConfig
 
 # Enable fact store
 mem = MemoryConfig(mode="facts", db_path=".vel/vel.db")
@@ -97,7 +97,7 @@ project = ctx.fact_get("user:alice", "current_project")  # "inventory-api"
 
 **Configuration:**
 ```python
-from agents import Agent
+from vel import Agent
 
 # Transient: Message history in-memory only (default)
 agent = Agent(
@@ -196,8 +196,8 @@ theme = ctx.fact_get("user:alice", "theme")  # "dark"
 ## Example: Complete Usage
 
 ```python
-from agents import Agent
-from agents.core import ContextManager, MemoryConfig
+from vel import Agent
+from vel.core import ContextManager, MemoryConfig
 
 # 1. Configure message history (sliding window)
 ctx = ContextManager(max_history=20)

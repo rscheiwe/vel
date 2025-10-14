@@ -9,7 +9,7 @@ Tests:
 - Formatters and utilities
 """
 import pytest
-from agents.prompts import (
+from vel.prompts import (
     PromptTemplate,
     SystemPromptBuilder,
     PromptRegistry,

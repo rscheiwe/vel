@@ -15,7 +15,7 @@ Vel implements the reducer pattern for non-streaming execution:
 
 ```python
 # The reducer is a pure function: (State, Event) -> (State, Effects)
-from agents.core import State, reduce
+from vel.core import State, reduce
 
 # Initial state
 state = State(run_id='run-123')

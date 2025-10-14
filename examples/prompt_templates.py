@@ -11,7 +11,7 @@ Shows:
 """
 import asyncio
 from dotenv import load_dotenv
-from agents import (
+from vel import (
     Agent,
     PromptTemplate,
     register_prompt,

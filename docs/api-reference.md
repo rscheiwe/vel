@@ -93,7 +93,7 @@ Agent(
 **Example:**
 
 ```python
-from agents import Agent
+from vel import Agent
 
 # Basic agent
 agent = Agent(
@@ -244,7 +244,7 @@ ContextManager(
 **Example:**
 
 ```python
-from agents import Agent, ContextManager
+from vel import Agent, ContextManager
 
 # Full memory (default)
 agent = Agent(
@@ -350,7 +350,7 @@ StatelessContextManager()
 **Example:**
 
 ```python
-from agents import Agent, StatelessContextManager
+from vel import Agent, StatelessContextManager
 
 agent = Agent(
     id='my-agent',
@@ -412,7 +412,7 @@ ToolSpec(
 **Example:**
 
 ```python
-from agents import ToolSpec, register_tool
+from vel import ToolSpec, register_tool
 
 def get_weather_handler(input: dict, ctx: dict) -> dict:
     city = input['city']
@@ -627,7 +627,7 @@ def register_tool(tool: ToolSpec)
 **Example:**
 
 ```python
-from agents import ToolSpec, register_tool
+from vel import ToolSpec, register_tool
 
 tool = ToolSpec(
     name='my_tool',
@@ -659,7 +659,7 @@ def validate_io(schema: Dict[str, Any], value: Dict[str, Any])
 **Example:**
 
 ```python
-from agents import validate_io
+from vel import validate_io
 
 schema = {
     'type': 'object',
@@ -730,7 +730,7 @@ LLMMessage = Dict[str, Any]
 ```python
 import asyncio
 from dotenv import load_dotenv
-from agents import Agent, ContextManager, ToolSpec, register_tool
+from vel import Agent, ContextManager, ToolSpec, register_tool
 
 load_dotenv()
 

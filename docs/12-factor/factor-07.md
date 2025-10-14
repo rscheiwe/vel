@@ -14,7 +14,7 @@ nav_order: 7
 Human-in-the-loop as a tool:
 
 ```python
-from agents import ToolSpec, register_tool
+from vel import ToolSpec, register_tool
 
 async def request_human_approval(input: dict, ctx: dict) -> dict:
     """Tool that contacts a human for approval"""

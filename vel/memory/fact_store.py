@@ -1,4 +1,4 @@
-# agents/memory/fact_store.py
+# vel/memory/fact_store.py
 """
 Fact Store: Namespaced key-value store for long-term structured data.
 

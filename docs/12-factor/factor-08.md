@@ -27,7 +27,7 @@ agent = Agent(
 
 # Explicit state transitions (non-streaming mode)
 # The reducer pattern gives full control over state transitions
-from agents.core import State, reduce
+from vel.core import State, reduce
 
 state = State(run_id='run-123')
 event = {'kind': 'llm_step', 'step': {'tool': 'deploy', 'args': {...}}}

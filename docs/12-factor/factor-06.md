@@ -15,7 +15,7 @@ Vel provides dual execution modes with async control:
 
 ```python
 import asyncio
-from agents import Agent
+from vel import Agent
 
 agent = Agent(
     id='my-agent',

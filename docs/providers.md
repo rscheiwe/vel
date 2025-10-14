@@ -22,7 +22,7 @@ Vel uses a provider abstraction layer that allows you to switch between differen
 Specify the provider when creating an agent:
 
 ```python
-from agents import Agent
+from vel import Agent
 
 # OpenAI
 agent = Agent(
@@ -102,7 +102,7 @@ OPENAI_API_KEY=your-api-key
 ```python
 import asyncio
 from dotenv import load_dotenv
-from agents import Agent
+from vel import Agent
 
 load_dotenv()
 
@@ -171,7 +171,7 @@ model={'provider': 'google', 'model': 'gemini-pro'}
 ```python
 import asyncio
 from dotenv import load_dotenv
-from agents import Agent
+from vel import Agent
 
 load_dotenv()
 
@@ -251,7 +251,7 @@ model={'provider': 'anthropic', 'model': 'claude-3-haiku-20240307'}
 ```python
 import asyncio
 from dotenv import load_dotenv
-from agents import Agent
+from vel import Agent
 
 load_dotenv()
 
@@ -390,8 +390,8 @@ httpx.HTTPStatusError: 404 Not Found
 ### Implement BaseProvider
 
 ```python
-from agents.providers.base import BaseProvider, LLMMessage
-from agents.events import StreamEvent, TextDeltaEvent, FinishMessageEvent
+from vel.providers.base import BaseProvider, LLMMessage
+from vel.events import StreamEvent, TextDeltaEvent, FinishMessageEvent
 from typing import Any, AsyncGenerator, Dict, List
 
 class CustomProvider(BaseProvider):
@@ -430,7 +430,7 @@ class CustomProvider(BaseProvider):
 ### Register Provider
 
 ```python
-from agents.providers import register_provider
+from vel.providers import register_provider
 
 register_provider(CustomProvider())
 

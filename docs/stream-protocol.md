@@ -415,7 +415,7 @@ async def safe_stream(agent, message):
 ```python
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
-from agents import Agent
+from vel import Agent
 
 app = FastAPI()
 

@@ -16,7 +16,7 @@ Vel provides both SDK and REST API interfaces:
 ### Python SDK
 
 ```python
-from agents import Agent
+from vel import Agent
 
 agent = Agent(
     id='my-agent',

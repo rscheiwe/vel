@@ -21,7 +21,7 @@ Tools allow agents to perform actions and retrieve information beyond text gener
 ## Quick Start
 
 ```python
-from agents import Agent, ToolSpec, register_tool
+from vel import Agent, ToolSpec, register_tool
 
 # 1. Define tool handler
 def get_weather_handler(input: dict, ctx: dict) -> dict:
@@ -102,7 +102,7 @@ class ToolSpec:
 ### Basic Tool
 
 ```python
-from agents import ToolSpec, register_tool
+from vel import ToolSpec, register_tool
 
 def add_numbers_handler(input: dict, ctx: dict) -> dict:
     a = input['a']
@@ -136,7 +136,7 @@ register_tool(add_tool)
 
 ```python
 import asyncio
-from agents import ToolSpec, register_tool
+from vel import ToolSpec, register_tool
 
 async def fetch_data_handler(input: dict, ctx: dict) -> dict:
     """Async tool with I/O operations"""
