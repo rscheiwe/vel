@@ -17,8 +17,8 @@ EventType = Literal[
     'reasoning-end',
     'tool-input-start',
     'tool-input-delta',
-    'tool-input-available',
-    'tool-output-available',
+    'tool-call',
+    'tool-result',
     'response-metadata',
     'source',
     'file',
@@ -125,9 +125,9 @@ class ToolInputDeltaEvent(StreamEvent):
         return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'inputTextDelta': self.input_delta}
 
 @dataclass
-class ToolInputAvailableEvent(StreamEvent):
-    """Tool call input fully available"""
-    type: Literal['tool-input-available'] = 'tool-input-available'
+class ToolCallEvent(StreamEvent):
+    """Tool call event (input fully available)"""
+    type: Literal['tool-call'] = 'tool-call'
     tool_call_id: str = ''
     tool_name: str = ''
     input: Dict[str, Any] = None
@@ -141,18 +141,18 @@ class ToolInputAvailableEvent(StreamEvent):
             **super().to_dict(),
             'toolCallId': self.tool_call_id,
             'toolName': self.tool_name,
-            'input': self.input
+            'args': self.input  # V3 uses 'args' not 'input'
         }
 
 @dataclass
-class ToolOutputAvailableEvent(StreamEvent):
-    """Tool call output available"""
-    type: Literal['tool-output-available'] = 'tool-output-available'
+class ToolResultEvent(StreamEvent):
+    """Tool result event (output available)"""
+    type: Literal['tool-result'] = 'tool-result'
     tool_call_id: str = ''
-    output: Any = None
+    result: Any = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'output': self.output}
+        return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'result': self.result}
 
 @dataclass
 class StartStepEvent(StreamEvent):

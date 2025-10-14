@@ -8,7 +8,8 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 
 - **Dual Execution Modes**: Streaming (SSE) and non-streaming (JSON) responses
 - **Multiple LLM Providers**: OpenAI, Google Gemini, and Anthropic Claude with plug-and-play architecture
-- **Stream Protocol**: Vercel AI SDK V3-compatible event system for provider-agnostic streaming (96% parity)
+- **Stream Protocol**: Vercel AI SDK V3-compatible event system for provider-agnostic streaming (100% parity)
+  - Exact event naming (`tool-call`, `tool-result`, etc.)
   - Response metadata (token usage tracking)
   - Source events (citations and grounding)
   - File events (inline data support)
@@ -33,7 +34,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 - [Memory System](https://rscheiwe.github.io/vel/memory) - Optional memory with Fact Store and ReasoningBank
 - [API Reference](https://rscheiwe.github.io/vel/api-reference) - Complete API docs
 - [12-Factor Alignment](https://rscheiwe.github.io/vel/12-factor-alignment) - Production-ready agent principles
-- [Stream Protocol Parity](PARITY_STATUS.md) - Vercel AI SDK V3 compatibility status (96% parity)
+- [Stream Protocol Parity](PARITY_STATUS.md) - Vercel AI SDK V3 compatibility status (100% parity)
 
 ## Project Structure
 

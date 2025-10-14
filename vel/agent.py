@@ -7,7 +7,7 @@ from .providers import ProviderRegistry
 from .tools import ToolRegistry, validate_io
 from .storage import RunStore
 from .events import (
-    StreamEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
+    StreamEvent, ToolCallEvent, ToolResultEvent,
     ErrorEvent, FinishMessageEvent
 )
 from .prompts import PromptContextManager
@@ -227,7 +227,7 @@ class Agent:
                         full_text.append(event.delta)
 
                     # Track tool calls
-                    elif event.type == 'tool-input-available':
+                    elif event.type == 'tool-call':
                         tool_calls.append({
                             'tool_call_id': event.tool_call_id,
                             'tool_name': event.tool_name,
@@ -263,10 +263,10 @@ class Agent:
                             # Execute tool
                             result = await self._call_tool(tc['tool_name'], tc['input'])
 
-                            # Emit tool output event
-                            output_event = ToolOutputAvailableEvent(
+                            # Emit tool result event
+                            output_event = ToolResultEvent(
                                 tool_call_id=tc['tool_call_id'],
-                                output=result
+                                result=result
                             )
                             yield output_event.to_dict()
 

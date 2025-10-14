@@ -28,8 +28,8 @@ from ..events import (
     ReasoningEndEvent,
     ToolInputStartEvent,
     ToolInputDeltaEvent,
-    ToolInputAvailableEvent,
-    ToolOutputAvailableEvent,
+    ToolCallEvent,
+    ToolResultEvent,
     ResponseMetadataEvent,
     SourceEvent,
     FileEvent,
@@ -142,11 +142,11 @@ class OpenAIAPITranslator:
 
     def finalize_tool_calls(self) -> list[StreamEvent]:
         """
-        Generate ToolInputAvailableEvent for all accumulated tool calls.
+        Generate ToolCallEvent for all accumulated tool calls.
         Call this when the stream completes.
 
         Returns:
-            List of ToolInputAvailableEvent events
+            List of ToolCallEvent events
         """
         events = []
         for tc_data in self._tool_calls.values():
@@ -154,7 +154,7 @@ class OpenAIAPITranslator:
                 args = json.loads(tc_data['args_buffer'] or '{}')
             except json.JSONDecodeError:
                 args = {}
-            events.append(ToolInputAvailableEvent(
+            events.append(ToolCallEvent(
                 tool_call_id=tc_data['id'],
                 tool_name=tc_data['name'],
                 input=args
@@ -266,9 +266,9 @@ class OpenAIAgentsSDKTranslator:
                 )
             elif status == 'completed':
                 output = getattr(item, 'output', None)
-                return ToolOutputAvailableEvent(
+                return ToolResultEvent(
                     tool_call_id=tool_id,
-                    output=output
+                    result=output
                 )
 
         return None
@@ -416,7 +416,7 @@ class AnthropicAPITranslator:
                     except json.JSONDecodeError:
                         tool_input = {}
 
-                    return ToolInputAvailableEvent(
+                    return ToolCallEvent(
                         tool_call_id=block['tool_id'],
                         tool_name=block['tool_name'],
                         input=tool_input

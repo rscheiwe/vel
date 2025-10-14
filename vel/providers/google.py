@@ -4,7 +4,7 @@ import os, json
 from typing import Any, AsyncGenerator, Dict, List
 from .base import BaseProvider, LLMMessage
 from .translators import GeminiAPITranslator
-from ..events import StreamEvent, FinishMessageEvent, ErrorEvent, ToolInputAvailableEvent
+from ..events import StreamEvent, FinishMessageEvent, ErrorEvent, ToolCallEvent
 
 try:
     import google.generativeai as genai
@@ -104,8 +104,8 @@ class GeminiProvider(BaseProvider):
                             tool_name = fc.name
                             args = dict(fc.args) if hasattr(fc, 'args') else {}
 
-                            # Emit ToolInputAvailableEvent after start event
-                            yield ToolInputAvailableEvent(
+                            # Emit ToolCallEvent after start event
+                            yield ToolCallEvent(
                                 tool_call_id=tool_call_id,
                                 tool_name=tool_name,
                                 input=args
