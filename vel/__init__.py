@@ -3,6 +3,7 @@ from .tools import ToolSpec, register_tool
 from .providers import ProviderRegistry, BaseProvider, OpenAIProvider, GeminiProvider
 from .storage import RunStore
 from .core import State, Effect, reduce, ContextManager, StatelessContextManager
+from .translation import EventTranslator, get_translator, available_providers
 from .prompts import (
     PromptTemplate,
     SystemPromptBuilder,
@@ -34,6 +35,10 @@ __all__ = [
     'reduce',
     'ContextManager',
     'StatelessContextManager',
+    # Translation API
+    'EventTranslator',
+    'get_translator',
+    'available_providers',
     # Prompt module
     'PromptTemplate',
     'SystemPromptBuilder',

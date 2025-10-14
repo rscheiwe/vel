@@ -10,7 +10,8 @@
       "Bash(find:*)",
       "Read(//tmp/**)",
       "WebFetch(domain:arxiv.org)",
-      "Bash(python -m pytest tests/test_memory.py tests/test_memory_context.py -v)"
+      "Bash(python -m pytest tests/test_memory.py tests/test_memory_context.py -v)",
+      "Bash(sort:*)"
     ],
     "deny": [],
     "ask": []
