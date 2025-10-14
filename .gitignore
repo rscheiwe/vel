@@ -71,6 +71,7 @@ logs/
 *.db
 *.sqlite3
 *.sqlite
+.vel/
 
 # Alembic
 alembic/versions/*.pyc

@@ -160,10 +160,10 @@ Sessions enable multi-turn conversations where the agent remembers context acros
 agent = Agent(
     id='my-agent',
     model={'provider': 'openai', 'model': 'gpt-4o'},
-    session_storage='memory'  # or 'database'
+    session_persistence='transient'  # or 'persistent'
 )
 
-# Multi-turn conversation - same session_id = shared memory
+# Multi-turn conversation - same session_id = shared history
 session_id = 'user-123'
 
 answer1 = await agent.run({'message': 'My name is Alice'}, session_id=session_id)
@@ -173,40 +173,40 @@ answer2 = await agent.run({'message': 'What is my name?'}, session_id=session_id
 # "Your name is Alice."
 ```
 
-### Session Storage Modes
+### Session Persistence Modes
 
-#### In-Memory (Default - Fast, Not Persistent)
+#### Transient (Default - Fast, Not Persistent)
 
 ```python
 agent = Agent(
     id='my-agent',
     model={'provider': 'openai', 'model': 'gpt-4o'},
-    session_storage='memory'  # Sessions lost on restart
+    session_persistence='transient'  # Message history lost on restart
 )
 ```
 
-#### Database (Persistent, Survives Restarts)
+#### Persistent (Database-Backed, Survives Restarts)
 
 ```python
 # Requires POSTGRES_DSN configured
 agent = Agent(
     id='my-agent',
     model={'provider': 'openai', 'model': 'gpt-4o'},
-    session_storage='database'  # Sessions stored in Postgres
+    session_persistence='persistent'  # Message history stored in Postgres
 )
 ```
 
-### Context Manager Modes
+### Message History Modes
 
-Control how much history is retained:
+Control how much conversation history is retained:
 
 ```python
 from agents import ContextManager, StatelessContextManager
 
-# Full memory (default)
+# Full message history (default)
 agent = Agent(..., context_manager=ContextManager())
 
-# No memory (stateless)
+# No message history (stateless)
 agent = Agent(..., context_manager=StatelessContextManager())
 
 # Limited history (last 10 messages)
@@ -268,13 +268,15 @@ mypy agents/
 Vel is designed following the [12-Factor Agent principles](https://github.com/humanlayer/12-factor-agents) (by Dex and contributors) for production-ready AI applications. See our [implementation guide](docs/12-factor-alignment.md) for details.
 
 - **Agent**: Main orchestrator with dual execution modes (streaming/non-streaming)
-- **ContextManager**: Memory layer for conversation history (configurable: full/stateless/limited)
+- **ContextManager**: Message history layer for conversation turns (configurable: full/stateless/limited)
 - **Reducer**: Pure function for state transitions and effect generation (stateless, reproducible)
 - **Providers**: LLM-specific implementations with stream protocol translation
 - **Tools**: Validated, async-capable function execution (structured outputs)
 - **Storage**: Dual-layer persistence (Postgres + Redis) with in-memory fallback
+- **Memory** (optional): Fact store and ReasoningBank for long-term structured data and strategy learning
 
 **Key Principles:**
+
 - ✓ Own your prompts - Direct control, no abstractions
 - ✓ Own your context window - Custom context managers
 - ✓ Stateless reducer - Predictable, reproducible behavior
@@ -284,9 +286,10 @@ Vel is designed following the [12-Factor Agent principles](https://github.com/hu
 
 - [ ] Add features from OpenAI Agent SDK (tool responses, e.g.)
 - [ ] Test Gemini tool calling
+- [ ] Finish Postgres integration
 - [ ] Add knowledge-graph memory layer
 - [ ] Add example of how to create Vel agents via a tool
-- [ ] Test ReasoningBank for self-evolving with reasoning memory feature
+- [x] ~~Update ReasoningBank to include e2e implementation as described in Google's paper~~ (Phase 1 complete, see `docs/Memory/reasoningbank-phase2-roadmap.md` for Phase 2)
 
 ## License
 

@@ -1,10 +1,200 @@
-from typing import Any, Dict, List, Optional
+# context.py
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Callable, TypedDict
+from dataclasses import dataclass
+import os
+import warnings
+
+# --- Optional memory backends (soft imports; safe if modules are absent) ---
+try:
+    # Fact store: namespaced key-value store for long-term structured data (SQLite)
+    from agents.memory.fact_store import FactStore  # type: ignore
+except Exception:  # pragma: no cover
+    FactStore = None  # type: ignore
+
+try:
+    # ReasoningBank (strategy memory) over SQLite + embeddings
+    from agents.memory.strategy_reasoningbank import (  # type: ignore
+        ReasoningBank,
+        ReasoningBankStore,
+        Embeddings,
+        StrategyItem,
+    )
+except Exception:  # pragma: no cover
+    ReasoningBank = None  # type: ignore
+    ReasoningBankStore = None  # type: ignore
+    Embeddings = None  # type: ignore
+    StrategyItem = None  # type: ignore
+
+
+# =========================
+# Optional memory config
+# =========================
+
+@dataclass
+class MemoryConfig:
+    """
+    Optional runtime-owned memory (OFF by default).
+
+    Vel has three distinct memory systems:
+    1. Message History - Conversation turns (managed by ContextManager)
+    2. Fact Store - Long-term structured facts (this config)
+    3. Session Persistence - Where message history is saved
+
+    Args:
+        mode: Memory mode to enable
+            - "none": No memory (default)
+            - "facts": Fact store only (namespaced KV)
+            - "reasoning": ReasoningBank only (strategy memory)
+            - "all": Both fact store and ReasoningBank
+
+            Deprecated (still work with warnings):
+            - "episodic" → use "facts"
+            - "reasoningbank" → use "reasoning"
+            - "both" → use "all"
+
+        db_path: SQLite file path (e.g., ".vel/vel.db")
+        rb_top_k: Top-k ReasoningBank strategies to retrieve per run
+        embeddings_fn: Embedding function for ReasoningBank
+            - Must return np.ndarray with dtype=float32
+            - Required if mode includes "reasoning"
+    """
+    mode: str = "none"
+    db_path: str = ".vel/vel.db"
+    rb_top_k: int = 5
+    embeddings_fn: Optional[Callable[[List[str]], "object"]] = None  # return: np.ndarray
+
+    def __post_init__(self):
+        """Handle backwards compatibility for mode names."""
+        mode_mapping = {
+            "episodic": "facts",
+            "reasoningbank": "reasoning",
+            "both": "all"
+        }
+
+        if self.mode in mode_mapping:
+            old_mode = self.mode
+            self.mode = mode_mapping[old_mode]
+            warnings.warn(
+                f"MemoryConfig mode='{old_mode}' is deprecated and will be removed in v2.0. "
+                f"Use mode='{self.mode}' instead.",
+                DeprecationWarning,
+                stacklevel=3
+            )
+
+
+def load_memory_config_from_env(default: Optional[MemoryConfig] = None) -> MemoryConfig:
+    """
+    Convenience helper to read env vars into a MemoryConfig.
+
+    Note: embeddings_fn must be set in code (cannot be set via env var).
+
+    Environment Variables:
+      VEL_MEMORY_MODE: "none" | "facts" | "reasoning" | "all"
+                       (old names still work: "episodic" | "reasoningbank" | "both")
+      VEL_MEMORY_DB: Path to SQLite DB
+      VEL_RB_TOP_K: Top-k strategies to retrieve (integer)
+    """
+    base = default or MemoryConfig()
+    mode = os.environ.get("VEL_MEMORY_MODE", base.mode)
+    db_path = os.environ.get("VEL_MEMORY_DB", base.db_path)
+    try:
+        topk = int(os.environ.get("VEL_RB_TOP_K", str(base.rb_top_k)))
+    except ValueError:
+        topk = base.rb_top_k
+    return MemoryConfig(mode=mode, db_path=db_path, rb_top_k=topk, embeddings_fn=base.embeddings_fn)
+
+
+class MemoryAdapters(TypedDict, total=False):
+    """
+    Memory adapter instances.
+
+    Keys:
+        facts: FactStore instance (namespaced KV store)
+        rb: ReasoningBank instance (strategy memory)
+    """
+    facts: Any
+    rb: Any
+
+
+def _expand_path(path: str) -> str:
+    return os.path.expanduser(path or ".vel/vel.db")
+
+
+def build_memory_adapters(cfg: MemoryConfig) -> MemoryAdapters:
+    """
+    Build memory adapters based on config.
+
+    Returns dictionary with 'facts' and/or 'rb' keys (values may be None if backend unavailable).
+    This function never raises if a backend is missing; it just returns None for that adapter.
+
+    Args:
+        cfg: MemoryConfig with mode, db_path, and embeddings_fn
+
+    Returns:
+        MemoryAdapters dict with 'facts' and/or 'rb' keys
+    """
+    mode = (cfg.mode or "none").strip().lower()
+    db_path = _expand_path(cfg.db_path)
+
+    adapters: MemoryAdapters = {}
+
+    # Note: mode has already been normalized by MemoryConfig.__post_init__
+    if mode in ("facts", "all"):
+        adapters["facts"] = FactStore(db_path) if FactStore else None
+
+    if mode in ("reasoning", "all"):
+        if ReasoningBank and ReasoningBankStore and Embeddings and cfg.embeddings_fn:
+            emb = Embeddings(cfg.embeddings_fn)
+            store = ReasoningBankStore(db_path=db_path, emb=emb)
+            adapters["rb"] = ReasoningBank(store)
+        else:
+            adapters["rb"] = None
+
+    return adapters
+
+
+# =========================
+# Existing Context Managers
+# =========================
 
 class ContextManager:
     """
-    Context manager with configurable memory behavior.
-    Stores conversation history for multi-turn interactions.
-    Supports both run-based and session-based context.
+    Manages message history for multi-turn conversations.
+
+    Vel has three distinct memory systems:
+    1. **Message History** (this class) - Conversation turns (automatic)
+    2. **Fact Store** (optional) - Long-term structured facts (manual)
+    3. **Session Persistence** - Where message history is saved (infrastructure)
+
+    Message History (this class):
+        - Stores conversation turns (user/assistant messages)
+        - Automatically managed by Agent runtime
+        - Configure window size with max_history parameter
+        - Supports both run-based and session-based context
+
+    Optional Runtime-Owned Memory (via set_memory_config):
+        - Fact Store: fact_put(), fact_get(), fact_list()
+          Store user preferences, project metadata, domain knowledge
+        - ReasoningBank: prepare_for_run(), finalize_outcome()
+          Strategy-level memory for learning reasoning patterns
+
+    Example:
+        ```python
+        # Configure message history
+        ctx = ContextManager(max_history=20)  # Keep last 20 messages
+
+        # Enable optional memory
+        mem = MemoryConfig(mode="all", db_path=".vel/vel.db", embeddings_fn=encode_fn)
+        ctx.set_memory_config(mem)
+
+        # Store facts
+        ctx.fact_put("user:alice", "theme", "dark")
+
+        # Get strategy advice before run
+        advice = ctx.prepare_for_run({"intent": "planning"})
+        ```
     """
     def __init__(self, max_history: Optional[int] = None, summarize: bool = False):
         """
@@ -17,6 +207,13 @@ class ContextManager:
         self._inputs: Dict[str, Dict[str, Any]] = {}
         self.max_history = max_history
         self.summarize = summarize
+
+        # Optional memory fields (remain None unless enabled)
+        self._memory_cfg: Optional[MemoryConfig] = None
+        self._adapters: MemoryAdapters = {}
+        self._rb_last_ids: List[int] = []   # strategy_ids used for the current run (if any)
+
+    # ---------- existing behavior stays the same ----------
 
     def set_input(self, run_id: str, input: Dict[str, Any], session_id: Optional[str] = None):
         """Store the initial input for a run"""
@@ -77,6 +274,163 @@ class ContextManager:
         """Clear a session from memory"""
         if session_id in self._by_session:
             del self._by_session[session_id]
+
+    # ---------- optional memory: enable & helpers ----------
+
+    def set_memory_config(self, cfg: MemoryConfig):
+        """
+        Enable optional memory. If you never call this, behavior is unchanged.
+        """
+        self._memory_cfg = cfg
+        self._adapters = build_memory_adapters(cfg)
+
+    # ---- Fact Store convenience wrappers (no LLM tool calls) ----
+
+    def fact_put(self, namespace: str, key: str, value: Any):
+        """
+        Store a JSON-serializable value in the fact store (namespaced KV).
+
+        The fact store is for long-term structured data that persists across conversations:
+        - User preferences (theme, language, expertise)
+        - Project metadata (current project, technologies)
+        - Domain knowledge (company facts, endpoints)
+
+        No-op if fact store is not enabled/available.
+
+        Args:
+            namespace: Logical grouping (e.g., "user:alice", "project:myapp")
+            key: Fact key (e.g., "theme", "expertise_level")
+            value: Any JSON-serializable value
+        """
+        store = self._adapters.get("facts") if self._adapters else None
+        if store is not None:
+            store.put(namespace, key, value)
+
+    def fact_get(self, namespace: str, key: str) -> Optional[Any]:
+        """
+        Retrieve a value from the fact store.
+
+        Returns None if fact store is not enabled/available or key not found.
+
+        Args:
+            namespace: Logical grouping
+            key: Fact key
+
+        Returns:
+            Stored value or None
+        """
+        store = self._adapters.get("facts") if self._adapters else None
+        if store is not None:
+            return store.get(namespace, key)
+        return None
+
+    def fact_list(self, namespace: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        List all facts in a namespace.
+
+        Args:
+            namespace: Logical grouping
+            limit: Maximum number of items to return
+
+        Returns:
+            List of dicts with 'key', 'value', 'updated_at'
+        """
+        store = self._adapters.get("facts") if self._adapters else None
+        if store is not None:
+            return store.list(namespace, limit=limit)
+        return []
+
+    # ---- Backwards compatibility (deprecated) ----
+
+    def kv_put(self, namespace: str, key: str, value: Any):
+        """
+        Deprecated: Use fact_put() instead.
+        This method will be removed in v2.0.
+        """
+        warnings.warn(
+            "kv_put() is deprecated and will be removed in v2.0. Use fact_put() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.fact_put(namespace, key, value)
+
+    def kv_get(self, namespace: str, key: str) -> Optional[Any]:
+        """
+        Deprecated: Use fact_get() instead.
+        This method will be removed in v2.0.
+        """
+        warnings.warn(
+            "kv_get() is deprecated and will be removed in v2.0. Use fact_get() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.fact_get(namespace, key)
+
+    def kv_list(self, namespace: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Deprecated: Use fact_list() instead.
+        This method will be removed in v2.0.
+        """
+        warnings.warn(
+            "kv_list() is deprecated and will be removed in v2.0. Use fact_list() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.fact_list(namespace, limit)
+
+    # ---- ReasoningBank runtime hooks (no LLM tool calls) ----
+
+    def prepare_for_run(self, signature: Dict[str, Any]) -> str:
+        """
+        Run-time pre-retrieval (bounded by your caller; this call itself is synchronous).
+        Returns a short "Strategy Advice:\n..." text to append to your system prompt,
+        or "" if ReasoningBank is disabled/unavailable or nothing is retrieved.
+
+        Note: This method does not modify your message buffers; it just returns advice.
+        """
+        self._rb_last_ids = []
+        rb = self._adapters.get("rb") if self._adapters else None
+        if not rb or not self._memory_cfg:
+            return ""
+
+        try:
+            top_k = max(1, int(self._memory_cfg.rb_top_k))
+        except Exception:
+            top_k = 5
+
+        items: List[StrategyItem] = rb.get_advice(signature, k=top_k)  # type: ignore[attr-defined]
+        if not items:
+            return ""
+
+        advice_lines: List[str] = []
+        for i, s in enumerate(items, 1):
+            # keep items tight (1 sentence preferred)
+            advice_lines.append(f"{i}. {getattr(s, 'strategy_text', '')}")
+            anti = getattr(s, "anti_patterns", None)
+            if anti:
+                advice_lines.append(f"   Avoid: {', '.join(anti[:3])}")
+            sid = getattr(s, "id", None)
+            if isinstance(sid, int):
+                self._rb_last_ids.append(sid)
+
+        return "Strategy Advice:\n" + "\n".join(advice_lines)
+
+    def finalize_outcome(self, run_success: bool, fail_notes: Optional[List[str]] = None):
+        """
+        Post-run update for ReasoningBank (call AFTER you close the stream).
+        This is a synchronous convenience wrapper; if you want fully async,
+        call it from your background worker.
+
+        No-op if RB is disabled/unavailable or if no strategies were used.
+        """
+        rb = self._adapters.get("rb") if self._adapters else None
+        if not rb or not self._rb_last_ids:
+            return
+
+        notes = fail_notes or []
+        rb.mark_outcome(self._rb_last_ids, success=bool(run_success), fail_notes=notes)  # type: ignore[attr-defined]
+        # clear last ids after recording
+        self._rb_last_ids = []
 
 
 class StatelessContextManager(ContextManager):
