@@ -22,8 +22,8 @@ EventType = Literal[
     'response-metadata',
     'source',
     'file',
-    'start-step',
-    'finish-step',
+    'step-start',  # V5 UI Stream Protocol (multi-step agents)
+    'step-finish',  # V5 UI Stream Protocol (multi-step agents)
     'finish-message',
     'error'
 ]
@@ -158,22 +158,34 @@ class ToolOutputAvailableEvent(StreamEvent):
     type: Literal['tool-output-available'] = 'tool-output-available'
     tool_call_id: str = ''
     output: Any = None
+    call_provider_metadata: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'output': self.output}
+        d = {**super().to_dict(), 'toolCallId': self.tool_call_id, 'output': self.output}
+        if self.call_provider_metadata:
+            d['callProviderMetadata'] = self.call_provider_metadata
+        return d
 
 @dataclass
-class StartStepEvent(StreamEvent):
-    """Start a reasoning step"""
-    type: Literal['start-step'] = 'start-step'
+class StepStartEvent(StreamEvent):
+    """Start a reasoning/agent step
+
+    Emitted at the beginning of each agent step in multi-step agent patterns.
+    Matches Vercel AI SDK V5 UI Stream Protocol for agent steps.
+    """
+    type: Literal['step-start'] = 'step-start'
 
     def to_dict(self) -> Dict[str, Any]:
         return super().to_dict()
 
 @dataclass
-class FinishStepEvent(StreamEvent):
-    """Finish a reasoning step"""
-    type: Literal['finish-step'] = 'finish-step'
+class StepFinishEvent(StreamEvent):
+    """Finish a reasoning/agent step
+
+    Emitted at the end of each agent step in multi-step agent patterns.
+    Matches Vercel AI SDK V5 UI Stream Protocol for agent steps.
+    """
+    type: Literal['step-finish'] = 'step-finish'
 
     def to_dict(self) -> Dict[str, Any]:
         return super().to_dict()

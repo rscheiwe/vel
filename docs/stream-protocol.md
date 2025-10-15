@@ -408,6 +408,340 @@ async def safe_stream(agent, message):
         print(f"\n❌ Stream error: {e}")
 ```
 
+## Message Aggregation
+
+### MessageReducer
+
+**MessageReducer** aggregates streaming events into the Vercel AI SDK message format for database storage and frontend integration.
+
+**Why use MessageReducer?**
+- ✓ Compatible with Vercel AI SDK `useChat` hook
+- ✓ Ready for database storage
+- ✓ Aggregates multiple events into structured parts array
+- ✓ Handles provider metadata (message IDs, function call IDs)
+- ✓ Supports custom message IDs and metadata
+- ✓ Tracks tool calls with proper callProviderMetadata
+
+### Basic Usage
+
+```python
+from vel import Agent, MessageReducer
+
+# Create reducer
+reducer = MessageReducer()
+
+# Add user message
+user_msg = reducer.add_user_message("Hello!")
+
+# Stream agent response
+agent = Agent(
+    id='chat-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'}
+)
+
+async for event in agent.run_stream({'message': 'Hello!'}):
+    reducer.process_event(event)
+
+# Get messages for database storage
+messages = reducer.get_messages()
+# [
+#   {user message},
+#   {assistant message with aggregated parts}
+# ]
+```
+
+### Message Structure
+
+Messages follow the Vercel AI SDK format:
+
+```python
+{
+  "id": "msg-abc123",           # UUID or custom ID
+  "role": "user" | "assistant", # Message role
+  "parts": [                     # Array of parts
+    {
+      "type": "text",
+      "text": "Hello world!",
+      "state": "done",
+      "providerMetadata": {      # OpenAI message ID
+        "openai": {
+          "itemId": "msg_xyz"
+        }
+      }
+    },
+    {
+      "type": "tool-call",
+      "toolCallId": "call_123",
+      "toolName": "get_weather",
+      "input": {"city": "SF"},
+      "state": "call",
+      "callProviderMetadata": {  # OpenAI function call ID
+        "openai": {
+          "itemId": "call_123"
+        }
+      }
+    },
+    {
+      "type": "tool-result",
+      "toolCallId": "call_123",
+      "toolName": "get_weather",
+      "output": {"temp_f": 72},
+      "state": "result"
+    }
+  ],
+  "metadata": {}                 # Optional custom metadata
+}
+```
+
+### Tool Call Example
+
+```python
+from vel import Agent, MessageReducer
+
+reducer = MessageReducer()
+user_msg = reducer.add_user_message("What's the weather in San Francisco?")
+
+agent = Agent(
+    id='weather-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['get_weather']
+)
+
+async for event in agent.run_stream({'message': "What's the weather in SF?"}):
+    reducer.process_event(event)
+
+messages = reducer.get_messages()
+assistant_msg = messages[1]
+
+# Assistant message parts:
+# [
+#   {
+#     "type": "tool-call",
+#     "toolCallId": "call_123",
+#     "toolName": "get_weather",
+#     "input": {"city": "San Francisco"},
+#     "state": "call",
+#     "callProviderMetadata": {"openai": {"itemId": "call_123"}}
+#   },
+#   {
+#     "type": "tool-result",
+#     "toolCallId": "call_123",
+#     "toolName": "get_weather",
+#     "output": {"temp_f": 72, "condition": "sunny"},
+#     "state": "result"
+#   },
+#   {
+#     "type": "text",
+#     "text": "The weather in San Francisco is sunny and 72°F.",
+#     "state": "done",
+#     "providerMetadata": {"openai": {"itemId": "msg_abc"}}
+#   }
+# ]
+```
+
+### Multi-Turn Conversations
+
+```python
+from vel import Agent, MessageReducer
+
+agent = Agent(
+    id='chat-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    session_persistence='transient'
+)
+
+session_id = 'user-123'
+all_messages = []
+
+# Turn 1
+reducer1 = MessageReducer()
+reducer1.add_user_message("My name is Alice")
+
+async for event in agent.run_stream({'message': 'My name is Alice'}, session_id):
+    reducer1.process_event(event)
+
+messages1 = reducer1.get_messages()
+all_messages.extend(messages1)  # Store in database
+
+# Turn 2
+reducer2 = MessageReducer()
+reducer2.add_user_message("What is my name?")
+
+async for event in agent.run_stream({'message': 'What is my name?'}, session_id):
+    reducer2.process_event(event)
+
+messages2 = reducer2.get_messages()
+all_messages.extend(messages2)  # Store in database
+
+# all_messages now contains 4 messages:
+# [user_msg1, assistant_msg1, user_msg2, assistant_msg2]
+```
+
+### Custom IDs and Metadata
+
+```python
+from vel import MessageReducer
+
+reducer = MessageReducer()
+
+# Custom message ID (e.g., from frontend)
+user_msg = reducer.add_user_message(
+    "Hello",
+    message_id="frontend-msg-001",
+    metadata={"source": "web-app", "user_id": "user-456"}
+)
+
+# Process stream...
+async for event in agent.run_stream({'message': 'Hello'}):
+    reducer.process_event(event)
+
+# Get messages with metadata
+messages = reducer.get_messages(
+    user_metadata={"source": "web-app"},
+    assistant_metadata={"model": "gpt-4o", "tokens": 150}
+)
+
+# Or get just assistant message with custom ID
+assistant_msg = reducer.get_assistant_message(
+    message_id="frontend-msg-002"
+)
+```
+
+### Database Storage Pattern
+
+```python
+from vel import Agent, MessageReducer
+import json
+
+async def chat_with_storage(user_input: str, conversation_id: str, db):
+    """Chat pattern with database storage"""
+
+    # Create reducer
+    reducer = MessageReducer()
+
+    # Add user message with metadata
+    user_msg = reducer.add_user_message(
+        user_input,
+        metadata={
+            "conversation_id": conversation_id,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+    # Store user message
+    await db.insert_message(conversation_id, user_msg)
+
+    # Stream agent response
+    agent = Agent(
+        id='chat-agent',
+        model={'provider': 'openai', 'model': 'gpt-4o'},
+        tools=['get_weather', 'web_search']
+    )
+
+    async for event in agent.run_stream({'message': user_input}):
+        reducer.process_event(event)
+
+        # Real-time: forward event to frontend via WebSocket/SSE
+        await websocket.send(json.dumps(event))
+
+    # Get complete assistant message
+    assistant_msg = reducer.get_assistant_message(
+        metadata={
+            "conversation_id": conversation_id,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+    # Store assistant message
+    await db.insert_message(conversation_id, assistant_msg)
+
+    return reducer.get_messages()
+```
+
+### Multi-Step Agent Pattern
+
+MessageReducer automatically handles step-start events for multi-step agents:
+
+```python
+from vel import Agent, MessageReducer
+
+reducer = MessageReducer()
+reducer.add_user_message("Should I invest in cryptocurrency?")
+
+agent = Agent(
+    id='multi-step-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['websearch', 'analyze', 'decide', 'provideAnswer'],
+    policies={'max_steps': 8}
+)
+
+async for event in agent.run_stream({'message': "Should I invest in crypto?"}):
+    reducer.process_event(event)
+
+messages = reducer.get_messages()
+assistant_msg = messages[1]
+
+# Assistant message parts include step-start events:
+# [
+#   {"type": "step-start"},
+#   {"type": "tool-call", "toolName": "websearch", ...},
+#   {"type": "tool-result", ...},
+#   {"type": "step-start"},
+#   {"type": "tool-call", "toolName": "analyze", ...},
+#   {"type": "tool-result", ...},
+#   {"type": "step-start"},
+#   {"type": "text", "text": "Based on my analysis...", ...}
+# ]
+```
+
+### API Reference
+
+**MessageReducer Class:**
+
+```python
+class MessageReducer:
+    def __init__(self):
+        """Create a new message reducer"""
+
+    def reset(self):
+        """Reset state for new user-assistant exchange"""
+
+    def add_user_message(
+        self,
+        text: str,
+        message_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Add user message, returns message dict"""
+
+    def process_event(self, event: Dict[str, Any]) -> None:
+        """Process streaming event, accumulates into parts array"""
+
+    def get_messages(
+        self,
+        user_metadata: Optional[Dict[str, Any]] = None,
+        assistant_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """Get [user_message, assistant_message]"""
+
+    def get_assistant_message(
+        self,
+        message_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Get assistant message with optional custom ID and metadata"""
+```
+
+**Event Processing:**
+- `start` → Captures message ID for providerMetadata
+- `text-delta` → Accumulates text chunks
+- `tool-input-available` → Creates tool-call part
+- `tool-output-available` → Creates tool-result part
+- `step-start` → Creates step-start part
+- `finish-message` → Flushes accumulated text to parts array
+
+**See also:** `examples/message_reducer_example.py` for comprehensive usage examples.
+
 ## Integration Examples
 
 ### FastAPI SSE Endpoint

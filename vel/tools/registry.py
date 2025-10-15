@@ -34,6 +34,8 @@ class ToolRegistry:
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> ToolSpec:
+        if name not in self._tools:
+            raise KeyError(f"Tool '{name}' not found in registry. Available tools: {list(self._tools.keys())}")
         return self._tools[name]
 
     def schemas(self):

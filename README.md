@@ -16,6 +16,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
   - File events (inline data support)
   - Anthropic thinking blocks
   - Enhanced error details
+- **Message Aggregation**: MessageReducer for converting streaming events to Vercel AI SDK message format for database storage
 - **Tool System**: JSON schema-validated tools with async support
 - **Flexible Prompts**: Jinja2 templating with XML formatting, environment-based configuration, and version control
 - **Persistent Storage**: PostgreSQL for durability, Redis for caching
@@ -134,6 +135,47 @@ Vel uses the [Vercel AI SDK V5 UI Stream Protocol](https://ai-sdk.dev/docs/ai-sd
 - `error`, `finish-message` - Error handling and completion
 
 **Frontend Compatible:** Works seamlessly with React's `useChat()`, `useCompletion()`, and other Vercel AI SDK frontend components. Each provider translates native events into V5-compatible standardized events.
+
+### Message Aggregation
+
+**MessageReducer** aggregates streaming events into structured messages for database storage:
+
+```python
+from vel import Agent, MessageReducer
+
+# Create reducer
+reducer = MessageReducer()
+reducer.add_user_message("What's the weather in San Francisco?")
+
+# Stream agent response
+agent = Agent(
+    id='weather-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['get_weather']
+)
+
+async for event in agent.run_stream({'message': "What's the weather in SF?"}):
+    reducer.process_event(event)
+
+# Get Vercel AI SDK compatible messages
+messages = reducer.get_messages()
+# [
+#   {user message},
+#   {assistant message with parts: [tool-call, tool-result, text]}
+# ]
+
+# Store in database
+for msg in messages:
+    await db.insert_message(msg)
+```
+
+**Features:**
+- ✓ Vercel AI SDK `useChat` hook compatible
+- ✓ Aggregates text, tool calls, and results into parts array
+- ✓ Provider metadata (OpenAI message/call IDs)
+- ✓ Custom message IDs and metadata support
+
+See [Message Aggregation docs](https://rscheiwe.github.io/vel/stream-protocol#message-aggregation) for complete details.
 
 ## Providers
 
@@ -374,6 +416,33 @@ ANTHROPIC_API_KEY=sk-ant-...
 # Runner mode
 VEL_RUNNER=local-async
 ```
+
+## Examples
+
+Vel includes comprehensive examples demonstrating various patterns:
+
+**Core Examples:**
+- `examples/quickstart.py` - Basic agent usage (streaming & non-streaming)
+- `examples/message_reducer_example.py` - MessageReducer for database storage
+- `examples/context_modes.py` - Different context management strategies
+- `examples/generation_config_example.py` - Model parameter control
+- `examples/prompt_templates.py` - Prompt template system
+
+**Multi-Step Agent Examples:**
+- `examples/multi_step_simple.py` - Basic multi-step pattern (websearch + news)
+- `examples/multi_step_analysis.py` - Problem analysis with analyze tool
+- `examples/multi_step_decision.py` - Decision-making with decide tool
+- `examples/multi_step_complex.py` - Complex reasoning with all tools
+- `examples/comprehensive_multi_step_agent.py` - Full multi-step demonstration
+
+**Run with:**
+```bash
+python examples/quickstart.py
+python examples/message_reducer_example.py
+python examples/multi_step_simple.py
+```
+
+Or use VS Code debug configurations (see `.vscode/launch.json`).
 
 ## Development
 

@@ -8,7 +8,7 @@ from .tools import ToolRegistry, validate_io
 from .storage import RunStore
 from .events import (
     StreamEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
-    ErrorEvent, FinishMessageEvent
+    ErrorEvent, FinishMessageEvent, StepStartEvent, StepFinishEvent
 )
 from .prompts import PromptContextManager
 
@@ -225,6 +225,9 @@ class Agent:
             while steps < max_steps:
                 steps += 1
 
+                # Emit step-start event (V5 UI Stream Protocol for multi-step agents)
+                yield StepStartEvent().to_dict()
+
                 # Get messages and stream LLM response
                 messages = self.ctxmgr.messages_for_llm(run_id, session_id)
                 provider = self.providers.get(self.model_cfg['provider'])
@@ -269,6 +272,10 @@ class Agent:
                 if full_text and not tool_calls:
                     answer = ''.join(full_text)
                     self.ctxmgr.append_assistant_message(run_id, answer, session_id)
+
+                    # Emit step-finish event before completing
+                    yield StepFinishEvent().to_dict()
+
                     # Save session to DB if using database storage
                     if session_id:
                         await self._save_session(session_id)
@@ -284,9 +291,15 @@ class Agent:
                             result = await self._call_tool(tc['tool_name'], tc['input'])
 
                             # Emit tool output event (V5 UI Stream Protocol)
+                            # Include provider metadata (tool call ID as itemId)
                             output_event = ToolOutputAvailableEvent(
                                 tool_call_id=tc['tool_call_id'],
-                                output=result
+                                output=result,
+                                call_provider_metadata={
+                                    'openai': {
+                                        'itemId': tc['tool_call_id']
+                                    }
+                                }
                             )
                             yield output_event.to_dict()
 
@@ -304,6 +317,9 @@ class Agent:
                             await self.store.append_event(run_id, {'kind':'error', 'message': str(e)})
                             await self.store.update_status(run_id, 'failed')
                             return
+
+                    # Emit step-finish event after tool execution
+                    yield StepFinishEvent().to_dict()
 
                     # Continue loop to get next LLM response
                     continue

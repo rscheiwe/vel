@@ -181,6 +181,57 @@ async def tool_example():
     print(answer)  # Agent will call the tool and respond
 ```
 
+### Storing Messages for Database
+
+Use **MessageReducer** to aggregate streaming events into structured messages compatible with the Vercel AI SDK format:
+
+```python
+from vel import Agent, MessageReducer
+
+async def database_storage_example():
+    """Aggregate streaming events for database storage"""
+    # Create reducer
+    reducer = MessageReducer()
+
+    # Add user message
+    user_msg = reducer.add_user_message(
+        "What's the weather in San Francisco?",
+        metadata={"user_id": "user-123", "timestamp": "2024-01-15T10:00:00Z"}
+    )
+
+    # Stream agent response
+    agent = Agent(
+        id='weather-agent',
+        model={'provider': 'openai', 'model': 'gpt-4o'},
+        tools=['get_weather']
+    )
+
+    async for event in agent.run_stream({'message': "What's the weather in SF?"}):
+        reducer.process_event(event)
+
+    # Get messages in Vercel AI SDK format
+    messages = reducer.get_messages(
+        assistant_metadata={"model": "gpt-4o"}
+    )
+    # [
+    #   {user message},
+    #   {assistant message with parts: [tool-call, tool-result, text]}
+    # ]
+
+    # Store in database
+    for msg in messages:
+        await db.insert_message(msg)
+```
+
+**Key Features:**
+- ✓ Compatible with Vercel AI SDK `useChat` hook
+- ✓ Aggregates text, tool calls, and tool results into parts array
+- ✓ Includes provider metadata (OpenAI message/call IDs)
+- ✓ Supports custom message IDs and metadata
+- ✓ Ready for database storage
+
+See [Stream Protocol - Message Aggregation](stream-protocol.md#message-aggregation) for complete details.
+
 ### With Generation Configuration
 
 Control model behavior with fine-grained parameters:

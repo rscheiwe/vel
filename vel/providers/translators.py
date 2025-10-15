@@ -20,6 +20,7 @@ import uuid
 
 from ..events import (
     StreamEvent,
+    StartEvent,
     TextStartEvent,
     TextDeltaEvent,
     TextEndEvent,
@@ -61,6 +62,8 @@ class OpenAIAPITranslator:
         self._text_block_id: Optional[str] = None
         self._next_block_index: int = 0  # For sequential block IDs
         self._tool_calls: Dict[int, Dict[str, Any]] = {}  # tool_index -> {id, name, args_buffer}
+        self._message_id: Optional[str] = None  # OpenAI message/completion ID
+        self._emitted_start: bool = False  # Track if we've emitted start event
 
     def translate_chunk(self, chunk: Dict[str, Any]) -> Optional[StreamEvent]:
         """
@@ -77,6 +80,14 @@ class OpenAIAPITranslator:
             >>> event = translator.translate_chunk(chunk)
             >>> print(event.type)  # "text-delta"
         """
+        # Capture message ID from first chunk (but don't return yet - process the chunk first)
+        emit_start = False
+        if self._message_id is None and 'id' in chunk:
+            self._message_id = chunk['id']
+            if not self._emitted_start:
+                self._emitted_start = True
+                emit_start = True  # Flag to emit after processing
+
         delta = chunk.get('choices', [{}])[0].get('delta', {})
         finish_reason = chunk.get('choices', [{}])[0].get('finish_reason')
 
@@ -84,6 +95,7 @@ class OpenAIAPITranslator:
         usage = chunk.get('usage')
         if usage:
             return ResponseMetadataEvent(
+                id=self._message_id,  # Include message ID for providerMetadata
                 model_id=chunk.get('model'),
                 usage={
                     'promptTokens': usage.get('prompt_tokens', 0),
@@ -98,8 +110,7 @@ class OpenAIAPITranslator:
             if self._text_block_id is None:
                 self._text_block_id = str(self._next_block_index)
                 self._next_block_index += 1
-                # Return TextStartEvent first
-                return TextStartEvent(block_id=self._text_block_id)
+            # Always return text-delta (no separate text-start event needed)
             return TextDeltaEvent(block_id=self._text_block_id, delta=content)
 
         # Handle tool calls
@@ -138,6 +149,10 @@ class OpenAIAPITranslator:
                 self._text_block_id = None
                 return TextEndEvent(block_id=text_block_id)
 
+        # Emit start event if this was the first chunk (after processing tool calls)
+        if emit_start:
+            return StartEvent(message_id=self._message_id)
+
         return None
 
     def finalize_tool_calls(self) -> list[StreamEvent]:
@@ -166,6 +181,8 @@ class OpenAIAPITranslator:
         self._text_block_id = None
         self._next_block_index = 0
         self._tool_calls.clear()
+        self._message_id = None
+        self._emitted_start = False
 
 
 class OpenAIAgentsSDKTranslator:
