@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.vscode/
 
 # Virtual environments
 venv/
@@ -96,3 +97,6 @@ dump.rdb
 
 # LLM related
 CLAUDE.md
+
+# Analysis and feature documentation
+features/

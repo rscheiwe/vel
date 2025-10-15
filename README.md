@@ -8,7 +8,15 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 
 - **Dual Execution Modes**: Streaming (SSE) and non-streaming (JSON) responses
 - **Multiple LLM Providers**: OpenAI, Google Gemini, and Anthropic Claude with plug-and-play architecture
-- **Stream Protocol**: Vercel AI SDK-compatible event system for provider-agnostic streaming
+- **Generation Configuration**: Full control over model parameters (temperature, max_tokens, top_p, etc.) with per-run override support - matches Vercel AI SDK flexibility
+- **Stream Protocol**: Vercel AI SDK **V5 UI Stream Protocol** compatible - works seamlessly with React `useChat()` and frontend components (100% parity)
+  - Exact event naming (`tool-call`, `tool-result`, etc.)
+  - Response metadata (token usage tracking)
+  - Source events (citations and grounding)
+  - File events (inline data support)
+  - Anthropic thinking blocks
+  - Enhanced error details
+- **Message Aggregation**: MessageReducer for converting streaming events to Vercel AI SDK message format for database storage
 - **Tool System**: JSON schema-validated tools with async support
 - **Flexible Prompts**: Jinja2 templating with XML formatting, environment-based configuration, and version control
 - **Persistent Storage**: PostgreSQL for durability, Redis for caching
@@ -28,6 +36,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 - [Memory System](https://rscheiwe.github.io/vel/memory) - Optional memory with Fact Store and ReasoningBank
 - [API Reference](https://rscheiwe.github.io/vel/api-reference) - Complete API docs
 - [12-Factor Alignment](https://rscheiwe.github.io/vel/12-factor-alignment) - Production-ready agent principles
+- [Stream Protocol Parity](PARITY_STATUS.md) - Vercel AI SDK V5 UI Stream Protocol compatibility status (100% parity)
 
 ## Project Structure
 
@@ -114,14 +123,59 @@ curl -X POST http://localhost:8000/runs/sync \
 
 ## Stream Protocol
 
-Vel uses the [Vercel AI SDK stream protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) for provider-agnostic event streaming:
+Vel uses the [Vercel AI SDK V5 UI Stream Protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) for frontend-compatible event streaming:
 
 - `text-start`, `text-delta`, `text-end` - Text content chunks
-- `tool-input-start`, `tool-input-delta`, `tool-input-available` - Tool call inputs
-- `tool-output-available` - Tool execution results
+- `tool-input-start`, `tool-input-delta` - Tool input streaming
+- `tool-input-available` - Complete tool input ready for execution
+- `tool-output-available` - Tool execution result
+- `response-metadata` - Token usage and model info
+- `source` - Citations and grounding (Gemini)
+- `file` - Inline file attachments
 - `error`, `finish-message` - Error handling and completion
 
-Each provider translates native events into these standardized events.
+**Frontend Compatible:** Works seamlessly with React's `useChat()`, `useCompletion()`, and other Vercel AI SDK frontend components. Each provider translates native events into V5-compatible standardized events.
+
+### Message Aggregation
+
+**MessageReducer** aggregates streaming events into structured messages for database storage:
+
+```python
+from vel import Agent, MessageReducer
+
+# Create reducer
+reducer = MessageReducer()
+reducer.add_user_message("What's the weather in San Francisco?")
+
+# Stream agent response
+agent = Agent(
+    id='weather-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['get_weather']
+)
+
+async for event in agent.run_stream({'message': "What's the weather in SF?"}):
+    reducer.process_event(event)
+
+# Get Vercel AI SDK compatible messages
+messages = reducer.get_messages()
+# [
+#   {user message},
+#   {assistant message with parts: [tool-call, tool-result, text]}
+# ]
+
+# Store in database
+for msg in messages:
+    await db.insert_message(msg)
+```
+
+**Features:**
+- ✓ Vercel AI SDK `useChat` hook compatible
+- ✓ Aggregates text, tool calls, and results into parts array
+- ✓ Provider metadata (OpenAI message/call IDs)
+- ✓ Custom message IDs and metadata support
+
+See [Message Aggregation docs](https://rscheiwe.github.io/vel/stream-protocol#message-aggregation) for complete details.
 
 ## Providers
 
@@ -225,6 +279,121 @@ agent = Agent(..., context_manager=CustomContextManager())
 
 See `examples/context_modes.py` for a full demonstration.
 
+## Generation Configuration
+
+Control model behavior with fine-grained generation parameters. Matches the flexibility of Vercel AI SDK's `streamText()` function.
+
+### Agent-Level Configuration
+
+Set default generation parameters when creating an agent:
+
+```python
+from vel import Agent
+
+agent = Agent(
+    id='my-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    generation_config={
+        'temperature': 0.7,      # Creativity (0-2)
+        'max_tokens': 500,       # Output limit
+        'top_p': 0.9,            # Nucleus sampling
+        'presence_penalty': 0.6, # Encourage new topics (OpenAI)
+        'frequency_penalty': 0.3,# Reduce repetition (OpenAI)
+        'stop': ['END'],         # Stop sequences
+        'seed': 42               # Reproducible outputs (OpenAI, Anthropic)
+    }
+)
+```
+
+### Per-Run Override
+
+Override generation config for specific runs:
+
+```python
+# Use agent's default config
+result1 = await agent.run({'message': 'Write a creative story'})
+
+# Override for deterministic response
+result2 = await agent.run(
+    {'message': 'What is 2+2?'},
+    generation_config={'temperature': 0}  # Override to 0 for this run only
+)
+
+# Works with streaming too
+async for event in agent.run_stream(
+    {'message': 'Explain AI'},
+    generation_config={'max_tokens': 100}  # Brief response
+):
+    print(event)
+```
+
+### Supported Parameters
+
+#### Common (All Providers)
+- `temperature` - Sampling temperature (0-2, default varies by provider)
+- `max_tokens` - Maximum output tokens
+- `top_p` - Nucleus sampling (0-1)
+- `stop` - Stop sequences (list of strings)
+
+#### OpenAI
+- `presence_penalty` - Penalize new tokens (-2 to 2)
+- `frequency_penalty` - Penalize repeated tokens (-2 to 2)
+- `seed` - Reproducibility seed (integer)
+- `logit_bias` - Token probability adjustments (dict)
+
+#### Anthropic
+- `top_k` - Top-K sampling (integer)
+- `stop_sequences` - Alternative to `stop` (list of strings)
+
+#### Google Gemini
+- `top_k` - Top-K sampling (integer)
+- `max_output_tokens` - Alternative to `max_tokens` (integer)
+- `stop_sequences` - Alternative to `stop` (list of strings)
+
+### Examples
+
+#### Deterministic Code Generation
+```python
+agent = Agent(
+    id='code-gen',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    generation_config={
+        'temperature': 0,
+        'seed': 42,  # Same output every time
+        'max_tokens': 2000
+    }
+)
+```
+
+#### Creative Writing
+```python
+agent = Agent(
+    id='creative',
+    model={'provider': 'anthropic', 'model': 'claude-sonnet-4-20250514'},
+    generation_config={
+        'temperature': 0.9,  # High creativity
+        'top_p': 0.95,
+        'top_k': 50,
+        'max_tokens': 4000
+    }
+)
+```
+
+#### Concise Responses
+```python
+agent = Agent(
+    id='brief',
+    model={'provider': 'google', 'model': 'gemini-1.5-pro'},
+    generation_config={
+        'max_tokens': 100,
+        'temperature': 0.7,
+        'stop_sequences': ['\n\n']  # Stop at double newline
+    }
+)
+```
+
+See `examples/generation_config_example.py` for comprehensive examples.
+
 ## Configuration
 
 Environment variables (see `.env.example`):
@@ -247,6 +416,33 @@ ANTHROPIC_API_KEY=sk-ant-...
 # Runner mode
 VEL_RUNNER=local-async
 ```
+
+## Examples
+
+Vel includes comprehensive examples demonstrating various patterns:
+
+**Core Examples:**
+- `examples/quickstart.py` - Basic agent usage (streaming & non-streaming)
+- `examples/message_reducer_example.py` - MessageReducer for database storage
+- `examples/context_modes.py` - Different context management strategies
+- `examples/generation_config_example.py` - Model parameter control
+- `examples/prompt_templates.py` - Prompt template system
+
+**Multi-Step Agent Examples:**
+- `examples/multi_step_simple.py` - Basic multi-step pattern (websearch + news)
+- `examples/multi_step_analysis.py` - Problem analysis with analyze tool
+- `examples/multi_step_decision.py` - Decision-making with decide tool
+- `examples/multi_step_complex.py` - Complex reasoning with all tools
+- `examples/comprehensive_multi_step_agent.py` - Full multi-step demonstration
+
+**Run with:**
+```bash
+python examples/quickstart.py
+python examples/message_reducer_example.py
+python examples/multi_step_simple.py
+```
+
+Or use VS Code debug configurations (see `.vscode/launch.json`).
 
 ## Development
 
@@ -291,6 +487,7 @@ Vel is designed following the [12-Factor Agent principles](https://github.com/hu
 - [ ] Finish Postgres integration
 - [ ] Add knowledge-graph memory layer
 - [ ] Add example of how to create Vel agents via a tool
+- [ ] Add guardrails
 - [x] ~~Update ReasoningBank to include e2e implementation as described in Google's paper~~ (Phase 1 complete, see `docs/Memory/reasoningbank-phase2-roadmap.md` for Phase 2)
 
 ## License

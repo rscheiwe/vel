@@ -1,7 +1,7 @@
 """OpenAI provider with stream protocol support"""
 from __future__ import annotations
 import os, httpx, json
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from .base import BaseProvider, LLMMessage
 from .translators import OpenAIAPITranslator
 from ..events import StreamEvent, FinishMessageEvent, ErrorEvent
@@ -31,7 +31,8 @@ class OpenAIProvider(BaseProvider):
         self,
         messages: List[LLMMessage],
         model: str,
-        tools: Dict[str, Any]
+        tools: Dict[str, Any],
+        generation_config: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream OpenAI response as stream protocol events"""
         # Reset translator state
@@ -51,6 +52,27 @@ class OpenAIProvider(BaseProvider):
         if oaitools:
             payload['tools'] = oaitools
             payload['tool_choice'] = 'auto'
+
+        # Add generation config parameters
+        config = generation_config or {}
+        if 'temperature' in config:
+            payload['temperature'] = config['temperature']
+        if 'max_tokens' in config:
+            payload['max_tokens'] = config['max_tokens']
+        if 'top_p' in config:
+            payload['top_p'] = config['top_p']
+        if 'presence_penalty' in config:
+            payload['presence_penalty'] = config['presence_penalty']
+        if 'frequency_penalty' in config:
+            payload['frequency_penalty'] = config['frequency_penalty']
+        if 'stop' in config:
+            payload['stop'] = config['stop']
+        if 'seed' in config:
+            payload['seed'] = config['seed']
+        if 'logit_bias' in config:
+            payload['logit_bias'] = config['logit_bias']
+        if 'user' in config:
+            payload['user'] = config['user']
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -101,7 +123,8 @@ class OpenAIProvider(BaseProvider):
         self,
         messages: List[LLMMessage],
         model: str,
-        tools: Dict[str, Any]
+        tools: Dict[str, Any],
+        generation_config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Non-streaming generation"""
         msgs = [{'role': m.get('role', 'user'), 'content': m.get('content', '')} for m in messages]
@@ -114,6 +137,27 @@ class OpenAIProvider(BaseProvider):
         if oaitools:
             payload['tools'] = oaitools
             payload['tool_choice'] = 'auto'
+
+        # Add generation config parameters
+        config = generation_config or {}
+        if 'temperature' in config:
+            payload['temperature'] = config['temperature']
+        if 'max_tokens' in config:
+            payload['max_tokens'] = config['max_tokens']
+        if 'top_p' in config:
+            payload['top_p'] = config['top_p']
+        if 'presence_penalty' in config:
+            payload['presence_penalty'] = config['presence_penalty']
+        if 'frequency_penalty' in config:
+            payload['frequency_penalty'] = config['frequency_penalty']
+        if 'stop' in config:
+            payload['stop'] = config['stop']
+        if 'seed' in config:
+            payload['seed'] = config['seed']
+        if 'logit_bias' in config:
+            payload['logit_bias'] = config['logit_bias']
+        if 'user' in config:
+            payload['user'] = config['user']
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(

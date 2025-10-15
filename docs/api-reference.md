@@ -34,7 +34,8 @@ Agent(
     tools: List[str] | None = None,
     policies: Dict[str, Any] | None = None,
     context_manager: Optional[ContextManager] = None,
-    session_storage: Literal['memory', 'database'] = 'memory'
+    session_storage: Literal['memory', 'database'] = 'memory',
+    generation_config: Optional[Dict[str, Any]] = None
 )
 ```
 
@@ -49,7 +50,7 @@ Agent(
 - Type: `Dict[str, Any]`
 - Model configuration with `provider` and `model` keys
 - Example: `{'provider': 'openai', 'model': 'gpt-4o'}`
-- Supported providers: `'openai'`, `'google'`
+- Supported providers: `'openai'`, `'google'`, `'anthropic'`
 
 **prompt_env**
 - Type: `str`
@@ -90,6 +91,21 @@ Agent(
   - `'memory'`: In-memory only (fast, not persistent)
   - `'database'`: Postgres-backed (persistent, requires `POSTGRES_DSN`)
 
+**generation_config**
+- Type: `Optional[Dict[str, Any]]`
+- Default: `None`
+- Model generation parameters (temperature, max_tokens, etc.)
+- Common parameters:
+  - `temperature`: float (0-2) - Sampling temperature
+  - `max_tokens`: int - Maximum output tokens
+  - `top_p`: float (0-1) - Nucleus sampling
+  - `top_k`: int - Top-K sampling (Gemini, Anthropic)
+  - `presence_penalty`: float (-2 to 2) - Penalize new tokens (OpenAI)
+  - `frequency_penalty`: float (-2 to 2) - Penalize repeated tokens (OpenAI)
+  - `stop`: List[str] - Stop sequences
+  - `seed`: int - Reproducibility seed (OpenAI, Anthropic)
+- Can be overridden per-run using `generation_config` parameter in `run()` or `run_stream()`
+
 **Example:**
 
 ```python
@@ -123,7 +139,8 @@ Non-streaming execution - returns final answer only.
 ```python
 async def run(
     input: Dict[str, Any],
-    session_id: Optional[str] = None
+    session_id: Optional[str] = None,
+    generation_config: Optional[Dict[str, Any]] = None
 ) -> str
 ```
 
@@ -140,6 +157,13 @@ async def run(
 - Session ID for multi-turn conversations
 - If provided, context persists across calls
 - Example: `'user-123'`, `'conv-abc'`
+
+**generation_config**
+- Type: `Optional[Dict[str, Any]]`
+- Default: `None`
+- Per-run generation config that overrides agent-level config
+- Example: `{'temperature': 0, 'max_tokens': 100}`
+- See Agent constructor for supported parameters
 
 **Returns:**
 - Type: `str`
@@ -161,6 +185,12 @@ session_id = 'user-123'
 answer1 = await agent.run({'message': 'My name is Alice'}, session_id=session_id)
 answer2 = await agent.run({'message': 'What is my name?'}, session_id=session_id)
 print(answer2)  # "Your name is Alice"
+
+# With per-run generation config override
+answer3 = await agent.run(
+    {'message': 'Explain quantum computing'},
+    generation_config={'temperature': 0, 'max_tokens': 100}  # Deterministic, brief
+)
 ```
 
 ---
@@ -172,7 +202,8 @@ Streaming execution - yields stream protocol events in real-time.
 ```python
 async def run_stream(
     input: Dict[str, Any],
-    session_id: Optional[str] = None
+    session_id: Optional[str] = None,
+    generation_config: Optional[Dict[str, Any]] = None
 ) -> AsyncGenerator[Dict[str, Any], None]
 ```
 
@@ -188,6 +219,13 @@ async def run_stream(
 - Default: `None`
 - Session ID for multi-turn conversations
 - Context persists across calls if provided
+
+**generation_config**
+- Type: `Optional[Dict[str, Any]]`
+- Default: `None`
+- Per-run generation config that overrides agent-level config
+- Example: `{'temperature': 0.9, 'max_tokens': 1000}`
+- See Agent constructor for supported parameters
 
 **Yields:**
 - Type: `Dict[str, Any]`
@@ -208,6 +246,14 @@ async for event in agent.run_stream({'message': 'Tell me a joke'}):
 # With sessions
 session_id = 'user-123'
 async for event in agent.run_stream({'message': 'My name is Bob'}, session_id=session_id):
+    if event['type'] == 'text-delta':
+        print(event['delta'], end='', flush=True)
+
+# With per-run generation config override
+async for event in agent.run_stream(
+    {'message': 'Write a haiku'},
+    generation_config={'temperature': 0.9, 'max_tokens': 50}  # Creative, brief
+):
     if event['type'] == 'text-delta':
         print(event['delta'], end='', flush=True)
 ```

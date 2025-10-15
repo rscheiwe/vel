@@ -1,5 +1,6 @@
 from .agent import Agent, run_stream
 from .tools import ToolSpec, register_tool
+from .utils import MessageReducer
 from .providers import (
     ProviderRegistry,
     BaseProvider,
@@ -38,6 +39,7 @@ __all__ = [
     'run_stream',
     'ToolSpec',
     'register_tool',
+    'MessageReducer',
     'ProviderRegistry',
     'BaseProvider',
     'OpenAIProvider',

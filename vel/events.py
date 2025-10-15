@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, Literal, Optional
 from dataclasses import dataclass
 
-# Event types
+# Event types - V5 UI Stream Protocol
 EventType = Literal[
     'start',
     'text-start',
@@ -17,10 +17,13 @@ EventType = Literal[
     'reasoning-end',
     'tool-input-start',
     'tool-input-delta',
-    'tool-input-available',
-    'tool-output-available',
-    'start-step',
-    'finish-step',
+    'tool-input-available',  # V5 UI Stream Protocol
+    'tool-output-available',  # V5 UI Stream Protocol
+    'response-metadata',
+    'source',
+    'file',
+    'step-start',  # V5 UI Stream Protocol (multi-step agents)
+    'step-finish',  # V5 UI Stream Protocol (multi-step agents)
     'finish-message',
     'error'
 ]
@@ -123,7 +126,11 @@ class ToolInputDeltaEvent(StreamEvent):
 
 @dataclass
 class ToolInputAvailableEvent(StreamEvent):
-    """Tool call input fully available"""
+    """Tool input available event (input fully available for execution)
+
+    Matches Vercel AI SDK V5 UI Stream Protocol.
+    Frontend components (useChat, useCompletion) expect this event type.
+    """
     type: Literal['tool-input-available'] = 'tool-input-available'
     tool_call_id: str = ''
     tool_name: str = ''
@@ -138,31 +145,47 @@ class ToolInputAvailableEvent(StreamEvent):
             **super().to_dict(),
             'toolCallId': self.tool_call_id,
             'toolName': self.tool_name,
-            'input': self.input
+            'input': self.input  # V5 UI Protocol uses 'input'
         }
 
 @dataclass
 class ToolOutputAvailableEvent(StreamEvent):
-    """Tool call output available"""
+    """Tool output available event (execution result ready)
+
+    Matches Vercel AI SDK V5 UI Stream Protocol.
+    Frontend components (useChat, useCompletion) expect this event type.
+    """
     type: Literal['tool-output-available'] = 'tool-output-available'
     tool_call_id: str = ''
     output: Any = None
+    call_provider_metadata: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'output': self.output}
+        d = {**super().to_dict(), 'toolCallId': self.tool_call_id, 'output': self.output}
+        if self.call_provider_metadata:
+            d['callProviderMetadata'] = self.call_provider_metadata
+        return d
 
 @dataclass
-class StartStepEvent(StreamEvent):
-    """Start a reasoning step"""
-    type: Literal['start-step'] = 'start-step'
+class StepStartEvent(StreamEvent):
+    """Start a reasoning/agent step
+
+    Emitted at the beginning of each agent step in multi-step agent patterns.
+    Matches Vercel AI SDK V5 UI Stream Protocol for agent steps.
+    """
+    type: Literal['step-start'] = 'step-start'
 
     def to_dict(self) -> Dict[str, Any]:
         return super().to_dict()
 
 @dataclass
-class FinishStepEvent(StreamEvent):
-    """Finish a reasoning step"""
-    type: Literal['finish-step'] = 'finish-step'
+class StepFinishEvent(StreamEvent):
+    """Finish a reasoning/agent step
+
+    Emitted at the end of each agent step in multi-step agent patterns.
+    Matches Vercel AI SDK V5 UI Stream Protocol for agent steps.
+    """
+    type: Literal['step-finish'] = 'step-finish'
 
     def to_dict(self) -> Dict[str, Any]:
         return super().to_dict()
@@ -181,6 +204,66 @@ class ErrorEvent(StreamEvent):
     """Error event"""
     type: Literal['error'] = 'error'
     error: str = ''
+    error_code: Optional[str] = None
+    error_type: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {**super().to_dict(), 'error': self.error}
+        d = {**super().to_dict(), 'error': self.error}
+        if self.error_code:
+            d['errorCode'] = self.error_code
+        if self.error_type:
+            d['errorType'] = self.error_type
+        return d
+
+@dataclass
+class ResponseMetadataEvent(StreamEvent):
+    """Response metadata (usage, model info, timing)"""
+    type: Literal['response-metadata'] = 'response-metadata'
+    id: Optional[str] = None
+    model_id: Optional[str] = None
+    timestamp: Optional[str] = None  # ISO 8601
+    usage: Optional[Dict[str, int]] = None  # {promptTokens, completionTokens, totalTokens}
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = super().to_dict()
+        if self.id:
+            d['id'] = self.id
+        if self.model_id:
+            d['modelId'] = self.model_id
+        if self.timestamp:
+            d['timestamp'] = self.timestamp
+        if self.usage:
+            d['usage'] = self.usage
+        return d
+
+@dataclass
+class SourceEvent(StreamEvent):
+    """Source/citation event (web search results, document references)"""
+    type: Literal['source'] = 'source'
+    sources: list[Dict[str, Any]] = None  # [{type, url, title, snippet}, ...]
+
+    def __post_init__(self):
+        if self.sources is None:
+            self.sources = []
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            **super().to_dict(),
+            'sources': self.sources
+        }
+
+@dataclass
+class FileEvent(StreamEvent):
+    """File attachment event (inline data, images, PDFs)"""
+    type: Literal['file'] = 'file'
+    content: Any = None  # base64 string or bytes
+    name: str = ''
+    mime_type: str = ''
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            **super().to_dict(),
+            'content': self.content,
+            'name': self.name,
+            'mimeType': self.mime_type
+        }

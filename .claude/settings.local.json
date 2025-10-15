@@ -21,7 +21,11 @@
       "Bash(if [ -f VEL_CHANGES_SUMMARY.md ])",
       "Bash(then rm VEL_CHANGES_SUMMARY.md)",
       "Bash(else echo \"✓ VEL_CHANGES_SUMMARY.md already removed\")",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "WebFetch(domain:sdk.vercel.ai)",
+      "Bash(git checkout:*)",
+      "Read(//Users/richard.s/Downloads/ai-chat-agent-multi-step-tool-pattern/**)",
+      "Bash(pip install:*)"
     ],
     "deny": [],
     "ask": []
