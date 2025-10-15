@@ -1,10 +1,10 @@
 """Google Gemini provider with stream protocol support"""
 from __future__ import annotations
 import os, json
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from .base import BaseProvider, LLMMessage
 from .translators import GeminiAPITranslator
-from ..events import StreamEvent, FinishMessageEvent, ErrorEvent, ToolCallEvent
+from ..events import StreamEvent, FinishMessageEvent, ErrorEvent, ToolInputAvailableEvent
 
 try:
     import google.generativeai as genai
@@ -57,7 +57,8 @@ class GeminiProvider(BaseProvider):
         self,
         messages: List[LLMMessage],
         model: str,
-        tools: Dict[str, Any]
+        tools: Dict[str, Any],
+        generation_config: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream Gemini response as stream protocol events"""
         # Reset translator state
@@ -68,7 +69,25 @@ class GeminiProvider(BaseProvider):
             gemini_messages = self._convert_messages(messages)
 
             # Build generation config
+            config = generation_config or {}
             gen_config = {}
+
+            # Map common parameters to Gemini's GenerationConfig
+            if 'temperature' in config:
+                gen_config['temperature'] = config['temperature']
+            if 'max_tokens' in config:
+                gen_config['max_output_tokens'] = config['max_tokens']
+            if 'max_output_tokens' in config:  # Direct Gemini parameter
+                gen_config['max_output_tokens'] = config['max_output_tokens']
+            if 'top_p' in config:
+                gen_config['top_p'] = config['top_p']
+            if 'top_k' in config:
+                gen_config['top_k'] = config['top_k']
+            if 'stop_sequences' in config:
+                gen_config['stop_sequences'] = config['stop_sequences']
+            if 'stop' in config:  # Alias
+                gen_config['stop_sequences'] = config['stop']
+
             tool_config = None
             if tools:
                 tool_declarations = self._convert_tools(tools)
@@ -104,8 +123,8 @@ class GeminiProvider(BaseProvider):
                             tool_name = fc.name
                             args = dict(fc.args) if hasattr(fc, 'args') else {}
 
-                            # Emit ToolCallEvent after start event
-                            yield ToolCallEvent(
+                            # Emit ToolInputAvailableEvent for V5 UI Stream Protocol
+                            yield ToolInputAvailableEvent(
                                 tool_call_id=tool_call_id,
                                 tool_name=tool_name,
                                 input=args
@@ -126,14 +145,34 @@ class GeminiProvider(BaseProvider):
         self,
         messages: List[LLMMessage],
         model: str,
-        tools: Dict[str, Any]
+        tools: Dict[str, Any],
+        generation_config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Non-streaming generation"""
         try:
             gemini_model = genai.GenerativeModel(model)
             gemini_messages = self._convert_messages(messages)
 
+            # Build generation config
+            config = generation_config or {}
             gen_config = {}
+
+            # Map common parameters to Gemini's GenerationConfig
+            if 'temperature' in config:
+                gen_config['temperature'] = config['temperature']
+            if 'max_tokens' in config:
+                gen_config['max_output_tokens'] = config['max_tokens']
+            if 'max_output_tokens' in config:  # Direct Gemini parameter
+                gen_config['max_output_tokens'] = config['max_output_tokens']
+            if 'top_p' in config:
+                gen_config['top_p'] = config['top_p']
+            if 'top_k' in config:
+                gen_config['top_k'] = config['top_k']
+            if 'stop_sequences' in config:
+                gen_config['stop_sequences'] = config['stop_sequences']
+            if 'stop' in config:  # Alias
+                gen_config['stop_sequences'] = config['stop']
+
             tool_config = None
             if tools:
                 tool_declarations = self._convert_tools(tools)

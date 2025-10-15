@@ -96,3 +96,6 @@ dump.rdb
 
 # LLM related
 CLAUDE.md
+
+# Analysis and feature documentation
+features/

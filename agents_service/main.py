@@ -24,7 +24,7 @@ def ui():
 
 @app.post("/runs")
 async def start_run(req: RunRequest):
-    """Streaming endpoint - returns SSE events"""
+    """Streaming endpoint - returns SSE events compatible with Vercel AI SDK V5 UI Stream Protocol"""
     agent = Agent(
         id=req.agent_id,
         model={"provider": req.provider, "model": req.model},
@@ -32,10 +32,26 @@ async def start_run(req: RunRequest):
         policies={"max_steps": 12}
     )
     async def event_stream():
-        async for e in agent.run_stream(req.input):
-            yield f"data: {json.dumps(e)}\n\n"
-            await asyncio.sleep(0)
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+        try:
+            async for e in agent.run_stream(req.input):
+                yield f"data: {json.dumps(e)}\n\n"
+                await asyncio.sleep(0)
+            # Stream termination marker
+            yield "data: [DONE]\n\n"
+        except Exception as err:
+            # Emit error event
+            error_event = {"type": "error", "error": str(err)}
+            yield f"data: {json.dumps(error_event)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Vercel-AI-UI-Message-Stream": "v1"  # V5 UI Stream Protocol header
+        }
+    )
 
 @app.post("/runs/sync")
 async def start_run_sync(req: RunRequest):

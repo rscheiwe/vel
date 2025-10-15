@@ -289,6 +289,139 @@ asyncio.run(main())
 | Max context | 128K | 2M | 200K |
 | Cost | $$$ | $$ | $$$ |
 
+---
+
+## Generation Configuration
+
+Control model behavior with fine-grained generation parameters. Vel provides full parity with Vercel AI SDK's `streamText()` flexibility.
+
+### Agent-Level Configuration
+
+Set default generation parameters when creating an agent:
+
+```python
+from vel import Agent
+
+agent = Agent(
+    id='my-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    generation_config={
+        'temperature': 0.7,      # Creativity (0-2)
+        'max_tokens': 500,       # Output limit
+        'top_p': 0.9,            # Nucleus sampling
+        'presence_penalty': 0.6, # Encourage new topics (OpenAI)
+        'frequency_penalty': 0.3,# Reduce repetition (OpenAI)
+        'stop': ['END'],         # Stop sequences
+        'seed': 42               # Reproducible outputs (OpenAI, Anthropic)
+    }
+)
+```
+
+### Per-Run Override
+
+Override generation config for specific runs:
+
+```python
+# Use agent's default config
+result1 = await agent.run({'message': 'Write a creative story'})
+
+# Override for deterministic response
+result2 = await agent.run(
+    {'message': 'What is 2+2?'},
+    generation_config={'temperature': 0}  # Override for this run only
+)
+
+# Works with streaming too
+async for event in agent.run_stream(
+    {'message': 'Explain AI'},
+    generation_config={'max_tokens': 100}  # Brief response
+):
+    print(event)
+```
+
+### Supported Parameters by Provider
+
+#### Common Parameters (All Providers)
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `temperature` | float | Sampling temperature (0-2) | `0.7` |
+| `max_tokens` | int | Maximum output tokens | `500` |
+| `top_p` | float | Nucleus sampling (0-1) | `0.9` |
+| `stop` | List[str] | Stop sequences | `['END']` |
+
+#### OpenAI-Specific
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `presence_penalty` | float | Penalize new tokens (-2 to 2) | `0.6` |
+| `frequency_penalty` | float | Penalize repeated tokens (-2 to 2) | `0.3` |
+| `seed` | int | Reproducibility seed | `42` |
+| `logit_bias` | Dict[int, float] | Token probability adjustments | `{50256: -100}` |
+| `user` | str | User identifier for tracking | `'user-123'` |
+
+#### Anthropic-Specific
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `top_k` | int | Top-K sampling | `40` |
+| `stop_sequences` | List[str] | Alternative to `stop` | `['END']` |
+
+#### Google Gemini-Specific
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `top_k` | int | Top-K sampling | `40` |
+| `max_output_tokens` | int | Alternative to `max_tokens` | `2048` |
+| `stop_sequences` | List[str] | Alternative to `stop` | `['END']` |
+
+### Examples
+
+#### Deterministic Code Generation
+
+```python
+agent = Agent(
+    id='code-gen',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    generation_config={
+        'temperature': 0,
+        'seed': 42,  # Same output every time
+        'max_tokens': 2000
+    }
+)
+```
+
+#### Creative Writing
+
+```python
+agent = Agent(
+    id='creative',
+    model={'provider': 'anthropic', 'model': 'claude-sonnet-4-20250514'},
+    generation_config={
+        'temperature': 0.9,  # High creativity
+        'top_p': 0.95,
+        'top_k': 50,
+        'max_tokens': 4000
+    }
+)
+```
+
+#### Concise Responses
+
+```python
+agent = Agent(
+    id='brief',
+    model={'provider': 'google', 'model': 'gemini-1.5-pro'},
+    generation_config={
+        'max_tokens': 100,
+        'temperature': 0.7,
+        'stop_sequences': ['\n\n']  # Stop at double newline
+    }
+)
+```
+
+See `examples/generation_config_example.py` for comprehensive examples.
+
 ## Environment Variables
 
 ### OpenAI

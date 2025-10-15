@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, Literal, Optional
 from dataclasses import dataclass
 
-# Event types
+# Event types - V5 UI Stream Protocol
 EventType = Literal[
     'start',
     'text-start',
@@ -17,8 +17,8 @@ EventType = Literal[
     'reasoning-end',
     'tool-input-start',
     'tool-input-delta',
-    'tool-call',
-    'tool-result',
+    'tool-input-available',  # V5 UI Stream Protocol
+    'tool-output-available',  # V5 UI Stream Protocol
     'response-metadata',
     'source',
     'file',
@@ -125,9 +125,13 @@ class ToolInputDeltaEvent(StreamEvent):
         return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'inputTextDelta': self.input_delta}
 
 @dataclass
-class ToolCallEvent(StreamEvent):
-    """Tool call event (input fully available)"""
-    type: Literal['tool-call'] = 'tool-call'
+class ToolInputAvailableEvent(StreamEvent):
+    """Tool input available event (input fully available for execution)
+
+    Matches Vercel AI SDK V5 UI Stream Protocol.
+    Frontend components (useChat, useCompletion) expect this event type.
+    """
+    type: Literal['tool-input-available'] = 'tool-input-available'
     tool_call_id: str = ''
     tool_name: str = ''
     input: Dict[str, Any] = None
@@ -141,18 +145,22 @@ class ToolCallEvent(StreamEvent):
             **super().to_dict(),
             'toolCallId': self.tool_call_id,
             'toolName': self.tool_name,
-            'args': self.input  # V3 uses 'args' not 'input'
+            'input': self.input  # V5 UI Protocol uses 'input'
         }
 
 @dataclass
-class ToolResultEvent(StreamEvent):
-    """Tool result event (output available)"""
-    type: Literal['tool-result'] = 'tool-result'
+class ToolOutputAvailableEvent(StreamEvent):
+    """Tool output available event (execution result ready)
+
+    Matches Vercel AI SDK V5 UI Stream Protocol.
+    Frontend components (useChat, useCompletion) expect this event type.
+    """
+    type: Literal['tool-output-available'] = 'tool-output-available'
     tool_call_id: str = ''
-    result: Any = None
+    output: Any = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'result': self.result}
+        return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'output': self.output}
 
 @dataclass
 class StartStepEvent(StreamEvent):

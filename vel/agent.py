@@ -7,7 +7,7 @@ from .providers import ProviderRegistry
 from .tools import ToolRegistry, validate_io
 from .storage import RunStore
 from .events import (
-    StreamEvent, ToolCallEvent, ToolResultEvent,
+    StreamEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
     ErrorEvent, FinishMessageEvent
 )
 from .prompts import PromptContextManager
@@ -19,6 +19,7 @@ class Agent:
                  session_persistence: Optional[Literal['transient', 'persistent']]=None,
                  prompt_id: Optional[str]=None,
                  prompt_vars: Optional[Dict[str, Any]]=None,
+                 generation_config: Optional[Dict[str, Any]]=None,
                  # Deprecated (backwards compatibility)
                  session_storage: Optional[Literal['memory', 'database']]=None):
         """
@@ -50,6 +51,17 @@ class Agent:
             prompt_id: Optional prompt template ID (e.g., 'chat-agent:v1')
             prompt_vars: Optional variables for prompt template rendering
 
+            generation_config: Model generation parameters (temperature, max_tokens, etc.)
+                Common parameters:
+                - temperature: float (0-2) - Sampling temperature
+                - max_tokens: int - Maximum output tokens
+                - top_p: float (0-1) - Nucleus sampling
+                - top_k: int - Top-K sampling (Gemini, Anthropic)
+                - presence_penalty: float (-2 to 2) - Penalize new tokens (OpenAI)
+                - frequency_penalty: float (-2 to 2) - Penalize repeated tokens (OpenAI)
+                - stop: List[str] - Stop sequences
+                - seed: int - Reproducibility seed (OpenAI, Anthropic)
+
             session_storage: [DEPRECATED] Use session_persistence instead
                 - 'memory' → use 'transient'
                 - 'database' → use 'persistent'
@@ -59,6 +71,7 @@ class Agent:
         self.prompt_env = prompt_env
         self.tools = tools or []
         self.policies = policies or {'max_steps': 24, 'retry': {'attempts': 2}}
+        self.generation_config = generation_config or {}
 
         # Handle backwards compatibility for session_storage
         if session_storage is not None:
@@ -108,11 +121,13 @@ class Agent:
             context = self.ctxmgr.get_session_context(session_id)
             await self.store.save_session(session_id, context)
 
-    async def _call_llm_generate(self, run_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+    async def _call_llm_generate(self, run_id: str, session_id: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Non-streaming LLM call"""
         messages = self.ctxmgr.messages_for_llm(run_id, session_id)
         provider = self.providers.get(self.model_cfg['provider'])
-        step = await provider.generate(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas())
+        # Merge agent-level and call-level generation configs
+        config = {**self.generation_config, **(generation_config or {})}
+        step = await provider.generate(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas(), generation_config=config)
         return step
 
     async def _call_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -123,7 +138,7 @@ class Agent:
         validate_io(tool.output_schema, result)
         return result
 
-    async def run(self, input: Dict[str, Any], session_id: Optional[str] = None) -> str:
+    async def run(self, input: Dict[str, Any], session_id: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None) -> str:
         """
         Non-streaming run - returns final answer only.
 
@@ -131,6 +146,7 @@ class Agent:
             input: Input dict with 'message' field
             session_id: Optional session ID for multi-turn conversations.
                        If provided, context persists across multiple run() calls.
+            generation_config: Optional per-run generation config that overrides agent-level config.
         """
         # Load session from DB if using database storage
         if session_id:
@@ -149,7 +165,7 @@ class Agent:
                 state, effects = reduce(state, event)
                 for eff in effects:
                     if eff.kind == 'call_llm':
-                        step = await self._call_llm_generate(run_id, session_id)
+                        step = await self._call_llm_generate(run_id, session_id, generation_config)
                         event = {'kind':'llm_step', 'step': step}
                         await self.store.append_event(run_id, event)
                         break
@@ -184,7 +200,7 @@ class Agent:
             await self.store.update_status(run_id, 'failed')
             raise
 
-    async def run_stream(self, input: Dict[str, Any], session_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def run_stream(self, input: Dict[str, Any], session_id: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streaming run - yields stream protocol events as they occur.
 
@@ -192,6 +208,7 @@ class Agent:
             input: Input dict with 'message' field
             session_id: Optional session ID for multi-turn conversations.
                        If provided, context persists across multiple run_stream() calls.
+            generation_config: Optional per-run generation config that overrides agent-level config.
         """
         # Load session from DB if using database storage
         if session_id:
@@ -212,13 +229,16 @@ class Agent:
                 messages = self.ctxmgr.messages_for_llm(run_id, session_id)
                 provider = self.providers.get(self.model_cfg['provider'])
 
+                # Merge agent-level and per-run generation configs
+                config = {**self.generation_config, **(generation_config or {})}
+
                 # Track what happened during streaming
                 full_text = []
                 tool_calls = []  # list of {tool_call_id, tool_name, input}
                 finish_reason = 'stop'
 
                 # Stream from provider and forward events
-                async for event in provider.stream(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas()):
+                async for event in provider.stream(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas(), generation_config=config):
                     # Forward stream protocol events
                     yield event.to_dict()
 
@@ -226,8 +246,8 @@ class Agent:
                     if event.type == 'text-delta':
                         full_text.append(event.delta)
 
-                    # Track tool calls
-                    elif event.type == 'tool-call':
+                    # Track tool calls (V5 UI Stream Protocol)
+                    elif event.type == 'tool-input-available':
                         tool_calls.append({
                             'tool_call_id': event.tool_call_id,
                             'tool_name': event.tool_name,
@@ -263,10 +283,10 @@ class Agent:
                             # Execute tool
                             result = await self._call_tool(tc['tool_name'], tc['input'])
 
-                            # Emit tool result event
-                            output_event = ToolResultEvent(
+                            # Emit tool output event (V5 UI Stream Protocol)
+                            output_event = ToolOutputAvailableEvent(
                                 tool_call_id=tc['tool_call_id'],
-                                result=result
+                                output=result
                             )
                             yield output_event.to_dict()
 

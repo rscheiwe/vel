@@ -1,7 +1,7 @@
 """Anthropic Claude provider with stream protocol support"""
 from __future__ import annotations
 import os, httpx, json
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from .base import BaseProvider, LLMMessage
 from .translators import AnthropicAPITranslator
 from ..events import StreamEvent, ErrorEvent
@@ -65,7 +65,8 @@ class AnthropicProvider(BaseProvider):
         self,
         messages: List[LLMMessage],
         model: str,
-        tools: Dict[str, Any]
+        tools: Dict[str, Any],
+        generation_config: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream Anthropic response as stream protocol events"""
         # Reset translator state
@@ -74,10 +75,11 @@ class AnthropicProvider(BaseProvider):
         system_message, anthropic_messages = self._convert_messages(messages)
         anthropic_tools = self._convert_tools(tools)
 
+        # Start with default max_tokens
         payload = {
             'model': model,
             'messages': anthropic_messages,
-            'max_tokens': 4096,
+            'max_tokens': 4096,  # Default, can be overridden
             'stream': True
         }
 
@@ -86,6 +88,21 @@ class AnthropicProvider(BaseProvider):
 
         if anthropic_tools:
             payload['tools'] = anthropic_tools
+
+        # Add generation config parameters
+        config = generation_config or {}
+        if 'temperature' in config:
+            payload['temperature'] = config['temperature']
+        if 'max_tokens' in config:
+            payload['max_tokens'] = config['max_tokens']
+        if 'top_p' in config:
+            payload['top_p'] = config['top_p']
+        if 'top_k' in config:
+            payload['top_k'] = config['top_k']
+        if 'stop_sequences' in config:
+            payload['stop_sequences'] = config['stop_sequences']
+        if 'stop' in config:  # Alias for stop_sequences
+            payload['stop_sequences'] = config['stop']
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -127,7 +144,8 @@ class AnthropicProvider(BaseProvider):
         self,
         messages: List[LLMMessage],
         model: str,
-        tools: Dict[str, Any]
+        tools: Dict[str, Any],
+        generation_config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Non-streaming generation"""
         system_message, anthropic_messages = self._convert_messages(messages)
@@ -136,7 +154,7 @@ class AnthropicProvider(BaseProvider):
         payload = {
             'model': model,
             'messages': anthropic_messages,
-            'max_tokens': 4096
+            'max_tokens': 4096  # Default, can be overridden
         }
 
         if system_message:
@@ -144,6 +162,21 @@ class AnthropicProvider(BaseProvider):
 
         if anthropic_tools:
             payload['tools'] = anthropic_tools
+
+        # Add generation config parameters
+        config = generation_config or {}
+        if 'temperature' in config:
+            payload['temperature'] = config['temperature']
+        if 'max_tokens' in config:
+            payload['max_tokens'] = config['max_tokens']
+        if 'top_p' in config:
+            payload['top_p'] = config['top_p']
+        if 'top_k' in config:
+            payload['top_k'] = config['top_k']
+        if 'stop_sequences' in config:
+            payload['stop_sequences'] = config['stop_sequences']
+        if 'stop' in config:  # Alias for stop_sequences
+            payload['stop_sequences'] = config['stop']
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(

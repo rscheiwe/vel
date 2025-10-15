@@ -181,6 +181,44 @@ async def tool_example():
     print(answer)  # Agent will call the tool and respond
 ```
 
+### With Generation Configuration
+
+Control model behavior with fine-grained parameters:
+
+```python
+from vel import Agent
+
+async def generation_config_example():
+    # Agent with default config
+    agent = Agent(
+        id='my-agent',
+        model={'provider': 'openai', 'model': 'gpt-4o'},
+        generation_config={
+            'temperature': 0.7,  # Creativity
+            'max_tokens': 500    # Output limit
+        }
+    )
+
+    # Use default config
+    creative = await agent.run({'message': 'Write a poem'})
+    print(creative)
+
+    # Override for specific run
+    factual = await agent.run(
+        {'message': 'What is 2+2?'},
+        generation_config={'temperature': 0}  # Deterministic for this run
+    )
+    print(factual)
+```
+
+**Common Parameters:**
+- `temperature` - Creativity (0-2)
+- `max_tokens` - Output length limit
+- `top_p` - Nucleus sampling (0-1)
+- `seed` - Reproducible outputs (OpenAI, Anthropic)
+
+See [Providers](providers.md#generation-configuration) for all parameters.
+
 ## REST API
 
 ### Start the Service
