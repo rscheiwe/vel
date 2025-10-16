@@ -25,7 +25,8 @@
       "WebFetch(domain:sdk.vercel.ai)",
       "Bash(git checkout:*)",
       "Read(//Users/richard.s/Downloads/ai-chat-agent-multi-step-tool-pattern/**)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(env)"
     ],
     "deny": [],
     "ask": []

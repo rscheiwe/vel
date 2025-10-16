@@ -15,6 +15,7 @@ Supported Sources:
 """
 from __future__ import annotations
 from typing import Any, Dict, Optional
+from collections import deque
 import json
 import uuid
 
@@ -60,10 +61,11 @@ class OpenAIAPITranslator:
 
     def __init__(self):
         self._text_block_id: Optional[str] = None
+        self._reasoning_block_id: Optional[str] = None  # For reasoning content (o1/o3 models)
         self._next_block_index: int = 0  # For sequential block IDs
         self._tool_calls: Dict[int, Dict[str, Any]] = {}  # tool_index -> {id, name, args_buffer}
         self._message_id: Optional[str] = None  # OpenAI message/completion ID
-        self._emitted_start: bool = False  # Track if we've emitted start event
+        self._pending_events: deque = deque()  # Queue of events to emit
 
     def translate_chunk(self, chunk: Dict[str, Any]) -> Optional[StreamEvent]:
         """
@@ -78,15 +80,15 @@ class OpenAIAPITranslator:
         Example:
             >>> chunk = {"choices": [{"delta": {"content": "Hello"}}]}
             >>> event = translator.translate_chunk(chunk)
-            >>> print(event.type)  # "text-delta"
+            >>> print(event.type)  # "text-start" or "text-delta"
+
+        Note:
+            This may queue additional events in _pending_events.
+            Call get_pending_event() to drain them.
         """
-        # Capture message ID from first chunk (but don't return yet - process the chunk first)
-        emit_start = False
+        # Capture message ID from first chunk (for metadata only, don't emit start event)
         if self._message_id is None and 'id' in chunk:
             self._message_id = chunk['id']
-            if not self._emitted_start:
-                self._emitted_start = True
-                emit_start = True  # Flag to emit after processing
 
         delta = chunk.get('choices', [{}])[0].get('delta', {})
         finish_reason = chunk.get('choices', [{}])[0].get('finish_reason')
@@ -95,7 +97,7 @@ class OpenAIAPITranslator:
         usage = chunk.get('usage')
         if usage:
             return ResponseMetadataEvent(
-                id=self._message_id,  # Include message ID for providerMetadata
+                id=self._message_id,
                 model_id=chunk.get('model'),
                 usage={
                     'promptTokens': usage.get('prompt_tokens', 0),
@@ -108,10 +110,26 @@ class OpenAIAPITranslator:
         if 'content' in delta and delta['content']:
             content = delta['content']
             if self._text_block_id is None:
+                # First text chunk - queue both start and delta events
                 self._text_block_id = str(self._next_block_index)
                 self._next_block_index += 1
-            # Always return text-delta (no separate text-start event needed)
+                self._pending_events.append(TextDeltaEvent(block_id=self._text_block_id, delta=content))
+                return TextStartEvent(block_id=self._text_block_id)
+            # Subsequent chunks - emit delta directly
             return TextDeltaEvent(block_id=self._text_block_id, delta=content)
+
+        # Handle reasoning content (o1/o3 models)
+        # OpenAI exposes reasoning via delta.reasoning_content field
+        if 'reasoning_content' in delta and delta['reasoning_content']:
+            reasoning = delta['reasoning_content']
+            if self._reasoning_block_id is None:
+                # First reasoning chunk - queue both start and delta events
+                self._reasoning_block_id = str(self._next_block_index)
+                self._next_block_index += 1
+                self._pending_events.append(ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning))
+                return ReasoningStartEvent(block_id=self._reasoning_block_id)
+            # Subsequent chunks - emit delta directly
+            return ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning)
 
         # Handle tool calls
         if 'tool_calls' in delta:
@@ -143,27 +161,50 @@ class OpenAIAPITranslator:
 
         # Handle finish
         if finish_reason:
+            # End reasoning block if active (reasoning comes before text typically)
+            if self._reasoning_block_id:
+                reasoning_block_id = self._reasoning_block_id
+                self._reasoning_block_id = None
+                # Queue text-end if there's also a text block
+                if self._text_block_id:
+                    self._pending_events.append(TextEndEvent(block_id=self._text_block_id))
+                    self._text_block_id = None
+                return ReasoningEndEvent(block_id=reasoning_block_id)
+
             # End text block if active
             if self._text_block_id:
                 text_block_id = self._text_block_id
                 self._text_block_id = None
                 return TextEndEvent(block_id=text_block_id)
 
-        # Emit start event if this was the first chunk (after processing tool calls)
-        if emit_start:
-            return StartEvent(message_id=self._message_id)
-
         return None
 
     def finalize_tool_calls(self) -> list[StreamEvent]:
         """
-        Generate ToolInputAvailableEvent for all accumulated tool calls.
+        Generate events for stream completion.
+        Emits any pending events, reasoning-end, text-end, and tool-input-available events.
         Call this when the stream completes.
 
         Returns:
-            List of ToolInputAvailableEvent events
+            List of StreamEvent objects
         """
         events = []
+
+        # Drain any pending events first
+        while self._pending_events:
+            events.append(self._pending_events.popleft())
+
+        # Emit reasoning-end if reasoning block is active
+        if self._reasoning_block_id:
+            events.append(ReasoningEndEvent(block_id=self._reasoning_block_id))
+            self._reasoning_block_id = None
+
+        # Emit text-end if text block is active
+        if self._text_block_id:
+            events.append(TextEndEvent(block_id=self._text_block_id))
+            self._text_block_id = None
+
+        # Emit tool-input-available for all accumulated tool calls
         for tc_data in self._tool_calls.values():
             try:
                 args = json.loads(tc_data['args_buffer'] or '{}')
@@ -176,13 +217,25 @@ class OpenAIAPITranslator:
             ))
         return events
 
+    def get_pending_event(self) -> Optional[StreamEvent]:
+        """
+        Get next pending event without processing a new chunk.
+
+        Returns:
+            StreamEvent or None if no pending events
+        """
+        if self._pending_events:
+            return self._pending_events.popleft()
+        return None
+
     def reset(self):
         """Reset translator state between messages."""
         self._text_block_id = None
+        self._reasoning_block_id = None
         self._next_block_index = 0
         self._tool_calls.clear()
         self._message_id = None
-        self._emitted_start = False
+        self._pending_events.clear()
 
 
 class OpenAIAgentsSDKTranslator:
@@ -341,7 +394,7 @@ class AnthropicAPITranslator:
             usage = message.get('usage')
             if usage and 'input_tokens' in usage:
                 self._usage_data['promptTokens'] = usage['input_tokens']
-            return None  # Could emit StartEvent if needed
+            return None  # Don't emit StartEvent - that's emitted at Agent level
 
         # Handle content_block_start
         elif event_type == 'content_block_start':
@@ -465,7 +518,8 @@ class AnthropicAPITranslator:
             return ErrorEvent(
                 error=error_data.get('message', 'Unknown error'),
                 error_code=error_data.get('code'),
-                error_type=error_data.get('type')
+                error_type=error_data.get('type'),
+                provider='anthropic'
             )
 
         return None
@@ -696,8 +750,247 @@ def get_gemini_translator() -> GeminiAPITranslator:
     return GeminiAPITranslator()
 
 
+class OpenAIResponsesAPITranslator:
+    """
+    Translates OpenAI Responses API events to Vel stream protocol.
+
+    Handles the structured event format from /v1/responses endpoint:
+    - response.created, response.done, response.error
+    - response.text.delta, response.output_text.delta
+    - response.reasoning.delta (and all variants)
+    - response.output_item.added (for synthesis)
+    - response.function_call_arguments.delta
+
+    Based on EXTENDED_PARITY.md mapping.
+    """
+
+    def __init__(self):
+        self._text_block_id: Optional[str] = None
+        self._reasoning_block_id: Optional[str] = None
+        self._next_block_index: int = 0
+        self._tool_calls: Dict[str, Dict[str, Any]] = {}  # tool_call_id -> {name, args_buffer}
+        self._pending_events: deque = deque()
+        self._active_output_items: Dict[str, str] = {}  # item_id -> type (message, function_call, etc.)
+
+    def translate_event(self, event: Dict[str, Any]) -> Optional[StreamEvent]:
+        """
+        Translate a Responses API event to Vel stream protocol.
+
+        Args:
+            event: Parsed event from Responses API SSE stream
+
+        Returns:
+            StreamEvent or None if event should be skipped
+        """
+        # Drain pending events first
+        if self._pending_events:
+            return self._pending_events.popleft()
+
+        event_type = event.get('type', '')
+
+        # === Lifecycle events ===
+        if event_type in ('response.created', 'response.in_progress'):
+            return None  # Handled at Agent level
+
+        if event_type in ('response.completed', 'response.done'):
+            # Return finish handled at Agent level, but emit any pending end events
+            return self._finalize()
+
+        if event_type == 'response.error':
+            error_data = event.get('error', {})
+            return ErrorEvent(
+                error=error_data.get('message', 'Unknown error'),
+                error_code=error_data.get('code'),
+                error_type=error_data.get('type'),
+                provider='openai-responses'
+            )
+
+        # === Text events ===
+        # Normalize both response.text.delta and response.output_text.delta
+        if event_type in ('response.text.delta', 'response.output_text.delta'):
+            text = event.get('delta', '') or event.get('text', '')
+            if text:
+                if self._text_block_id is None:
+                    self._text_block_id = str(self._next_block_index)
+                    self._next_block_index += 1
+                    self._pending_events.append(TextDeltaEvent(block_id=self._text_block_id, delta=text))
+                    return TextStartEvent(block_id=self._text_block_id)
+                return TextDeltaEvent(block_id=self._text_block_id, delta=text)
+
+        if event_type in ('response.text.done', 'response.output_text.done'):
+            if self._text_block_id:
+                block_id = self._text_block_id
+                self._text_block_id = None
+                return TextEndEvent(block_id=block_id)
+
+        # === Reasoning events (all variants) ===
+        # Normalize: reasoning.delta, reasoning_summary.delta, reasoning_summary_text.delta
+        if any(variant in event_type for variant in ['reasoning.delta', 'reasoning_summary.delta', 'reasoning_summary_text.delta']):
+            reasoning = event.get('delta', '') or event.get('reasoning', '') or event.get('summary', '')
+            if reasoning:
+                if self._reasoning_block_id is None:
+                    self._reasoning_block_id = str(self._next_block_index)
+                    self._next_block_index += 1
+                    self._pending_events.append(ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning))
+                    return ReasoningStartEvent(block_id=self._reasoning_block_id)
+                return ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning)
+
+        # Normalize: reasoning.done, reasoning_summary.done, reasoning_summary_text.done
+        if any(variant in event_type for variant in ['reasoning.done', 'reasoning_summary.done', 'reasoning_summary_text.done']):
+            if self._reasoning_block_id:
+                block_id = self._reasoning_block_id
+                self._reasoning_block_id = None
+                return ReasoningEndEvent(block_id=block_id)
+
+        # === Output item events (used for synthesis) ===
+        if event_type == 'response.output_item.added':
+            item = event.get('item', {})
+            item_id = item.get('id')
+            item_type = item.get('type')  # message, function_call, web_search_call, computer_call, reasoning
+
+            if item_id and item_type:
+                self._active_output_items[item_id] = item_type
+
+                # Synthesize reasoning-start for reasoning items (o1/o3 models)
+                if item_type in ('reasoning', 'thinking'):
+                    if self._reasoning_block_id is None:
+                        self._reasoning_block_id = item_id  # Use OpenAI's ID
+                        return ReasoningStartEvent(block_id=self._reasoning_block_id)
+
+                # Synthesize tool-input-start for tool calls
+                if item_type in ('function_call', 'web_search_call', 'computer_call'):
+                    tool_name = item.get('name', item_type)
+                    self._tool_calls[item_id] = {
+                        'name': tool_name,
+                        'args_buffer': ''
+                    }
+                    return ToolInputStartEvent(tool_call_id=item_id, tool_name=tool_name)
+            return None
+
+        if event_type == 'response.content_part.added':
+            # Used to synthesize text-start when first text part arrives
+            # Already handled by response.text.delta logic above
+            return None
+
+        # === Tool call arguments ===
+        if event_type == 'response.function_call_arguments.delta':
+            call_id = event.get('call_id') or event.get('id')
+            args_delta = event.get('delta', '') or event.get('arguments', '')
+
+            if call_id and args_delta:
+                if call_id in self._tool_calls:
+                    self._tool_calls[call_id]['args_buffer'] += args_delta
+                    return ToolInputDeltaEvent(tool_call_id=call_id, input_delta=args_delta)
+
+        if event_type == 'response.function_call_arguments.done':
+            call_id = event.get('call_id') or event.get('id')
+            if call_id and call_id in self._tool_calls:
+                tc = self._tool_calls[call_id]
+                try:
+                    args = json.loads(tc['args_buffer'] or '{}')
+                except json.JSONDecodeError:
+                    args = {}
+                return ToolInputAvailableEvent(
+                    tool_call_id=call_id,
+                    tool_name=tc['name'],
+                    input=args
+                )
+
+        # === Output item done (for provider-executed tools and reasoning) ===
+        if event_type == 'response.output_item.done':
+            item = event.get('item', {})
+            item_id = item.get('id')
+            item_type = self._active_output_items.get(item_id)
+
+            # Reasoning items (o1/o3 models) - emit reasoning-end
+            if item_type in ('reasoning', 'thinking'):
+                if self._reasoning_block_id == item_id:
+                    self._reasoning_block_id = None
+                    return ReasoningEndEvent(block_id=item_id)
+
+            # Provider-executed tools (web_search, computer)
+            if item_type in ('web_search_call', 'computer_call'):
+                # Emit tool-input-available if not already done
+                if item_id in self._tool_calls:
+                    tc = self._tool_calls[item_id]
+                    if tc['args_buffer']:  # Has buffered args
+                        try:
+                            args = json.loads(tc['args_buffer'] or '{}')
+                        except json.JSONDecodeError:
+                            args = {}
+                        self._pending_events.append(ToolInputAvailableEvent(
+                            tool_call_id=item_id,
+                            tool_name=tc['name'],
+                            input=args
+                        ))
+
+                # Emit tool-output-available with result
+                output = item.get('result') or item.get('output', {})
+                return ToolOutputAvailableEvent(
+                    tool_call_id=item_id,
+                    output=output
+                )
+
+        return None
+
+    def _finalize(self) -> Optional[StreamEvent]:
+        """Finalize any open blocks."""
+        # Drain pending first
+        if self._pending_events:
+            return self._pending_events.popleft()
+
+        # Close reasoning block
+        if self._reasoning_block_id:
+            block_id = self._reasoning_block_id
+            self._reasoning_block_id = None
+            if self._text_block_id:
+                self._pending_events.append(TextEndEvent(block_id=self._text_block_id))
+                self._text_block_id = None
+            return ReasoningEndEvent(block_id=block_id)
+
+        # Close text block
+        if self._text_block_id:
+            block_id = self._text_block_id
+            self._text_block_id = None
+            return TextEndEvent(block_id=block_id)
+
+        # Emit any remaining tool-input-available
+        for call_id, tc in self._tool_calls.items():
+            if tc['args_buffer']:
+                try:
+                    args = json.loads(tc['args_buffer'] or '{}')
+                except json.JSONDecodeError:
+                    args = {}
+                self._pending_events.append(ToolInputAvailableEvent(
+                    tool_call_id=call_id,
+                    tool_name=tc['name'],
+                    input=args
+                ))
+
+        if self._pending_events:
+            return self._pending_events.popleft()
+
+        return None
+
+    def get_pending_event(self) -> Optional[StreamEvent]:
+        """Get next pending event without processing new event."""
+        if self._pending_events:
+            return self._pending_events.popleft()
+        return None
+
+    def reset(self):
+        """Reset translator state."""
+        self._text_block_id = None
+        self._reasoning_block_id = None
+        self._next_block_index = 0
+        self._tool_calls.clear()
+        self._pending_events.clear()
+        self._active_output_items.clear()
+
+
 __all__ = [
     'OpenAIAPITranslator',
+    'OpenAIResponsesAPITranslator',
     'OpenAIAgentsSDKTranslator',
     'AnthropicAPITranslator',
     'GeminiAPITranslator',

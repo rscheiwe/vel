@@ -2,13 +2,14 @@
 from __future__ import annotations
 from typing import Dict
 from .base import BaseProvider
-from .openai import OpenAIProvider
+from .openai import OpenAIProvider, OpenAIResponsesProvider
 from .google import GeminiProvider
 from .anthropic import AnthropicProvider
 
 # Export translators
 from .translators import (
     OpenAIAPITranslator,
+    OpenAIResponsesAPITranslator,
     OpenAIAgentsSDKTranslator,
     AnthropicAPITranslator,
     GeminiAPITranslator,
@@ -39,6 +40,11 @@ class ProviderRegistry:
         except (ImportError, ValueError):
             # Anthropic not available or API key not set, skip
             pass
+        try:
+            self._providers['openai-responses'] = OpenAIResponsesProvider()
+        except (ImportError, ValueError):
+            # OpenAI Responses API not available or API key not set, skip
+            pass
 
     @classmethod
     def default(cls) -> 'ProviderRegistry':
@@ -61,11 +67,13 @@ class ProviderRegistry:
 __all__ = [
     'BaseProvider',
     'OpenAIProvider',
+    'OpenAIResponsesProvider',
     'GeminiProvider',
     'AnthropicProvider',
     'ProviderRegistry',
     # Translators
     'OpenAIAPITranslator',
+    'OpenAIResponsesAPITranslator',
     'OpenAIAgentsSDKTranslator',
     'AnthropicAPITranslator',
     'GeminiAPITranslator',

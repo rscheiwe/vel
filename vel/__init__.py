@@ -44,6 +44,14 @@ from .prompts import (
     ContextCompactor,
     MessageFormatter
 )
+from .rlm import (
+    RlmConfig,
+    RlmController,
+    Scratchpad,
+    Note,
+    Budget,
+    ContextStore
+)
 
 __all__ = [
     'Agent',
@@ -93,5 +101,12 @@ __all__ = [
     'XMLFormatter',
     'MarkdownFormatter',
     'ContextCompactor',
-    'MessageFormatter'
+    'MessageFormatter',
+    # RLM module
+    'RlmConfig',
+    'RlmController',
+    'Scratchpad',
+    'Note',
+    'Budget',
+    'ContextStore'
 ]

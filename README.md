@@ -8,6 +8,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 
 - **Dual Execution Modes**: Streaming (SSE) and non-streaming (JSON) responses
 - **Multiple LLM Providers**: OpenAI, Google Gemini, and Anthropic Claude with plug-and-play architecture
+- **RLM (Recursive Language Model)**: Handle 5MB+ documents through iterative reasoning, context probing, and budget-controlled execution
 - **Generation Configuration**: Full control over model parameters (temperature, max_tokens, top_p, etc.) with per-run override support - matches Vercel AI SDK flexibility
 - **Stream Protocol**: Vercel AI SDK **V5 UI Stream Protocol** compatible - works seamlessly with React `useChat()` and frontend components (100% parity)
   - Exact event naming (`tool-call`, `tool-result`, etc.)
@@ -15,9 +16,10 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
   - Response metadata (token usage tracking)
   - Source events (citations and grounding)
   - File events (inline data support)
+  - Reasoning events (OpenAI o1/o3 chain-of-thought streaming)
   - Anthropic thinking blocks
   - Enhanced error details
-- **Message Aggregation**: MessageReducer for converting streaming events to Vercel AI SDK message format for database storage
+- **Message Aggregation**: MessageReducer for converting streaming events (text, reasoning, tools) to Vercel AI SDK message format for database storage
 - **Tool System**: JSON schema-validated tools with async support
 - **Flexible Prompts**: Jinja2 templating with XML formatting, environment-based configuration, and version control
 - **Persistent Storage**: PostgreSQL for durability, Redis for caching
@@ -29,6 +31,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 
 - [Getting Started](https://rscheiwe.github.io/vel/getting-started) - Installation and quick start
 - [Session Management](https://rscheiwe.github.io/vel/sessions) - Multi-turn conversations
+- [RLM (Recursive Language Model)](https://rscheiwe.github.io/vel/rlm) - Long context support (5MB+) with iterative reasoning
 - [Prompt Templates](https://rscheiwe.github.io/vel/prompts) - Flexible prompt management with Jinja2 and XML
 - [Providers](https://rscheiwe.github.io/vel/providers) - OpenAI, Gemini, and Claude configuration
 - [Tools](https://rscheiwe.github.io/vel/tools) - Custom tool creation
@@ -44,6 +47,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 ```
 vel/
 ├── providers/      # LLM provider implementations (OpenAI, Gemini, Anthropic)
+├── rlm/            # RLM (Recursive Language Model) for long context support
 ├── storage/        # Storage layer (Postgres, Redis)
 ├── tools/          # Tool registry and specifications
 ├── prompts/        # Prompt templates with Jinja2 and XML formatting
@@ -127,6 +131,7 @@ curl -X POST http://localhost:8000/runs/sync \
 Vel uses the [Vercel AI SDK V5 UI Stream Protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) for frontend-compatible event streaming:
 
 - `text-start`, `text-delta`, `text-end` - Text content chunks
+- `reasoning-start`, `reasoning-delta`, `reasoning-end` - Reasoning/chain-of-thought (o1/o3 models)
 - `tool-input-start`, `tool-input-delta` - Tool input streaming
 - `tool-input-available` - Complete tool input ready for execution
 - `tool-output-available` - Tool execution result
@@ -138,6 +143,47 @@ Vel uses the [Vercel AI SDK V5 UI Stream Protocol](https://ai-sdk.dev/docs/ai-sd
 - `error`, `finish-message` - Error handling and completion
 
 **Frontend Compatible:** Works seamlessly with React's `useChat()`, `useCompletion()`, and other Vercel AI SDK frontend components. Each provider translates native events into V5-compatible standardized events.
+
+#### Enhanced Error Handling
+
+Vel automatically surfaces detailed error information without requiring manual print statements. Error events include:
+
+```python
+{
+  'type': 'error',
+  'error': 'max_tokens must be greater than thinking.budget_tokens',
+  'errorCode': 'invalid_request_error',
+  'errorType': 'InvalidRequestError',
+  'statusCode': 400,
+  'provider': 'anthropic',
+  'details': {
+    'type': 'error',
+    'message': 'max_tokens must be greater than thinking.budget_tokens'
+  }
+}
+```
+
+**Automatic Logging:** Errors are automatically logged with full context:
+```python
+# Errors are logged automatically
+agent = Agent(id='agent:v1', model={'provider': 'openai', 'model': 'gpt-4o'})
+
+# If an error occurs, it's logged with full context
+# No manual print statements needed!
+async for event in agent.run_stream({'message': 'test'}):
+    if event['type'] == 'error':
+        # Full error context is available in the event
+        print(f"Error from {event['provider']}: {event['error']}")
+        if event.get('statusCode'):
+            print(f"HTTP {event['statusCode']}")
+```
+
+**Python Logging:** Configure logging to see detailed error traces:
+```python
+import logging
+logging.basicConfig(level=logging.ERROR)
+# vel.agent logger will now output detailed error information
+```
 
 ### Message Aggregation
 
@@ -172,9 +218,33 @@ for msg in messages:
     await db.insert_message(msg)
 ```
 
+**With Reasoning (o1/o3 models):**
+
+```python
+# Create reducer for reasoning model
+reducer = MessageReducer()
+reducer.add_user_message("What is sqrt(169)?")
+
+agent = Agent(
+    id='reasoning-agent',
+    model={'provider': 'openai-responses', 'model': 'o1'}
+)
+
+async for event in agent.run_stream({'message': 'What is sqrt(169)?'}):
+    reducer.process_event(event)
+
+messages = reducer.get_messages()
+# assistant message parts: [
+#   {'type': 'step-start'},
+#   {'type': 'reasoning', 'text': '', 'state': 'done', 'providerMetadata': {...}},
+#   {'type': 'text', 'text': 'The answer is 13', 'state': 'done'}
+# ]
+```
+
 **Features:**
 - ✓ Vercel AI SDK `useChat` hook compatible
-- ✓ Aggregates text, tool calls, and results into parts array
+- ✓ Aggregates text, reasoning, tool calls, and results into parts array
+- ✓ Reasoning parts with provider metadata (o1/o3 models)
 - ✓ Provider metadata (OpenAI message/call IDs)
 - ✓ Custom message IDs and metadata support
 
@@ -208,6 +278,43 @@ agent = Agent(
     model={'provider': 'anthropic', 'model': 'claude-sonnet-4-20250514'}
 )
 ```
+
+### Reasoning Models (o1/o3)
+
+Vel supports OpenAI's reasoning models. **Use the Responses API provider** for reasoning event indicators:
+
+```python
+agent = Agent(
+    id='reasoning-agent',
+    model={
+        'provider': 'openai-responses',  # Use Responses API for reasoning events
+        'model': 'o1'  # or 'o1-mini', 'o3-mini'
+    }
+)
+
+async for event in agent.run_stream({'message': 'Solve: sqrt(169)'}):
+    if event['type'] == 'reasoning-start':
+        print("🧠 Reasoning begins...")
+    elif event['type'] == 'reasoning-delta':
+        # Note: OpenAI often encrypts reasoning content, so deltas may be empty
+        delta = event.get('delta', '')
+        if delta:
+            print(f"💭 {delta}", end='', flush=True)
+    elif event['type'] == 'reasoning-end':
+        print("\n✅ Reasoning complete")
+    elif event['type'] == 'text-delta':
+        print(event['delta'], end='', flush=True)
+```
+
+**Event Flow**:
+1. `reasoning-start` - Reasoning block begins
+2. `reasoning-delta` - Reasoning content (often empty/encrypted by OpenAI)
+3. `reasoning-end` - Reasoning block ends
+4. `text-start` → `text-delta`* → `text-end` - Final answer
+
+**Note**: OpenAI encrypts reasoning content for o1/o3 models in most cases. You'll receive `reasoning-start` and `reasoning-end` events to indicate reasoning occurred, but `reasoning-delta` events may be empty. This matches the AI SDK behavior.
+
+**See**: [examples/responses_api.py](examples/responses_api.py) for Responses API examples, [examples/reasoning_o1.py](examples/reasoning_o1.py) for Chat Completions API
 
 ## Session Management (Multi-Turn Conversations)
 
@@ -397,6 +504,81 @@ agent = Agent(
 
 See `examples/generation_config_example.py` for comprehensive examples.
 
+## RLM (Recursive Language Model) - Long Context Support
+
+RLM is a middleware that enables agents to handle very long contexts (5MB+) through recursive reasoning and iterative context probing.
+
+### How It Works
+
+Instead of loading the entire context into the prompt, RLM:
+1. **Probes context iteratively** using tools (search, read, summarize)
+2. **Accumulates notes** in a scratchpad
+3. **Reasons recursively** until reaching a FINAL() answer
+4. **Enforces budgets** for cost and performance control
+
+```python
+from vel import Agent
+
+# Enable RLM for long-context reasoning
+agent = Agent(
+    id='doc-analyzer:v1',
+    model={'provider': 'openai', 'model': 'gpt-4o-mini'},
+    rlm={
+        'enabled': True,
+        'depth': 1,  # Allow recursive sub-queries
+        'control_model': {'provider': 'openai', 'model': 'gpt-4o-mini'},
+        'writer_model': {'provider': 'openai', 'model': 'gpt-4o'},  # Optional
+        'budgets': {
+            'max_steps_root': 12,
+            'max_tokens_total': 120000,
+            'max_cost_usd': 0.50
+        }
+    }
+)
+
+# Use with large documents (5MB+)
+with open('large_document.txt') as f:
+    large_doc = f.read()
+
+answer = await agent.run(
+    input={'message': 'Summarize the key findings and recommendations.'},
+    context_refs=large_doc  # RLM activates automatically
+)
+```
+
+### Key Features
+
+- **No context window limits** - Handle documents beyond model limits
+- **Cost efficient** - Use cheap models for iteration, strong models for synthesis
+- **Budget controls** - Hard limits on steps, tokens, and cost
+- **Streaming support** - Emit RLM events (probes, notes, budget status)
+- **REPL-style execution** - Optional `python_exec` for complex data processing (disabled by default)
+
+### Tools
+
+RLM provides three tools for context interaction:
+
+- **context_probe** - Safe search/read/summarize operations (always enabled)
+- **rlm_call** - Spawn recursive sub-queries for decomposition
+- **python_exec** - Execute Python code with CONTEXT variable (⚠️ security risk, disabled by default)
+
+### Documentation
+
+See the [complete RLM guide](https://rscheiwe.github.io/vel/rlm) for:
+- Detailed architecture and control flow
+- Configuration options and tuning
+- Security considerations for `python_exec`
+- Streaming events
+- Examples and best practices
+
+### Example Output
+
+```bash
+python examples/rlm_basic.py
+```
+
+Inspired by [Alex Zhang's RLM approach](https://alexzhang13.github.io/blog/2025/rlm/).
+
 ## Configuration
 
 Environment variables (see `.env.example`):
@@ -426,6 +608,7 @@ Vel includes comprehensive examples demonstrating various patterns:
 
 **Core Examples:**
 - `examples/quickstart.py` - Basic agent usage (streaming & non-streaming)
+- `examples/rlm_basic.py` - RLM for long contexts (5MB+ documents)
 - `examples/message_reducer_example.py` - MessageReducer for database storage
 - `examples/custom_data_events.py` - Custom data-* events with transient flag
 - `examples/context_modes.py` - Different context management strategies
@@ -470,6 +653,7 @@ mypy vel/
 Vel is designed following the [12-Factor Agent principles](https://github.com/humanlayer/12-factor-agents) (by Dex and contributors) for production-ready AI applications. See our [implementation guide](docs/12-factor-alignment.md) for details.
 
 - **Agent**: Main orchestrator with dual execution modes (streaming/non-streaming)
+- **RLM**: Middleware for long-context reasoning (5MB+) with iterative probing and budget controls
 - **ContextManager**: Message history layer for conversation turns (configurable: full/stateless/limited)
 - **Reducer**: Pure function for state transitions and effect generation (stateless, reproducible)
 - **Providers**: LLM-specific implementations with stream protocol translation
@@ -492,7 +676,9 @@ Vel is designed following the [12-Factor Agent principles](https://github.com/hu
 - [ ] Add knowledge-graph memory layer
 - [ ] Add example of how to create Vel agents via a tool
 - [ ] Add guardrails
+- [ ] Stress test RLM with real-world large documents
 - [x] ~~Update ReasoningBank to include e2e implementation as described in Google's paper~~ (Phase 1 complete, see `docs/Memory/reasoningbank-phase2-roadmap.md` for Phase 2)
+- [x] ~~Add RLM (Recursive Language Model) support for long contexts~~ (Complete - see `docs/rlm.md`)
 
 ## License
 
