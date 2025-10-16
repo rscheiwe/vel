@@ -35,6 +35,9 @@ All events have a `type` field identifying the event:
 | `tool-input-delta` | Tool argument chunk (streaming) |
 | `tool-input-available` | Tool arguments complete |
 | `tool-output-available` | Tool execution result |
+| `step-start` | Agent step started (multi-step agents) |
+| `step-finish` | Agent step finished (multi-step agents) |
+| `data-*` | Custom application data (e.g., `data-notification`, `data-progress`) |
 | `finish-message` | Message generation complete |
 | `error` | Error occurred |
 | `reasoning-start` | Reasoning block started (future) |
@@ -261,6 +264,118 @@ async for event in agent.run_stream({'message': 'Weather in NYC?'}):
   "error": "Rate limit exceeded"
 }
 ```
+
+---
+
+### data-* (Custom Data Events)
+
+**When:** Application-specific data needs to be streamed
+
+**Pattern:** `data-{customName}` (e.g., `data-notification`, `data-progress`, `data-stage-data`)
+
+**Fields:**
+- `type`: Custom type following `data-*` pattern (string)
+- `data`: Custom payload (any JSON-serializable value)
+- `transient` (optional): If `true`, event NOT saved to message history (boolean)
+
+**Use Cases:**
+- UI notifications (transient)
+- Progress updates (transient)
+- Stage transitions (persistent)
+- Real-time metrics (persistent or transient)
+
+**Examples:**
+
+Transient notification (not saved to history):
+```json
+{
+  "type": "data-notification",
+  "data": {
+    "message": "Processing your request...",
+    "level": "info"
+  },
+  "transient": true
+}
+```
+
+Persistent stage data (saved to history):
+```json
+{
+  "type": "data-stage-data",
+  "data": {
+    "stage": "analyzing",
+    "step": 1,
+    "total_steps": 5,
+    "description": "Breaking down the problem"
+  },
+  "transient": false
+}
+```
+
+Progress update (transient):
+```json
+{
+  "type": "data-progress",
+  "data": {
+    "percent": 50,
+    "message": "Halfway there..."
+  },
+  "transient": true
+}
+```
+
+**Backend Usage:**
+```python
+from vel import DataEvent
+
+# Emit transient notification
+yield DataEvent(
+    type='data-notification',
+    data={'message': 'Processing...', 'level': 'info'},
+    transient=True
+).to_dict()
+
+# Emit persistent stage data
+yield DataEvent(
+    type='data-stage-data',
+    data={'stage': 'analyzing'},
+    transient=False
+).to_dict()
+```
+
+**Frontend Integration (Vercel AI SDK):**
+```typescript
+import { useChat } from 'ai/react';
+
+const { messages } = useChat({
+  api: '/api/chat',
+
+  // Transient events (NOT in message.parts)
+  onData: (dataPart) => {
+    if (dataPart.type === 'data-notification') {
+      toast.info(dataPart.data.message);
+    }
+    if (dataPart.type === 'data-progress') {
+      setProgress(dataPart.data.percent);
+    }
+  }
+});
+
+// Persistent events (in message.parts)
+messages.forEach(msg => {
+  msg.parts.forEach(part => {
+    if (part.type === 'data-stage-data') {
+      console.log('Stage:', part.data.stage);
+    }
+  });
+});
+```
+
+**Transient vs Persistent:**
+- `transient: true` - Event sent to client but NOT added to message history (real-time UI updates only)
+- `transient: false` (default) - Event saved to message parts array (can be replayed/stored)
+
+**See also:** `examples/custom_data_events.py` for comprehensive examples.
 
 ## Event Sequences
 

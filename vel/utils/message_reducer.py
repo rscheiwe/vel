@@ -97,29 +97,39 @@ class MessageReducer:
         """
         event_type = event.get('type')
 
+        # Check for transient flag - skip adding to message history if transient
+        is_transient = event.get('transient', False)
+
         if event_type == 'start':
             self._handle_start(event)
 
         elif event_type == 'step-start':
-            self._handle_step_start(event)
+            if not is_transient:
+                self._handle_step_start(event)
 
         elif event_type == 'step-finish':
-            self._handle_step_finish(event)
+            if not is_transient:
+                self._handle_step_finish(event)
 
         elif event_type == 'tool-input-available':
-            self._handle_tool_input_available(event)
+            if not is_transient:
+                self._handle_tool_input_available(event)
 
         elif event_type == 'tool-output-available':
-            self._handle_tool_output_available(event)
+            if not is_transient:
+                self._handle_tool_output_available(event)
 
         elif event_type == 'text-start':
-            self._handle_text_start(event)
+            if not is_transient:
+                self._handle_text_start(event)
 
         elif event_type == 'text-delta':
-            self._handle_text_delta(event)
+            if not is_transient:
+                self._handle_text_delta(event)
 
         elif event_type == 'text-end':
-            self._handle_text_end(event)
+            if not is_transient:
+                self._handle_text_end(event)
 
         elif event_type == 'response-metadata':
             self._handle_response_metadata(event)
@@ -128,7 +138,13 @@ class MessageReducer:
             self._handle_finish_message(event)
 
         elif event_type == 'error':
-            self._handle_error(event)
+            if not is_transient:
+                self._handle_error(event)
+
+        # Handle custom data-* events
+        elif event_type and event_type.startswith('data-'):
+            if not is_transient:
+                self._handle_custom_data(event)
 
         # Other event types (reasoning-start, etc.) can be added as needed
 
@@ -267,6 +283,19 @@ class MessageReducer:
             'type': 'error',
             'error': error_msg
         })
+
+    def _handle_custom_data(self, event: Dict[str, Any]) -> None:
+        """Handle custom data-* events (e.g., data-notification, data-progress)"""
+        event_type = event.get('type', 'data')
+        data = event.get('data')
+
+        # Add custom data as a part
+        part = {
+            'type': event_type,  # e.g., "data-notification", "data-stage-data"
+            'data': data
+        }
+
+        self._parts.append(part)
 
     def get_assistant_message(
         self,

@@ -129,6 +129,8 @@ Vel uses the [Vercel AI SDK V5 UI Stream Protocol](https://ai-sdk.dev/docs/ai-sd
 - `tool-input-start`, `tool-input-delta` - Tool input streaming
 - `tool-input-available` - Complete tool input ready for execution
 - `tool-output-available` - Tool execution result
+- `step-start`, `step-finish` - Multi-step agent progress
+- `data-*` - Custom application events (notifications, progress, metrics) with transient flag support
 - `response-metadata` - Token usage and model info
 - `source` - Citations and grounding (Gemini)
 - `file` - Inline file attachments
@@ -424,6 +426,7 @@ Vel includes comprehensive examples demonstrating various patterns:
 **Core Examples:**
 - `examples/quickstart.py` - Basic agent usage (streaming & non-streaming)
 - `examples/message_reducer_example.py` - MessageReducer for database storage
+- `examples/custom_data_events.py` - Custom data-* events with transient flag
 - `examples/context_modes.py` - Different context management strategies
 - `examples/generation_config_example.py` - Model parameter control
 - `examples/prompt_templates.py` - Prompt template system
