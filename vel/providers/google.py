@@ -139,7 +139,29 @@ class GeminiProvider(BaseProvider):
             yield FinishMessageEvent(finish_reason='stop')
 
         except Exception as e:
-            yield ErrorEvent(error=str(e))
+            yield self._create_error_event(e)
+
+    def _create_error_event(self, exception: Exception) -> ErrorEvent:
+        """Create detailed ErrorEvent from exception
+
+        Extracts error codes and provider-specific error details.
+        """
+        # Handle Google API errors
+        if hasattr(exception, 'reason'):
+            # google.api_core.exceptions have 'reason' attribute
+            return ErrorEvent(
+                error=str(exception),
+                error_code=getattr(exception, 'code', None),
+                error_type=type(exception).__name__,
+                provider='google'
+            )
+
+        # Generic exception handling
+        return ErrorEvent(
+            error=str(exception),
+            error_type=type(exception).__name__,
+            provider='google'
+        )
 
     async def generate(
         self,
@@ -190,6 +212,16 @@ class GeminiProvider(BaseProvider):
                 tools=tool_config if tool_config else None
             )
 
+            # Extract usage if available
+            usage = {}
+            if hasattr(response, 'usage_metadata'):
+                um = response.usage_metadata
+                usage = {
+                    'prompt_tokens': getattr(um, 'prompt_token_count', 0),
+                    'completion_tokens': getattr(um, 'candidates_token_count', 0),
+                    'total_tokens': getattr(um, 'total_token_count', 0)
+                }
+
             # Check for function calls
             if hasattr(response, 'parts'):
                 for part in response.parts:
@@ -198,11 +230,17 @@ class GeminiProvider(BaseProvider):
                         args = dict(fc.args) if hasattr(fc, 'args') else {}
                         return {
                             'tool': fc.name,
-                            'args': args
+                            'args': args,
+                            'usage': usage
                         }
 
             # Return text response
-            return {'done': True, 'answer': response.text if hasattr(response, 'text') else ''}
+            return {'done': True, 'answer': response.text if hasattr(response, 'text') else '', 'usage': usage}
 
         except Exception as e:
-            raise RuntimeError(f"Gemini generation failed: {e}")
+            # Raise with enhanced error context
+            error_msg = str(e)
+            error_type = type(e).__name__
+            if hasattr(e, 'code'):
+                raise RuntimeError(f"Gemini generation failed ({error_type}, code={e.code}): {error_msg}") from e
+            raise RuntimeError(f"Gemini generation failed ({error_type}): {error_msg}") from e

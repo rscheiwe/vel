@@ -1,13 +1,17 @@
 from __future__ import annotations
 import asyncio
 import warnings
+import logging
 from typing import Any, AsyncGenerator, Dict, List, Optional, Literal
+
+# Configure logger for error surfacing
+logger = logging.getLogger('vel.agent')
 from .core import State, reduce, ContextManager
 from .providers import ProviderRegistry
 from .tools import ToolRegistry, validate_io
 from .storage import RunStore
 from .events import (
-    StreamEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
+    StreamEvent, StartEvent, FinishEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
     ErrorEvent, FinishMessageEvent, StepStartEvent, StepFinishEvent
 )
 from .prompts import PromptContextManager
@@ -20,6 +24,7 @@ class Agent:
                  prompt_id: Optional[str]=None,
                  prompt_vars: Optional[Dict[str, Any]]=None,
                  generation_config: Optional[Dict[str, Any]]=None,
+                 rlm: Optional[Dict[str, Any]]=None,
                  # Deprecated (backwards compatibility)
                  session_storage: Optional[Literal['memory', 'database']]=None):
         """
@@ -62,6 +67,10 @@ class Agent:
                 - stop: List[str] - Stop sequences
                 - seed: int - Reproducibility seed (OpenAI, Anthropic)
 
+            rlm: RLM (Recursive Language Model) configuration for handling long contexts
+                Dictionary that will be converted to RlmConfig. Set 'enabled': True to activate.
+                See RlmConfig for full options.
+
             session_storage: [DEPRECATED] Use session_persistence instead
                 - 'memory' → use 'transient'
                 - 'database' → use 'persistent'
@@ -72,6 +81,15 @@ class Agent:
         self.tools = tools or []
         self.policies = policies or {'max_steps': 24, 'retry': {'attempts': 2}}
         self.generation_config = generation_config or {}
+
+        # RLM configuration
+        self.rlm_config = None
+        if rlm:
+            from .rlm import RlmConfig
+            if isinstance(rlm, dict):
+                self.rlm_config = RlmConfig(**rlm)
+            else:
+                self.rlm_config = rlm
 
         # Handle backwards compatibility for session_storage
         if session_storage is not None:
@@ -138,7 +156,14 @@ class Agent:
         validate_io(tool.output_schema, result)
         return result
 
-    async def run(self, input: Dict[str, Any], session_id: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None) -> str:
+    async def run(
+        self,
+        input: Dict[str, Any],
+        session_id: Optional[str] = None,
+        generation_config: Optional[Dict[str, Any]] = None,
+        context_refs: Optional[Any] = None,
+        rlm: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
         Non-streaming run - returns final answer only.
 
@@ -147,7 +172,28 @@ class Agent:
             session_id: Optional session ID for multi-turn conversations.
                        If provided, context persists across multiple run() calls.
             generation_config: Optional per-run generation config that overrides agent-level config.
+            context_refs: Optional context references for RLM (large documents, files, URLs)
+            rlm: Optional per-run RLM config that overrides agent-level config
         """
+        # Check if RLM is enabled (per-run override or agent-level config)
+        rlm_config = None
+        if rlm and rlm.get('enabled'):
+            from .rlm import RlmConfig
+            rlm_config = RlmConfig(**rlm) if isinstance(rlm, dict) else rlm
+        elif self.rlm_config and self.rlm_config.enabled:
+            rlm_config = self.rlm_config
+
+        # If RLM is enabled and we have context, route to RLM controller
+        if rlm_config and context_refs:
+            from .rlm import RlmController
+
+            controller = RlmController(config=rlm_config, agent=self)
+            result = await controller.run(
+                user_query=input.get('message', str(input)),
+                context_refs=context_refs,
+                session_id=session_id
+            )
+            return result['answer']
         # Load session from DB if using database storage
         if session_id:
             await self._load_session(session_id)
@@ -196,11 +242,27 @@ class Agent:
             await self.store.update_status(run_id, 'canceled')
             raise
         except Exception as e:
-            await self.store.append_event(run_id, {'kind':'error','message': str(e)})
+            # Log detailed error information
+            error_type = type(e).__name__
+            logger.error(f"Agent run failed: {error_type}: {str(e)}", exc_info=True)
+
+            # Store error with context
+            await self.store.append_event(run_id, {
+                'kind': 'error',
+                'message': str(e),
+                'error_type': error_type
+            })
             await self.store.update_status(run_id, 'failed')
             raise
 
-    async def run_stream(self, input: Dict[str, Any], session_id: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def run_stream(
+        self,
+        input: Dict[str, Any],
+        session_id: Optional[str] = None,
+        generation_config: Optional[Dict[str, Any]] = None,
+        context_refs: Optional[Any] = None,
+        rlm: Optional[Dict[str, Any]] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streaming run - yields stream protocol events as they occur.
 
@@ -209,7 +271,29 @@ class Agent:
             session_id: Optional session ID for multi-turn conversations.
                        If provided, context persists across multiple run_stream() calls.
             generation_config: Optional per-run generation config that overrides agent-level config.
+            context_refs: Optional context references for RLM (large documents, files, URLs)
+            rlm: Optional per-run RLM config that overrides agent-level config
         """
+        # Check if RLM is enabled (per-run override or agent-level config)
+        rlm_config = None
+        if rlm and rlm.get('enabled'):
+            from .rlm import RlmConfig
+            rlm_config = RlmConfig(**rlm) if isinstance(rlm, dict) else rlm
+        elif self.rlm_config and self.rlm_config.enabled:
+            rlm_config = self.rlm_config
+
+        # If RLM is enabled and we have context, route to RLM controller
+        if rlm_config and context_refs:
+            from .rlm import RlmController
+
+            controller = RlmController(config=rlm_config, agent=self)
+            async for event in controller.run_stream(
+                user_query=input.get('message', str(input)),
+                context_refs=context_refs,
+                session_id=session_id
+            ):
+                yield event
+            return
         # Load session from DB if using database storage
         if session_id:
             await self._load_session(session_id)
@@ -217,6 +301,9 @@ class Agent:
         run_id = await self.store.create_run(self.id)
         self.ctxmgr.set_input(run_id, input, session_id)
         await self.store.append_event(run_id, {'kind':'start', 'agent_id': self.id, 'input':input})
+
+        # Emit start event (V5 UI Stream Protocol)
+        yield StartEvent().to_dict()
 
         steps = 0
         max_steps = self.policies.get('max_steps', 24)
@@ -264,8 +351,27 @@ class Agent:
 
                     # Handle errors
                     elif event.type == 'error':
-                        await self.store.append_event(run_id, {'kind':'error', 'message': event.error})
+                        # Log detailed error information automatically
+                        error_context = {
+                            'error': event.error,
+                            'provider': getattr(event, 'provider', 'unknown'),
+                            'error_type': getattr(event, 'error_type', None),
+                            'error_code': getattr(event, 'error_code', None),
+                            'status_code': getattr(event, 'status_code', None)
+                        }
+                        logger.error(f"Agent error: {error_context}")
+
+                        # Store error in run store
+                        await self.store.append_event(run_id, {
+                            'kind': 'error',
+                            'message': event.error,
+                            'details': error_context
+                        })
                         await self.store.update_status(run_id, 'failed')
+
+                        # Yield the full error event (includes all context)
+                        yield event.to_dict()
+                        yield FinishEvent().to_dict()
                         return
 
                 # If we got text and no tool calls, we're done
@@ -281,6 +387,9 @@ class Agent:
                         await self._save_session(session_id)
                     await self.store.append_event(run_id, {'kind':'final', 'answer': answer})
                     await self.store.update_status(run_id, 'completed')
+
+                    # Emit finish event (V5 UI Stream Protocol)
+                    yield FinishEvent().to_dict()
                     return
 
                 # If we got tool calls, execute them and continue
@@ -316,6 +425,7 @@ class Agent:
                             yield error_event.to_dict()
                             await self.store.append_event(run_id, {'kind':'error', 'message': str(e)})
                             await self.store.update_status(run_id, 'failed')
+                            yield FinishEvent().to_dict()
                             return
 
                     # Emit step-finish event after tool execution
@@ -329,6 +439,7 @@ class Agent:
                 await self.store.update_status(run_id, 'failed')
                 error_event = ErrorEvent(error='No response from LLM')
                 yield error_event.to_dict()
+                yield FinishEvent().to_dict()
                 return
 
             # Max steps exceeded
@@ -337,6 +448,7 @@ class Agent:
             await self.store.update_status(run_id, 'failed')
             error_event = ErrorEvent(error=msg)
             yield error_event.to_dict()
+            yield FinishEvent().to_dict()
 
         except asyncio.CancelledError:
             await self.store.update_status(run_id, 'canceled')

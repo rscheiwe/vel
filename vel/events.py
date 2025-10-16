@@ -26,6 +26,7 @@ EventType = Literal[
     'step-start',  # V5 UI Stream Protocol (multi-step agents)
     'step-finish',  # V5 UI Stream Protocol (multi-step agents)
     'finish-message',
+    'finish',  # V5 UI Stream Protocol (end of generation)
     'error'
 ]
 
@@ -192,6 +193,18 @@ class StepFinishEvent(StreamEvent):
         return super().to_dict()
 
 @dataclass
+class FinishEvent(StreamEvent):
+    """Finish the entire generation
+
+    Emitted at the very end of a streaming response, after all steps complete.
+    Matches Vercel AI SDK V5 UI Stream Protocol.
+    """
+    type: Literal['finish'] = 'finish'
+
+    def to_dict(self) -> Dict[str, Any]:
+        return super().to_dict()
+
+@dataclass
 class FinishMessageEvent(StreamEvent):
     """Finish the message"""
     type: Literal['finish-message'] = 'finish-message'
@@ -202,11 +215,18 @@ class FinishMessageEvent(StreamEvent):
 
 @dataclass
 class ErrorEvent(StreamEvent):
-    """Error event"""
+    """Error event with detailed error context
+
+    Provides comprehensive error information for debugging and logging.
+    Includes HTTP status, provider details, and error categorization.
+    """
     type: Literal['error'] = 'error'
     error: str = ''
     error_code: Optional[str] = None
     error_type: Optional[str] = None
+    status_code: Optional[int] = None  # HTTP status code (e.g., 400, 401, 429, 500)
+    provider: Optional[str] = None  # Provider name (e.g., 'openai', 'anthropic', 'google')
+    details: Optional[Dict[str, Any]] = None  # Additional error details from provider
 
     def to_dict(self) -> Dict[str, Any]:
         d = {**super().to_dict(), 'error': self.error}
@@ -214,6 +234,12 @@ class ErrorEvent(StreamEvent):
             d['errorCode'] = self.error_code
         if self.error_type:
             d['errorType'] = self.error_type
+        if self.status_code:
+            d['statusCode'] = self.status_code
+        if self.provider:
+            d['provider'] = self.provider
+        if self.details:
+            d['details'] = self.details
         return d
 
 @dataclass
@@ -297,3 +323,190 @@ class DataEvent(StreamEvent):
         if self.transient:
             d['transient'] = True
         return d
+
+
+# ============================================================================
+# RLM (Recursive Language Model) Events
+# ============================================================================
+# Custom events for RLM middleware that provides recursive reasoning over long contexts
+
+@dataclass
+class RlmStartEvent(DataEvent):
+    """RLM execution start event"""
+    type: str = 'data-rlm-start'
+    config: Optional[Dict[str, Any]] = None
+    depth: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.type,
+            'data': {
+                'config': self.config,
+                'depth': self.depth
+            },
+            'transient': True
+        }
+
+
+@dataclass
+class RlmStepStartEvent(DataEvent):
+    """RLM reasoning step start"""
+    type: str = 'data-rlm-step-start'
+    step: int = 0
+    budget: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.type,
+            'data': {
+                'step': self.step,
+                'budget': self.budget
+            },
+            'transient': True
+        }
+
+
+@dataclass
+class RlmStepFinishEvent(DataEvent):
+    """RLM reasoning step finish"""
+    type: str = 'data-rlm-step-finish'
+    step: int = 0
+    budget: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.type,
+            'data': {
+                'step': self.step,
+                'budget': self.budget
+            },
+            'transient': True
+        }
+
+
+@dataclass
+class RlmProbeEvent(DataEvent):
+    """RLM context probe execution"""
+    type: str = 'data-rlm-probe'
+    tool: str = ''
+    args: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.type,
+            'data': {
+                'tool': self.tool,
+                'args': self.args
+            },
+            'transient': True
+        }
+
+
+@dataclass
+class RlmNoteEvent(DataEvent):
+    """RLM scratchpad note added"""
+    type: str = 'data-rlm-note'
+    text: str = ''
+    source_hint: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.type,
+            'data': {
+                'text': self.text,
+                'source_hint': self.source_hint
+            },
+            'transient': True
+        }
+
+
+@dataclass
+class RlmRecursiveCallEvent(DataEvent):
+    """RLM recursive call (rlm_call tool)"""
+    type: str = 'data-rlm-recursive-call'
+    query: str = ''
+    depth: int = 0
+    status: str = 'starting'
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.type,
+            'data': {
+                'query': self.query,
+                'depth': self.depth,
+                'status': self.status
+            },
+            'transient': True
+        }
+
+
+@dataclass
+class RlmSynthesisEvent(DataEvent):
+    """RLM writer synthesis phase"""
+    type: str = 'data-rlm-synthesis'
+    status: str = 'starting'
+    answer: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {'status': self.status}
+        if self.answer:
+            data['answer'] = self.answer
+        return {
+            'type': self.type,
+            'data': data,
+            'transient': True
+        }
+
+
+@dataclass
+class RlmFinalEvent(DataEvent):
+    """RLM FINAL() detected - execution complete"""
+    type: str = 'data-rlm-final'
+    answer: str = ''
+    final_type: Optional[str] = None  # 'direct' or 'var'
+    reason: Optional[str] = None  # e.g., 'budget_exhausted'
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            'answer': self.answer,
+            'final_type': self.final_type
+        }
+        if self.reason:
+            data['reason'] = self.reason
+        return {
+            'type': self.type,
+            'data': data,
+            'transient': False  # Final answer should be saved to history
+        }
+
+
+@dataclass
+class RlmBudgetExhaustedEvent(DataEvent):
+    """RLM budget exhausted"""
+    type: str = 'data-rlm-budget-exhausted'
+    reason: str = ''
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.type,
+            'data': {'reason': self.reason},
+            'transient': True
+        }
+
+
+@dataclass
+class RlmCompleteEvent(DataEvent):
+    """RLM execution complete with metadata"""
+    type: str = 'data-rlm-complete'
+    answer: str = ''
+    meta: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.type,
+            'data': {
+                'answer': self.answer,
+                'meta': self.meta
+            },
+            'transient': True
+        }

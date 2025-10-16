@@ -21,14 +21,8 @@ class ToolRegistry:
 
     @classmethod
     def default(cls) -> 'ToolRegistry':
-        reg = cls()
-        reg.register(ToolSpec(
-            name='get_weather',
-            input_schema={'type':'object','properties':{'city':{'type':'string'}}, 'required':['city']},
-            output_schema={'type':'object','properties':{'temp_f':{'type':'number'}}, 'required':['temp_f']},
-            handler=lambda inp, ctx: {'temp_f': 72.0}
-        ))
-        return reg
+        """Return an empty registry with no default tools."""
+        return cls()
 
     def register(self, tool: ToolSpec):
         self._tools[tool.name] = tool

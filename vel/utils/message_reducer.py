@@ -3,6 +3,14 @@ Message Reducer - Aggregate streaming events into Vercel AI SDK message format
 
 This module provides a stateful reducer that transforms Vel's streaming events
 into Vercel AI SDK compatible message structures for storage and frontend use.
+
+Supports:
+- Text streaming (text-start/delta/end)
+- Reasoning events (reasoning-start/delta/end) for o1/o3 models
+- Tool calls (tool-input-available/tool-output-available)
+- Step tracking (step-start/step-finish)
+- Custom data events (data-*)
+- Error handling
 """
 from __future__ import annotations
 import uuid
@@ -15,7 +23,7 @@ class MessageReducer:
 
     Handles one user-assistant exchange at a time. Call reset() between exchanges.
 
-    Example:
+    Example (basic):
         reducer = MessageReducer()
 
         # Add user message
@@ -30,6 +38,21 @@ class MessageReducer:
 
         # Reset for next exchange
         reducer.reset()
+
+    Example (with reasoning - o1/o3 models):
+        reducer = MessageReducer()
+        reducer.add_user_message("What is sqrt(169)?")
+
+        # Process o1 streaming events (includes reasoning-start/delta/end)
+        async for event in agent.run_stream({'message': 'What is sqrt(169)?'}):
+            reducer.process_event(event)
+
+        messages = reducer.get_messages()
+        # assistant_msg.parts = [
+        #   {'type': 'step-start'},
+        #   {'type': 'reasoning', 'text': '', 'state': 'done', 'providerMetadata': {...}},
+        #   {'type': 'text', 'text': 'The answer is 13', 'state': 'done'}
+        # ]
     """
 
     def __init__(self):
@@ -45,6 +68,10 @@ class MessageReducer:
         # Track text blocks (aggregated from text-delta events)
         self._text_blocks: Dict[str, List[str]] = {}  # block_id -> list of deltas
         self._accumulated_text: List[str] = []  # All text chunks across all blocks
+
+        # Track reasoning (o1/o3 models)
+        self._accumulated_reasoning: List[str] = []  # Reasoning chunks
+        self._reasoning_block_id: Optional[str] = None  # Reasoning block ID for providerMetadata
 
         # Track tool calls (merge input + output)
         self._tool_calls: Dict[str, Dict[str, Any]] = {}  # toolCallId -> {tool_name, input, output}
@@ -130,6 +157,18 @@ class MessageReducer:
         elif event_type == 'text-end':
             if not is_transient:
                 self._handle_text_end(event)
+
+        elif event_type == 'reasoning-start':
+            if not is_transient:
+                self._handle_reasoning_start(event)
+
+        elif event_type == 'reasoning-delta':
+            if not is_transient:
+                self._handle_reasoning_delta(event)
+
+        elif event_type == 'reasoning-end':
+            if not is_transient:
+                self._handle_reasoning_end(event)
 
         elif event_type == 'response-metadata':
             self._handle_response_metadata(event)
@@ -268,6 +307,43 @@ class MessageReducer:
         # Don't create parts here - let text accumulate across multiple blocks
         # Text will be flushed when we hit a tool call or finish-message
         pass
+
+    def _handle_reasoning_start(self, event: Dict[str, Any]) -> None:
+        """Handle reasoning-start event - initialize reasoning block"""
+        block_id = event.get('id', 'reasoning')
+        self._reasoning_block_id = block_id
+        self._accumulated_reasoning.clear()
+
+    def _handle_reasoning_delta(self, event: Dict[str, Any]) -> None:
+        """Handle reasoning-delta event - aggregate reasoning chunks"""
+        delta = event.get('delta', '')
+        self._accumulated_reasoning.append(delta)
+
+    def _handle_reasoning_end(self, event: Dict[str, Any]) -> None:
+        """Handle reasoning-end event - flush reasoning as a part"""
+        # Flush reasoning immediately as a part
+        reasoning_text = ''.join(self._accumulated_reasoning)
+
+        reasoning_part = {
+            'type': 'reasoning',
+            'text': reasoning_text,
+            'state': 'done'
+        }
+
+        # Add providerMetadata if we have a reasoning block ID
+        if self._reasoning_block_id:
+            reasoning_part['providerMetadata'] = {
+                'openai': {
+                    'itemId': self._reasoning_block_id,
+                    'reasoningEncryptedContent': None if not reasoning_text else reasoning_text
+                }
+            }
+
+        self._parts.append(reasoning_part)
+
+        # Clear reasoning state
+        self._accumulated_reasoning.clear()
+        self._reasoning_block_id = None
 
     def _handle_finish_message(self, event: Dict[str, Any]) -> None:
         """Handle finish-message event - mark completion and flush remaining text"""
