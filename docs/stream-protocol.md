@@ -35,14 +35,17 @@ All events have a `type` field identifying the event:
 | `tool-input-delta` | Tool argument chunk (streaming) |
 | `tool-input-available` | Tool arguments complete |
 | `tool-output-available` | Tool execution result |
+| `reasoning-start` | Reasoning block started |
+| `reasoning-delta` | Reasoning chunk received |
+| `reasoning-end` | Reasoning block ended |
+| `response-metadata` | Response metadata (usage, model info) |
+| `source` | Source/citation event (web search, documents) |
 | `step-start` | Agent step started (multi-step agents) |
 | `step-finish` | Agent step finished (multi-step agents) |
 | `data-*` | Custom application data (e.g., `data-notification`, `data-progress`) |
 | `finish-message` | Message generation complete |
+| `finish` | Generation complete (V5 UI Stream Protocol) |
 | `error` | Error occurred |
-| `reasoning-start` | Reasoning block started (future) |
-| `reasoning-delta` | Reasoning chunk (future) |
-| `reasoning-end` | Reasoning block ended (future) |
 
 ## Event Reference
 
@@ -220,6 +223,213 @@ async for event in agent.run_stream({'message': 'Weather in NYC?'}):
     "city": "San Francisco"
   }
 }
+```
+
+**Provider-Executed Tools:**
+
+OpenAI Responses API supports provider-executed tools (`web_search_call`, `computer_call`) that are executed by OpenAI's servers. These emit `tool-output-available` with special metadata:
+
+```json
+{
+  "type": "tool-output-available",
+  "toolCallId": "call_web123",
+  "output": {
+    "results": [...],
+    "sources": [...]
+  },
+  "callProviderMetadata": {
+    "providerExecuted": true,
+    "providerName": "openai",
+    "toolType": "web_search_call"
+  }
+}
+```
+
+---
+
+### reasoning-start
+
+**When:** Reasoning/thinking block starts (OpenAI o1/o3, Claude thinking mode)
+
+**Fields:**
+- `type`: `"reasoning-start"`
+- `id`: Reasoning block identifier
+
+**Example:**
+```json
+{
+  "type": "reasoning-start",
+  "id": "reasoning_1"
+}
+```
+
+**Supported Models:**
+- **OpenAI**: o1, o3, o1-mini, o3-mini (reasoning encrypted/hidden)
+- **Anthropic**: claude-sonnet-4 with extended thinking (reasoning visible)
+
+---
+
+### reasoning-delta
+
+**When:** Reasoning chunk arrives
+
+**Fields:**
+- `type`: `"reasoning-delta"`
+- `id`: Reasoning block identifier
+- `delta`: Reasoning text chunk (string, may be empty for encrypted reasoning)
+
+**Example (Anthropic visible thinking):**
+```json
+{
+  "type": "reasoning-delta",
+  "id": "reasoning_1",
+  "delta": "Let me break this down step by step..."
+}
+```
+
+**Example (OpenAI encrypted reasoning):**
+```json
+{
+  "type": "reasoning-delta",
+  "id": "reasoning_1",
+  "delta": ""
+}
+```
+
+**Note:** OpenAI encrypts reasoning content for o1/o3 models, so `delta` will be empty. Claude's extended thinking is visible.
+
+**Usage:**
+```python
+reasoning_chunks = []
+async for event in agent.run_stream({'message': 'Complex math problem'}):
+    if event['type'] == 'reasoning-delta':
+        delta = event.get('delta', '')
+        if delta:  # Only print if not empty (OpenAI encrypts)
+            reasoning_chunks.append(delta)
+            print(delta, end='', flush=True)
+```
+
+---
+
+### reasoning-end
+
+**When:** Reasoning block completes
+
+**Fields:**
+- `type`: `"reasoning-end"`
+- `id`: Reasoning block identifier
+
+**Example:**
+```json
+{
+  "type": "reasoning-end",
+  "id": "reasoning_1"
+}
+```
+
+---
+
+### response-metadata
+
+**When:** Response metadata is available (id, model, usage)
+
+**Fields:**
+- `type`: `"response-metadata"`
+- `id` (optional): Message/response ID from provider
+- `modelId` (optional): Model identifier
+- `timestamp` (optional): ISO 8601 timestamp
+- `usage` (optional): Token usage statistics
+
+**AI SDK V5 Parity:**
+Metadata is emitted **early** when id/model are known (before streaming completes), then **updated** when usage data arrives.
+
+**Early metadata example:**
+```json
+{
+  "type": "response-metadata",
+  "id": "resp_abc123",
+  "modelId": "gpt-4o",
+  "usage": null
+}
+```
+
+**Usage update example:**
+```json
+{
+  "type": "response-metadata",
+  "id": "resp_abc123",
+  "modelId": "gpt-4o",
+  "usage": {
+    "promptTokens": 50,
+    "completionTokens": 120,
+    "totalTokens": 170
+  }
+}
+```
+
+**Usage:**
+```python
+async for event in agent.run_stream({'message': 'Hello'}):
+    if event['type'] == 'response-metadata':
+        if event.get('usage'):
+            tokens = event['usage']['totalTokens']
+            print(f"Total tokens used: {tokens}")
+```
+
+---
+
+### source
+
+**When:** Sources/citations are available (web search results, document references)
+
+**Fields:**
+- `type`: `"source"`
+- `sources`: Array of source objects
+
+**Source Object Structure:**
+```json
+{
+  "type": "web" | "file",
+  "url": "https://...",
+  "title": "Source title",
+  "snippet": "Excerpt from source",
+  "sourceId": "provider-specific-id"
+}
+```
+
+**Example (Web search sources):**
+```json
+{
+  "type": "source",
+  "sources": [
+    {
+      "type": "web",
+      "url": "https://example.com/article",
+      "title": "Weather Patterns in California",
+      "snippet": "Recent studies show...",
+      "sourceId": "src_abc123"
+    },
+    {
+      "type": "web",
+      "url": "https://weather.gov/sf",
+      "title": "San Francisco Forecast",
+      "snippet": "Current conditions: 72°F, sunny"
+    }
+  ]
+}
+```
+
+**Provider Support:**
+- **OpenAI Responses API**: web_search_call sources, file citations
+- **Gemini**: Grounding sources (web citations)
+- **Anthropic**: Not yet supported
+
+**Usage:**
+```python
+async for event in agent.run_stream({'message': 'Latest weather news'}):
+    if event['type'] == 'source':
+        for src in event['sources']:
+            print(f"Source: {src['title']} - {src['url']}")
 ```
 
 ---

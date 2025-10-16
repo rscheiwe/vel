@@ -1,0 +1,9 @@
+{
+    "type": "module",
+    "dependencies": {
+      "ai": "^3",
+      "@ai-sdk/openai": "^0.0.0", 
+      "yargs": "^17"
+    }
+  }
+  

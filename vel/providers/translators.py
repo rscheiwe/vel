@@ -132,32 +132,74 @@ class OpenAIAPITranslator:
             return ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning)
 
         # Handle tool calls
+        # AI SDK parity: Robust handling of malformed tool_calls
+        # Some providers send tool_calls[].type as empty string after first delta
+        # Reference: vercel/ai#7255 - Accept "type": "" tool calls
         if 'tool_calls' in delta:
             for tc in delta['tool_calls']:
-                idx = tc.get('index', 0)
+                # Use index as primary identifier (more reliable than type field)
+                idx = tc.get('index')
+                if idx is None:
+                    # Fallback to 0 if index missing (defensive)
+                    idx = 0
+
                 if idx not in self._tool_calls:
-                    # New tool call
-                    tool_id = tc.get('id', f"call_{uuid.uuid4().hex[:8]}")
-                    tool_name = tc.get('function', {}).get('name', '')
+                    # New tool call - initialize tracking
+                    # Note: Don't rely on 'type' field - may be empty/missing
+                    tool_id = tc.get('id')
+                    if not tool_id:
+                        # Generate ID if missing (defensive)
+                        tool_id = f"call_{uuid.uuid4().hex[:8]}"
+
+                    # Extract function name defensively
+                    function_data = tc.get('function', {})
+                    if isinstance(function_data, dict):
+                        tool_name = function_data.get('name', '')
+                    else:
+                        tool_name = ''
+
                     self._tool_calls[idx] = {
                         'id': tool_id,
                         'name': tool_name,
-                        'args_buffer': ''
+                        'args_buffer': '',
+                        'input_available_emitted': False  # Track if we've emitted tool-input-available
                     }
+
+                    # Only emit start if we have a tool name
                     if tool_name:
                         return ToolInputStartEvent(
                             tool_call_id=tool_id,
                             tool_name=tool_name
                         )
+                else:
+                    # Update existing tool call with missing fields
+                    # Handle case where type was empty in first delta, fields arrive later
+                    existing = self._tool_calls[idx]
+                    if not existing['id'] and tc.get('id'):
+                        existing['id'] = tc['id']
+                    if not existing['name']:
+                        function_data = tc.get('function', {})
+                        if isinstance(function_data, dict):
+                            name = function_data.get('name', '')
+                            if name:
+                                existing['name'] = name
+                                # Emit start now that we have the name
+                                return ToolInputStartEvent(
+                                    tool_call_id=existing['id'],
+                                    tool_name=name
+                                )
 
-                # Accumulate function arguments
-                if 'function' in tc and 'arguments' in tc['function']:
-                    args_delta = tc['function']['arguments']
-                    self._tool_calls[idx]['args_buffer'] += args_delta
-                    return ToolInputDeltaEvent(
-                        tool_call_id=self._tool_calls[idx]['id'],
-                        input_delta=args_delta
-                    )
+                # Accumulate function arguments (defensive checks)
+                if 'function' in tc:
+                    function_data = tc['function']
+                    if isinstance(function_data, dict) and 'arguments' in function_data:
+                        args_delta = function_data['arguments']
+                        if args_delta:  # Only process non-empty deltas
+                            self._tool_calls[idx]['args_buffer'] += args_delta
+                            return ToolInputDeltaEvent(
+                                tool_call_id=self._tool_calls[idx]['id'],
+                                input_delta=args_delta
+                            )
 
         # Handle finish
         if finish_reason:
@@ -185,6 +227,10 @@ class OpenAIAPITranslator:
         Emits any pending events, reasoning-end, text-end, and tool-input-available events.
         Call this when the stream completes.
 
+        AI SDK parity: Guaranteed tool-input-available emission
+        - Emits even if args only appeared at .done (no streaming deltas)
+        - Ensures every tool call gets tool-input-available event
+
         Returns:
             List of StreamEvent objects
         """
@@ -205,16 +251,22 @@ class OpenAIAPITranslator:
             self._text_block_id = None
 
         # Emit tool-input-available for all accumulated tool calls
+        # Guaranteed emission: handles case where args only appear at .done
         for tc_data in self._tool_calls.values():
-            try:
-                args = json.loads(tc_data['args_buffer'] or '{}')
-            except json.JSONDecodeError:
-                args = {}
-            events.append(ToolInputAvailableEvent(
-                tool_call_id=tc_data['id'],
-                tool_name=tc_data['name'],
-                input=args
-            ))
+            # Only emit if we haven't emitted yet
+            if not tc_data.get('input_available_emitted', False):
+                try:
+                    args = json.loads(tc_data['args_buffer'] or '{}')
+                except json.JSONDecodeError:
+                    args = {}
+
+                events.append(ToolInputAvailableEvent(
+                    tool_call_id=tc_data['id'],
+                    tool_name=tc_data['name'],
+                    input=args
+                ))
+                tc_data['input_available_emitted'] = True
+
         return events
 
     def get_pending_event(self) -> Optional[StreamEvent]:
@@ -374,6 +426,9 @@ class AnthropicAPITranslator:
         self._content_blocks: Dict[int, Dict[str, Any]] = {}  # index -> block state
         self._finish_reason: str = 'end_turn'
         self._usage_data: Dict[str, int] = {}  # Track usage for metadata event
+        self._message_id: Optional[str] = None  # Message ID for metadata
+        self._model_id: Optional[str] = None  # Model ID for metadata
+        self._metadata_emitted: bool = False  # Track if we've emitted early metadata
 
     def translate_event(self, data: Dict[str, Any]) -> Optional[StreamEvent]:
         """
@@ -388,13 +443,30 @@ class AnthropicAPITranslator:
         event_type = data.get('type')
 
         # Handle message_start
+        # AI SDK parity: Emit early metadata when id/model are known
+        # Reference: packages/anthropic/src/anthropic-messages-language-model.ts
         if event_type == 'message_start':
-            # Track input tokens from message start
             message = data.get('message', {})
+
+            # Capture message/model IDs
+            self._message_id = message.get('id')
+            self._model_id = message.get('model')
+
+            # Track input tokens from message start
             usage = message.get('usage')
             if usage and 'input_tokens' in usage:
                 self._usage_data['promptTokens'] = usage['input_tokens']
-            return None  # Don't emit StartEvent - that's emitted at Agent level
+
+            # Emit early metadata if we have id or model
+            if self._message_id or self._model_id:
+                self._metadata_emitted = True
+                return ResponseMetadataEvent(
+                    id=self._message_id,
+                    model_id=self._model_id,
+                    usage=None  # Usage will be updated later
+                )
+
+            return None
 
         # Handle content_block_start
         elif event_type == 'content_block_start':
@@ -529,13 +601,21 @@ class AnthropicAPITranslator:
         Get metadata event if usage data was collected.
         Call this after message_stop to emit usage metadata.
 
+        AI SDK parity: If early metadata was emitted, this returns a second metadata
+        event with usage data. Otherwise returns complete metadata with id/model/usage.
+
         Returns:
             ResponseMetadataEvent or None if no usage data
         """
         if self._usage_data:
             prompt_tokens = self._usage_data.get('promptTokens', 0)
             completion_tokens = self._usage_data.get('completionTokens', 0)
+
+            # If we already emitted early metadata, emit usage update
+            # Otherwise, emit complete metadata
             return ResponseMetadataEvent(
+                id=self._message_id if not self._metadata_emitted else None,
+                model_id=self._model_id if not self._metadata_emitted else None,
                 usage={
                     'promptTokens': prompt_tokens,
                     'completionTokens': completion_tokens,
@@ -549,6 +629,9 @@ class AnthropicAPITranslator:
         self._content_blocks.clear()
         self._finish_reason = 'end_turn'
         self._usage_data.clear()
+        self._message_id = None
+        self._model_id = None
+        self._metadata_emitted = False
 
 
 class GeminiAPITranslator:
@@ -576,6 +659,7 @@ class GeminiAPITranslator:
         self._text_block_id: Optional[str] = None
         self._next_block_index: int = 0  # For sequential block IDs
         self._seen_source_urls: set[str] = set()  # Deduplicate grounding sources
+        self._pending_events: deque = deque()  # Queue of events to emit
 
     def translate_chunk(self, chunk: Any) -> Optional[StreamEvent]:
         """
@@ -587,6 +671,10 @@ class GeminiAPITranslator:
         Returns:
             StreamEvent or None if chunk should be skipped
         """
+        # Drain pending events first
+        if self._pending_events:
+            return self._pending_events.popleft()
+
         # Handle usage metadata
         if hasattr(chunk, 'usage_metadata'):
             usage = chunk.usage_metadata
@@ -646,16 +734,30 @@ class GeminiAPITranslator:
                     pass
 
                 # Handle function calls
+                # AI SDK parity: Gemini emits complete function calls (not streaming)
+                # Emit both tool-input-start and tool-input-available immediately
+                # Reference: packages/google/src/google-generative-ai-language-model.ts
                 if hasattr(part, 'function_call'):
                     fc = part.function_call
                     tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
-                    tool_name = fc.name
+                    tool_name = fc.name if hasattr(fc, 'name') else 'unknown'
 
-                    # Convert args to dict
-                    args = dict(fc.args) if hasattr(fc, 'args') else {}
+                    # Convert args to dict (defensive)
+                    args = {}
+                    if hasattr(fc, 'args'):
+                        try:
+                            args = dict(fc.args)
+                        except (TypeError, ValueError):
+                            args = {}
 
-                    # Gemini emits complete function calls, so we emit both start and available
-                    # Return start first, caller needs to handle available separately
+                    # Queue tool-input-available (will be emitted after start)
+                    self._pending_events.append(ToolInputAvailableEvent(
+                        tool_call_id=tool_call_id,
+                        tool_name=tool_name,
+                        input=args
+                    ))
+
+                    # Return start first
                     return ToolInputStartEvent(
                         tool_call_id=tool_call_id,
                         tool_name=tool_name
@@ -685,11 +787,23 @@ class GeminiAPITranslator:
             return TextEndEvent(block_id=text_block_id)
         return None
 
+    def get_pending_event(self) -> Optional[StreamEvent]:
+        """
+        Get next pending event without processing a new chunk.
+
+        Returns:
+            StreamEvent or None if no pending events
+        """
+        if self._pending_events:
+            return self._pending_events.popleft()
+        return None
+
     def reset(self):
         """Reset translator state between messages."""
         self._text_block_id = None
         self._next_block_index = 0
         self._seen_source_urls.clear()
+        self._pending_events.clear()
 
 
 # Convenience functions for easy instantiation
@@ -761,7 +875,14 @@ class OpenAIResponsesAPITranslator:
     - response.output_item.added (for synthesis)
     - response.function_call_arguments.delta
 
-    Based on EXTENDED_PARITY.md mapping.
+    Based on EXTENDED_PARITY.md mapping and AI SDK V5 parity requirements.
+
+    Key AI SDK Parity Features:
+    - Normalizes ALL reasoning variants to single event type
+    - Deduplicates reasoning-start events
+    - Maps provider-executed tools (web_search_call, computer_call)
+    - Extracts and emits sources/citations
+    - Early metadata emission (id/model) with later usage updates
     """
 
     def __init__(self):
@@ -771,6 +892,10 @@ class OpenAIResponsesAPITranslator:
         self._tool_calls: Dict[str, Dict[str, Any]] = {}  # tool_call_id -> {name, args_buffer}
         self._pending_events: deque = deque()
         self._active_output_items: Dict[str, str] = {}  # item_id -> type (message, function_call, etc.)
+        self._seen_reasoning_ids: set = set()  # Track reasoning block IDs to prevent duplicate starts
+        self._response_id: Optional[str] = None  # Response ID for metadata
+        self._model_id: Optional[str] = None  # Model ID for metadata
+        self._metadata_emitted: bool = False  # Track if we've emitted early metadata
 
     def translate_event(self, event: Dict[str, Any]) -> Optional[StreamEvent]:
         """
@@ -789,10 +914,51 @@ class OpenAIResponsesAPITranslator:
         event_type = event.get('type', '')
 
         # === Lifecycle events ===
-        if event_type in ('response.created', 'response.in_progress'):
+        if event_type == 'response.created':
+            # Emit early metadata (AI SDK parity: emit when id/model known)
+            response_data = event.get('response', {})
+            self._response_id = response_data.get('id')
+            self._model_id = response_data.get('model')
+
+            if self._response_id or self._model_id:
+                self._metadata_emitted = True
+                return ResponseMetadataEvent(
+                    id=self._response_id,
+                    model_id=self._model_id,
+                    usage=None  # Usage comes later
+                )
+            return None
+
+        if event_type == 'response.in_progress':
             return None  # Handled at Agent level
 
         if event_type in ('response.completed', 'response.done'):
+            # Emit usage metadata if not yet emitted
+            response_data = event.get('response', {})
+            usage_data = response_data.get('usage')
+            if usage_data and not self._metadata_emitted:
+                # Emit metadata with usage if we haven't emitted yet
+                self._pending_events.append(ResponseMetadataEvent(
+                    id=self._response_id,
+                    model_id=self._model_id,
+                    usage={
+                        'promptTokens': usage_data.get('input_tokens', 0),
+                        'completionTokens': usage_data.get('output_tokens', 0),
+                        'totalTokens': usage_data.get('total_tokens', 0)
+                    }
+                ))
+            elif usage_data and self._metadata_emitted:
+                # Update with usage (second metadata event)
+                self._pending_events.append(ResponseMetadataEvent(
+                    id=self._response_id,
+                    model_id=self._model_id,
+                    usage={
+                        'promptTokens': usage_data.get('input_tokens', 0),
+                        'completionTokens': usage_data.get('output_tokens', 0),
+                        'totalTokens': usage_data.get('total_tokens', 0)
+                    }
+                ))
+
             # Return finish handled at Agent level, but emit any pending end events
             return self._finalize()
 
@@ -824,19 +990,45 @@ class OpenAIResponsesAPITranslator:
                 return TextEndEvent(block_id=block_id)
 
         # === Reasoning events (all variants) ===
-        # Normalize: reasoning.delta, reasoning_summary.delta, reasoning_summary_text.delta
-        if any(variant in event_type for variant in ['reasoning.delta', 'reasoning_summary.delta', 'reasoning_summary_text.delta']):
-            reasoning = event.get('delta', '') or event.get('reasoning', '') or event.get('summary', '')
+        # AI SDK parity: Normalize ALL reasoning variants to single event type
+        # Variants: response.reasoning.delta, response.reasoning_summary.delta, response.reasoning_summary_text.delta
+        # Reference: packages/openai/src/responses/openai-responses-language-model.ts
+        reasoning_delta_variants = [
+            'response.reasoning.delta',
+            'response.reasoning_summary.delta',
+            'response.reasoning_summary_text.delta'
+        ]
+        if event_type in reasoning_delta_variants:
+            # Extract reasoning text from various field names
+            reasoning = event.get('delta', '') or event.get('reasoning', '') or event.get('summary', '') or event.get('text', '')
+
             if reasoning:
+                # Get or create reasoning block ID
                 if self._reasoning_block_id is None:
-                    self._reasoning_block_id = str(self._next_block_index)
-                    self._next_block_index += 1
-                    self._pending_events.append(ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning))
-                    return ReasoningStartEvent(block_id=self._reasoning_block_id)
+                    # Use item ID from event if available for stable IDs
+                    item_id = event.get('item_id')
+                    if item_id:
+                        self._reasoning_block_id = item_id
+                    else:
+                        self._reasoning_block_id = str(self._next_block_index)
+                        self._next_block_index += 1
+
+                    # Deduplicate: only emit start if we haven't seen this ID before
+                    if self._reasoning_block_id not in self._seen_reasoning_ids:
+                        self._seen_reasoning_ids.add(self._reasoning_block_id)
+                        self._pending_events.append(ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning))
+                        return ReasoningStartEvent(block_id=self._reasoning_block_id)
+                    # If already seen, just emit delta
+
                 return ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning)
 
         # Normalize: reasoning.done, reasoning_summary.done, reasoning_summary_text.done
-        if any(variant in event_type for variant in ['reasoning.done', 'reasoning_summary.done', 'reasoning_summary_text.done']):
+        reasoning_done_variants = [
+            'response.reasoning.done',
+            'response.reasoning_summary.done',
+            'response.reasoning_summary_text.done'
+        ]
+        if event_type in reasoning_done_variants:
             if self._reasoning_block_id:
                 block_id = self._reasoning_block_id
                 self._reasoning_block_id = None
@@ -909,11 +1101,15 @@ class OpenAIResponsesAPITranslator:
                     return ReasoningEndEvent(block_id=item_id)
 
             # Provider-executed tools (web_search, computer)
+            # AI SDK parity: Map web_search_call and computer_call to tool-output-available
+            # Reference: packages/openai/src/responses/openai-responses-language-model.ts
             if item_type in ('web_search_call', 'computer_call'):
-                # Emit tool-input-available if not already done
+                # Guaranteed tool-input-available: emit even if args only appear at .done
                 if item_id in self._tool_calls:
                     tc = self._tool_calls[item_id]
-                    if tc['args_buffer']:  # Has buffered args
+                    # Check if we haven't emitted tool-input-available yet
+                    # This handles case where args only appear at .done (no deltas)
+                    if tc.get('args_buffer') is not None:
                         try:
                             args = json.loads(tc['args_buffer'] or '{}')
                         except json.JSONDecodeError:
@@ -923,12 +1119,56 @@ class OpenAIResponsesAPITranslator:
                             tool_name=tc['name'],
                             input=args
                         ))
+                else:
+                    # Args never streamed, but we still need tool-input-available
+                    # Extract args from item if present
+                    args = item.get('arguments', {})
+                    if args:
+                        self._pending_events.append(ToolInputAvailableEvent(
+                            tool_call_id=item_id,
+                            tool_name=item.get('name', item_type),
+                            input=args
+                        ))
+
+                # Extract sources from web_search results (AI SDK parity)
+                # web_search_call results contain sources array
+                if item_type == 'web_search_call':
+                    sources_data = []
+                    result_data = item.get('result', {})
+
+                    # Extract sources from result.sources or result.action.sources
+                    sources_list = result_data.get('sources') or result_data.get('action', {}).get('sources', [])
+
+                    for source in sources_list:
+                        source_entry = {
+                            'type': 'web',
+                            'url': source.get('url', '') or source.get('uri', ''),
+                            'title': source.get('title', ''),
+                        }
+                        # Include snippet if available
+                        if 'snippet' in source:
+                            source_entry['snippet'] = source['snippet']
+                        # Preserve provider ID (sourceId from OpenAI)
+                        if 'id' in source:
+                            source_entry['sourceId'] = source['id']
+
+                        sources_data.append(source_entry)
+
+                    if sources_data:
+                        self._pending_events.append(SourceEvent(sources=sources_data))
 
                 # Emit tool-output-available with result
                 output = item.get('result') or item.get('output', {})
+
+                # Include metadata to indicate provider execution (AI SDK parity)
                 return ToolOutputAvailableEvent(
                     tool_call_id=item_id,
-                    output=output
+                    output=output,
+                    call_provider_metadata={
+                        'providerExecuted': True,
+                        'providerName': 'openai',
+                        'toolType': item_type
+                    }
                 )
 
         return None
@@ -986,6 +1226,10 @@ class OpenAIResponsesAPITranslator:
         self._tool_calls.clear()
         self._pending_events.clear()
         self._active_output_items.clear()
+        self._seen_reasoning_ids.clear()
+        self._response_id = None
+        self._model_id = None
+        self._metadata_emitted = False
 
 
 __all__ = [
