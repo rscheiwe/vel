@@ -11,6 +11,7 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 - **Generation Configuration**: Full control over model parameters (temperature, max_tokens, top_p, etc.) with per-run override support - matches Vercel AI SDK flexibility
 - **Stream Protocol**: Vercel AI SDK **V5 UI Stream Protocol** compatible - works seamlessly with React `useChat()` and frontend components (100% parity)
   - Exact event naming (`tool-call`, `tool-result`, etc.)
+  - Custom `data-*` events with transient flag for RAG citations, progress tracking, and analytics
   - Response metadata (token usage tracking)
   - Source events (citations and grounding)
   - File events (inline data support)

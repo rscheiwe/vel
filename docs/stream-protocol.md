@@ -377,6 +377,281 @@ messages.forEach(msg => {
 
 **See also:** `examples/custom_data_events.py` for comprehensive examples.
 
+---
+
+## Why Use Custom Data Events?
+
+Custom `data-*` events solve the problem of streaming **application-specific metadata** alongside LLM responses. They enable richer, more interactive UIs without polluting the core message stream.
+
+### Primary Use Cases
+
+#### 1. RAG Source Citations
+
+Stream which documents/sources were used for retrieval-augmented generation:
+
+```python
+from vel import DataEvent
+
+# After retrieving documents
+for doc in retrieved_docs:
+    yield DataEvent(
+        type='data-source',
+        data={
+            'url': doc.url,
+            'title': doc.title,
+            'snippet': doc.excerpt,
+            'relevance_score': doc.score
+        },
+        transient=False  # Save for citation display
+    ).to_dict()
+```
+
+**Frontend displays citations:**
+```typescript
+const { messages } = useChat({
+  api: '/api/chat'
+});
+
+// Sources saved in message.parts
+messages.forEach(msg => {
+  const sources = msg.parts.filter(p => p.type === 'data-source');
+  sources.forEach(src => {
+    console.log(`Source: ${src.data.title} - ${src.data.url}`);
+  });
+});
+```
+
+#### 2. Multi-Step Agent Progress
+
+Show users what the agent is doing at each step:
+
+```python
+# Emit transient progress (don't save to DB)
+yield DataEvent(
+    type='data-stage',
+    data={
+        'stage': 'searching',
+        'message': 'Searching knowledge base...',
+        'progress': 30
+    },
+    transient=True  # Real-time UI only
+).to_dict()
+
+yield DataEvent(
+    type='data-stage',
+    data={
+        'stage': 'analyzing',
+        'message': 'Analyzing results...',
+        'progress': 60
+    },
+    transient=True
+).to_dict()
+```
+
+**Frontend shows real-time progress:**
+```typescript
+const { messages } = useChat({
+  onData: (dataPart) => {
+    if (dataPart.type === 'data-stage') {
+      setStatus(dataPart.data.message);
+      setProgress(dataPart.data.progress);
+    }
+  }
+});
+```
+
+#### 3. Tool Execution Metadata
+
+Stream additional context about tool calls:
+
+```python
+# After tool execution
+yield DataEvent(
+    type='data-tool-metadata',
+    data={
+        'tool_name': 'get_weather',
+        'execution_time_ms': 450,
+        'api_latency_ms': 380,
+        'cache_hit': False,
+        'cost_usd': 0.0001
+    },
+    transient=False  # Save for analytics
+).to_dict()
+```
+
+#### 4. Temporary UI Notifications
+
+Send notifications that shouldn't clutter message history:
+
+```python
+# Temporary status update
+yield DataEvent(
+    type='data-notification',
+    data={
+        'message': 'Rate limited, retrying in 1 second...',
+        'level': 'warning'
+    },
+    transient=True  # Don't save
+).to_dict()
+
+# Another notification
+yield DataEvent(
+    type='data-notification',
+    data={
+        'message': 'Connected to external API',
+        'level': 'info'
+    },
+    transient=True
+).to_dict()
+```
+
+**Frontend shows toast notifications:**
+```typescript
+onData: (dataPart) => {
+  if (dataPart.type === 'data-notification') {
+    toast[dataPart.data.level](dataPart.data.message);
+  }
+}
+```
+
+#### 5. Analytics and Usage Tracking
+
+Stream metrics for monitoring and billing:
+
+```python
+# After completion
+yield DataEvent(
+    type='data-metrics',
+    data={
+        'tokens_used': 1250,
+        'model': 'gpt-4o',
+        'cost_usd': 0.0375,
+        'duration_ms': 2800,
+        'tools_called': 3
+    },
+    transient=False  # Save for analytics
+).to_dict()
+```
+
+### Why Not Use Standard Events?
+
+| Scenario | Why Custom `data-*` Events? |
+|----------|---------------------------|
+| **RAG sources** | Need custom structure (URL, title, snippet) not in standard tool/text events |
+| **Progress updates** | Transient (don't want cluttering message history) |
+| **Business metrics** | Application-specific data (latency, costs) not part of LLM protocol |
+| **Dynamic UI state** | Need to update React components beyond text streaming |
+| **Multi-source data** | Combining data from multiple tools/APIs into structured format |
+
+### Separation of Concerns
+
+**Standard events = LLM response layer:**
+```json
+{"type": "text-delta", "delta": "The weather is sunny..."}
+{"type": "tool-input-available", "toolName": "get_weather", ...}
+```
+
+**Custom data-* events = Application layer:**
+```json
+{"type": "data-source", "data": {"url": "...", "title": "..."}}
+{"type": "data-metrics", "data": {"cost": 0.02, "tokens": 500}}
+{"type": "data-progress", "data": {"step": 3, "total": 5}}
+```
+
+### Real-World Example: RAG Chatbot
+
+**Backend:**
+```python
+from vel import Agent, DataEvent
+
+async def rag_chat(message: str):
+    # 1. Retrieve relevant documents
+    docs = await vector_search(message)
+
+    # 2. Stream sources as data events (persistent)
+    for doc in docs:
+        yield DataEvent(
+            type='data-source',
+            data={'title': doc.title, 'url': doc.url, 'score': doc.score},
+            transient=False  # Save for citations
+        ).to_dict()
+
+    # 3. Stream agent response (standard events)
+    agent = Agent(id='rag-agent', model={'provider': 'openai', 'model': 'gpt-4o'})
+    prompt = f"Context: {format_docs(docs)}\n\nQuestion: {message}"
+
+    async for event in agent.run_stream({'message': prompt}):
+        yield event
+
+    # 4. Stream usage metrics (persistent)
+    yield DataEvent(
+        type='data-metrics',
+        data={'tokens': 1200, 'sources_used': len(docs)},
+        transient=False  # Save for analytics
+    ).to_dict()
+```
+
+**Frontend:**
+```typescript
+import { useChat } from 'ai/react';
+
+const { messages } = useChat({
+  api: '/api/rag-chat'
+});
+
+// Render messages with citations
+<div>
+  {messages.map(msg => (
+    <div key={msg.id}>
+      {/* Standard text parts */}
+      {msg.parts
+        .filter(p => p.type === 'text')
+        .map(p => <p>{p.text}</p>)}
+
+      {/* Citations from data-source events */}
+      <div className="citations">
+        {msg.parts
+          .filter(p => p.type === 'data-source')
+          .map(src => (
+            <a href={src.data.url}>
+              {src.data.title} (score: {src.data.score})
+            </a>
+          ))}
+      </div>
+
+      {/* Metrics from data-metrics events */}
+      {msg.parts
+        .filter(p => p.type === 'data-metrics')
+        .map(m => (
+          <small>
+            {m.data.tokens} tokens, {m.data.sources_used} sources
+          </small>
+        ))}
+    </div>
+  ))}
+</div>
+```
+
+### Best Practices
+
+**Use `transient: true` for:**
+- Real-time status updates ("Processing...")
+- Progress indicators (loading bars)
+- Temporary notifications (toasts)
+- UI state that doesn't need persistence
+
+**Use `transient: false` for:**
+- RAG source citations
+- Tool execution metadata
+- Analytics/metrics data
+- Stage transitions you want to replay
+- Anything needed for debugging/audit trails
+
+**Naming convention:**
+- Use descriptive names: `data-source`, `data-metrics`, `data-stage`
+- Avoid generic names: `data-info`, `data-stuff`
+- Follow pattern: `data-{domain}-{type}` (e.g., `data-rag-source`, `data-analytics-metric`)
+
 ## Event Sequences
 
 ### Simple Text Response

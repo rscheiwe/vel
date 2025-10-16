@@ -313,7 +313,7 @@ curl -X POST http://localhost:8000/runs/sync \
 - [Session Management](sessions.md) - Learn about multi-turn conversations
 - [Providers](providers.md) - Configure OpenAI, Gemini, and Claude
 - [Tools](tools.md) - Create custom tools
-- [Stream Protocol](stream-protocol.md) - Understand streaming events
+- [Stream Protocol](stream-protocol.md) - Understand streaming events and custom data-* events for RAG, progress tracking, and analytics
 - [API Reference](api-reference.md) - Complete API documentation
 
 ## Troubleshooting
