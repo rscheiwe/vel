@@ -7,6 +7,7 @@ from typing import Any, Dict, Literal, Optional
 from dataclasses import dataclass
 
 # Event types - V5 UI Stream Protocol
+# Note: Custom data-* events are supported via DataEvent class (not in this Literal)
 EventType = Literal[
     'start',
     'text-start',
@@ -267,3 +268,32 @@ class FileEvent(StreamEvent):
             'name': self.name,
             'mimeType': self.mime_type
         }
+
+@dataclass
+class DataEvent(StreamEvent):
+    """Custom data event (data-* pattern)
+
+    Supports custom event types following the data-* naming convention.
+    Used for application-specific data streaming (progress, status, notifications, etc.).
+
+    Examples:
+        - data-notification: UI notifications
+        - data-progress: Progress updates
+        - data-stage-data: Multi-step stage transitions
+        - data-metrics: Real-time metrics
+
+    The `transient` flag controls whether the event is added to message history:
+        - transient=True: Event sent to client but NOT saved to message history
+        - transient=False (default): Event saved to message history
+
+    Matches Vercel AI SDK V5 custom data pattern.
+    """
+    type: str = 'data'  # Should follow pattern: data-{customName}
+    data: Any = None  # Custom payload (any JSON-serializable value)
+    transient: bool = False  # If True, not added to message history
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {**super().to_dict(), 'data': self.data}
+        if self.transient:
+            d['transient'] = True
+        return d
