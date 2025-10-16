@@ -47,7 +47,7 @@ async def main():
     async for event in agent.run_stream({'message': query}):
         event_type = event.get('type')
 
-        if event_type == 'step-start':
+        if event_type == 'start-step':
             step_count += 1
             print(f"\n→ Step {step_count}")
 

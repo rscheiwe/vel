@@ -94,7 +94,7 @@ async def tool_calling_example():
         reducer.process_event(event)
         # Show event types as they come in
         event_type = event.get('type')
-        if event_type in ['step-start', 'tool-input-available', 'tool-output-available', 'text-start']:
+        if event_type in ['start-step', 'tool-input-available', 'tool-output-available', 'text-start']:
             print(f"   → Event: {event_type}")
 
     # Get complete messages

@@ -135,7 +135,7 @@ Vel uses the [Vercel AI SDK V5 UI Stream Protocol](https://ai-sdk.dev/docs/ai-sd
 - `tool-input-start`, `tool-input-delta` - Tool input streaming
 - `tool-input-available` - Complete tool input ready for execution
 - `tool-output-available` - Tool execution result
-- `step-start`, `step-finish` - Multi-step agent progress
+- `start-step`, `finish-step` - Multi-step agent progress
 - `data-*` - Custom application events (notifications, progress, metrics) with transient flag support
 - `response-metadata` - Token usage and model info
 - `source` - Citations and grounding (Gemini)
@@ -235,7 +235,7 @@ async for event in agent.run_stream({'message': 'What is sqrt(169)?'}):
 
 messages = reducer.get_messages()
 # assistant message parts: [
-#   {'type': 'step-start'},
+#   {'type': 'start-step'},
 #   {'type': 'reasoning', 'text': '', 'state': 'done', 'providerMetadata': {...}},
 #   {'type': 'text', 'text': 'The answer is 13', 'state': 'done'}
 # ]

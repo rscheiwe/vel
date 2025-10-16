@@ -90,20 +90,33 @@ class OpenAIAPITranslator:
         if self._message_id is None and 'id' in chunk:
             self._message_id = chunk['id']
 
-        delta = chunk.get('choices', [{}])[0].get('delta', {})
-        finish_reason = chunk.get('choices', [{}])[0].get('finish_reason')
+        # Safe access to choices array (may be empty in usage-only chunks)
+        choices = chunk.get('choices', [])
+        delta = choices[0].get('delta', {}) if choices else {}
+        finish_reason = choices[0].get('finish_reason') if choices else None
 
         # Handle usage metadata (typically in final chunk)
+        # AI SDK v5 parity: Include full response metadata
         usage = chunk.get('usage')
         if usage:
+            # Build usage object with all fields
+            usage_dict = {
+                'inputTokens': usage.get('prompt_tokens', 0),
+                'outputTokens': usage.get('completion_tokens', 0),
+                'totalTokens': usage.get('total_tokens', 0)
+            }
+            # Add reasoning tokens if present (o1 models)
+            if 'completion_tokens_details' in usage:
+                details = usage['completion_tokens_details']
+                if 'reasoning_tokens' in details:
+                    usage_dict['reasoningTokens'] = details['reasoning_tokens']
+
+            # Build response metadata event
             return ResponseMetadataEvent(
-                id=self._message_id,
+                id=self._message_id or chunk.get('id'),
                 model_id=chunk.get('model'),
-                usage={
-                    'promptTokens': usage.get('prompt_tokens', 0),
-                    'completionTokens': usage.get('completion_tokens', 0),
-                    'totalTokens': usage.get('total_tokens', 0)
-                }
+                timestamp=None,  # OpenAI doesn't provide timestamp in stream
+                usage=usage_dict
             )
 
         # Handle text content

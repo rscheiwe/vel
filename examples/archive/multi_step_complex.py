@@ -59,12 +59,12 @@ async def main():
     async for event in agent.run_stream({'message': query}):
         event_type = event.get('type')
 
-        if event_type == 'step-start':
+        if event_type == 'start-step':
             step_count += 1
             current_step_tools = []
             print(f"\n┌─ Step {step_count} {'─'*60}")
 
-        elif event_type == 'step-finish':
+        elif event_type == 'finish-step':
             tools_used = ', '.join(current_step_tools) if current_step_tools else 'none'
             print(f"└─ Step {step_count} complete (tools: {tools_used}) {'─'*40}")
 

@@ -312,7 +312,7 @@ class Agent:
             while steps < max_steps:
                 steps += 1
 
-                # Emit step-start event (V5 UI Stream Protocol for multi-step agents)
+                # Emit start-step event (V5 UI Stream Protocol for multi-step agents)
                 yield StepStartEvent().to_dict()
 
                 # Get messages and stream LLM response
@@ -326,10 +326,33 @@ class Agent:
                 full_text = []
                 tool_calls = []  # list of {tool_call_id, tool_name, input}
                 finish_reason = 'stop'
+                usage = None
+                response_metadata = None
 
                 # Stream from provider and forward events
                 async for event in provider.stream(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas(), generation_config=config):
-                    # Forward stream protocol events
+                    # Track metadata for finish events (don't forward finish-message)
+                    if event.type == 'finish-message':
+                        finish_reason = event.finish_reason
+                        continue  # Don't forward, consume internally
+
+                    # Track response metadata (usage, model info)
+                    # AI SDK v5 parity: Consume internally, don't forward
+                    elif event.type == 'response-metadata':
+                        if not response_metadata:
+                            response_metadata = {}
+                        # Update metadata (can come in multiple events)
+                        if hasattr(event, 'id') and event.id:
+                            response_metadata['id'] = event.id
+                        if hasattr(event, 'model_id') and event.model_id:
+                            response_metadata['modelId'] = event.model_id
+                        if hasattr(event, 'timestamp') and event.timestamp:
+                            response_metadata['timestamp'] = event.timestamp
+                        if hasattr(event, 'usage') and event.usage:
+                            usage = event.usage
+                        continue  # Don't forward, consume internally
+
+                    # Forward all other stream protocol events
                     yield event.to_dict()
 
                     # Track text content
@@ -343,11 +366,6 @@ class Agent:
                             'tool_name': event.tool_name,
                             'input': event.input
                         })
-
-                    # Track completion
-                    elif event.type == 'finish-message':
-                        finish_reason = event.finish_reason
-                        break
 
                     # Handle errors
                     elif event.type == 'error':
@@ -371,7 +389,7 @@ class Agent:
 
                         # Yield the full error event (includes all context)
                         yield event.to_dict()
-                        yield FinishEvent().to_dict()
+                        yield {'type': 'finish', 'finishReason': 'error'}
                         return
 
                 # If we got text and no tool calls, we're done
@@ -379,8 +397,13 @@ class Agent:
                     answer = ''.join(full_text)
                     self.ctxmgr.append_assistant_message(run_id, answer, session_id)
 
-                    # Emit step-finish event before completing
-                    yield StepFinishEvent().to_dict()
+                    # Emit finish-step event with metadata (AI SDK v5 parity)
+                    finish_step_dict = {'type': 'finish-step', 'finishReason': finish_reason}
+                    if usage:
+                        finish_step_dict['usage'] = usage
+                    if response_metadata:
+                        finish_step_dict['response'] = response_metadata
+                    yield finish_step_dict
 
                     # Save session to DB if using database storage
                     if session_id:
@@ -388,8 +411,11 @@ class Agent:
                     await self.store.append_event(run_id, {'kind':'final', 'answer': answer})
                     await self.store.update_status(run_id, 'completed')
 
-                    # Emit finish event (V5 UI Stream Protocol)
-                    yield FinishEvent().to_dict()
+                    # Emit finish event with metadata (AI SDK v5 parity)
+                    finish_dict = {'type': 'finish', 'finishReason': finish_reason}
+                    if usage:
+                        finish_dict['totalUsage'] = usage
+                    yield finish_dict
                     return
 
                 # If we got tool calls, execute them and continue
@@ -425,11 +451,16 @@ class Agent:
                             yield error_event.to_dict()
                             await self.store.append_event(run_id, {'kind':'error', 'message': str(e)})
                             await self.store.update_status(run_id, 'failed')
-                            yield FinishEvent().to_dict()
+                            yield {'type': 'finish', 'finishReason': 'error'}
                             return
 
-                    # Emit step-finish event after tool execution
-                    yield StepFinishEvent().to_dict()
+                    # Emit finish-step event with metadata after tool execution (AI SDK v5 parity)
+                    finish_step_dict = {'type': 'finish-step', 'finishReason': finish_reason}
+                    if usage:
+                        finish_step_dict['usage'] = usage
+                    if response_metadata:
+                        finish_step_dict['response'] = response_metadata
+                    yield finish_step_dict
 
                     # Continue loop to get next LLM response
                     continue
@@ -439,7 +470,7 @@ class Agent:
                 await self.store.update_status(run_id, 'failed')
                 error_event = ErrorEvent(error='No response from LLM')
                 yield error_event.to_dict()
-                yield FinishEvent().to_dict()
+                yield {'type': 'finish', 'finishReason': 'error'}
                 return
 
             # Max steps exceeded
@@ -448,7 +479,7 @@ class Agent:
             await self.store.update_status(run_id, 'failed')
             error_event = ErrorEvent(error=msg)
             yield error_event.to_dict()
-            yield FinishEvent().to_dict()
+            yield {'type': 'finish', 'finishReason': 'error'}
 
         except asyncio.CancelledError:
             await self.store.update_status(run_id, 'canceled')

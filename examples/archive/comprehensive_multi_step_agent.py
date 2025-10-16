@@ -66,12 +66,12 @@ async def run_agent(query: str, show_raw_events: bool = False):
             continue
 
         # Track steps
-        if event_type == 'step-start':
+        if event_type == 'start-step':
             step_count += 1
             current_step_tools = []
             print(f"\n┌─ Step {step_count} ─────────────────────────────────")
 
-        elif event_type == 'step-finish':
+        elif event_type == 'finish-step':
             print(f"└─ Step {step_count} complete ─────────────────────────")
 
         # Show tool calls

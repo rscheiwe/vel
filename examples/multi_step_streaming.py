@@ -4,7 +4,7 @@ Multi-Step Streaming Example
 Demonstrates multi-step reasoning with MessageReducer and provider interchange.
 Shows how to:
 - Stream multi-step agent execution
-- See step-start/step-finish events
+- See start-step/finish-step events
 - Track multiple tool calls across steps
 - Switch between providers (OpenAI, Anthropic, Gemini)
 """
@@ -111,10 +111,10 @@ async def main():
         event_type = event.get('type')
 
         # Display events
-        if event_type == 'step-start':
+        if event_type == 'start-step':
             step_num += 1
             print(f"\n[STEP {step_num} START]")
-        elif event_type == 'step-finish':
+        elif event_type == 'finish-step':
             print(f"[STEP {step_num} END]\n")
         elif event_type == 'tool-input-start':
             print(f"  → Tool: {event.get('toolName')}")
@@ -141,11 +141,11 @@ async def main():
     print(f"Total parts: {len(parts)}")
     print(f"Total steps: {step_num}")
 
-    step_starts = [p for p in parts if p['type'] == 'step-start']
+    step_starts = [p for p in parts if p['type'] == 'start-step']
     tool_parts = [p for p in parts if 'tool-' in p['type']]
     text_parts = [p for p in parts if p['type'] == 'text']
 
-    print(f"Step-start events: {len(step_starts)}")
+    print(f"Start-step events: {len(step_starts)}")
     print(f"Tool calls: {len(tool_parts)}")
     print(f"Text responses: {len(text_parts)}")
     print()

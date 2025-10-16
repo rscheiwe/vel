@@ -183,7 +183,7 @@ For more help, see our quickstart guide or watch the intro video.
         if event_type == 'data-rlm-start':
             print(f"[RLM] Starting with depth={event['data']['depth']}")
 
-        elif event_type == 'data-rlm-step-start':
+        elif event_type == 'data-rlm-start-step':
             step = event['data']['step']
             budget = event['data']['budget']
             print(f"[RLM] Step {step} - Budget: {budget['steps']}/{budget['max_steps']} steps, ${budget['cost']:.4f}/${budget['max_cost']:.2f}")

@@ -65,7 +65,7 @@ async def main():
         if event_type == 'start':
             print("[START] Generation begins")
 
-        elif event_type == 'step-start':
+        elif event_type == 'start-step':
             print("[STEP-START] New agentic step")
 
         elif event_type == 'text-start':
@@ -82,7 +82,7 @@ async def main():
         elif event_type == 'finish-message':
             print(f"[FINISH-MESSAGE] Reason: {event.get('finishReason')}")
 
-        elif event_type == 'step-finish':
+        elif event_type == 'finish-step':
             print("[STEP-FINISH] Step complete")
 
         elif event_type == 'finish':

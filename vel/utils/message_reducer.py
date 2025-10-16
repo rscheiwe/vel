@@ -8,7 +8,7 @@ Supports:
 - Text streaming (text-start/delta/end)
 - Reasoning events (reasoning-start/delta/end) for o1/o3 models
 - Tool calls (tool-input-available/tool-output-available)
-- Step tracking (step-start/step-finish)
+- Step tracking (start-step/finish-step)
 - Custom data events (data-*)
 - Error handling
 """
@@ -49,7 +49,7 @@ class MessageReducer:
 
         messages = reducer.get_messages()
         # assistant_msg.parts = [
-        #   {'type': 'step-start'},
+        #   {'type': 'start-step'},
         #   {'type': 'reasoning', 'text': '', 'state': 'done', 'providerMetadata': {...}},
         #   {'type': 'text', 'text': 'The answer is 13', 'state': 'done'}
         # ]
@@ -130,11 +130,11 @@ class MessageReducer:
         if event_type == 'start':
             self._handle_start(event)
 
-        elif event_type == 'step-start':
+        elif event_type == 'start-step':
             if not is_transient:
                 self._handle_step_start(event)
 
-        elif event_type == 'step-finish':
+        elif event_type == 'finish-step':
             if not is_transient:
                 self._handle_step_finish(event)
 
@@ -206,17 +206,19 @@ class MessageReducer:
             self._message_id = event.get('id')
 
     def _handle_step_start(self, event: Dict[str, Any]) -> None:
-        """Handle step-start event"""
+        """Handle start-step event"""
         self._parts.append({
-            'type': 'step-start'
+            'type': 'start-step'
         })
 
     def _handle_step_finish(self, event: Dict[str, Any]) -> None:
-        """Handle step-finish event (optional, not always included in parts)"""
-        # Note: Based on the example, step-finish events are not included in parts
-        # Only step-start events appear. If needed, uncomment below:
-        # self._parts.append({'type': 'step-finish'})
-        pass
+        """Handle finish-step event - flush accumulated text"""
+        # AI SDK v5 parity: finish-step replaces finish-message
+        # Flush any remaining accumulated text at step completion
+        self._flush_accumulated_text()
+
+        # Note: finish-step events are not included in parts
+        # Only start-step events appear in the parts list
 
     def _flush_accumulated_text(self) -> None:
         """Flush accumulated text as a single text part with provider metadata"""

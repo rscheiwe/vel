@@ -60,8 +60,8 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
 | `reasoning-end` | `ReasoningEndEvent` | ✅ Reasoning completion |
 | `response-metadata` | `ResponseMetadataEvent` | ✅ Early + usage updates |
 | `source` | `SourceEvent` | ✅ Web/file citations |
-| `step-start` | `StepStartEvent` | ✅ Multi-step agents |
-| `step-finish` | `StepFinishEvent` | ✅ Step completion |
+| `start-step` | `StepStartEvent` | ✅ Multi-step agents |
+| `finish-step` | `StepFinishEvent` | ✅ Step completion |
 | `finish-message` | `FinishMessageEvent` | ✅ Message completion |
 | `finish` | `FinishEvent` | ✅ Generation complete |
 | `error` | `ErrorEvent` | ✅ Enhanced error context |

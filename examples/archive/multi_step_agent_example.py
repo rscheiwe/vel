@@ -5,7 +5,7 @@ Demonstrates how to build a multi-step agent in Vel that matches
 Vercel AI SDK's multi-step agent pattern with proper event emissions.
 
 This example shows:
-1. Step-start and step-finish events for multi-step reasoning
+1. Step-start and finish-step events for multi-step reasoning
 2. Tools with 'state' field in output (AI SDK compatible)
 3. Final answer tool that terminates the agent loop
 4. Frontend-compatible event streaming
@@ -54,11 +54,11 @@ async def main():
         event_type = event.get('type')
 
         # Track steps
-        if event_type == 'step-start':
+        if event_type == 'start-step':
             step_count += 1
             print(f"\n[Step {step_count} Start]")
 
-        elif event_type == 'step-finish':
+        elif event_type == 'finish-step':
             print(f"[Step {step_count} Finish]\n")
 
         # Show tool calls

@@ -2,92 +2,104 @@
 
 Test Vel's parity with Vercel AI SDK V5 by comparing trace outputs.
 
+Tests are organized by scenario type:
+- **basic_chat/** - Text-only generation (no tools, no reasoning)
+- More test types can be added as needed (tools, reasoning, multi-modal, etc.)
+
 ## Setup
+
+**Note:** All commands should be run from the repository root directory (`vel/`).
 
 ```bash
 # Create traces directory
 mkdir -p traces
 
-# Install Node dependencies for AI SDK trace script
-npm install @ai-sdk/openai ai yargs
+# Install Node dependencies for AI SDK trace scripts
+cd scripts && npm install && cd ..
 
-# Ensure OPENAI_API_KEY is set
+# Set your OpenAI API key (choose one method):
+
+# Method 1: Export (Unix/Linux/macOS)
 export OPENAI_API_KEY=sk-...
+
+# Method 2: Inline per-command (Unix/Linux/macOS)
+# OPENAI_API_KEY=sk-... node script.js
+
+# Method 3: Windows cmd
+# set OPENAI_API_KEY=sk-...
+
+# Method 4: Windows PowerShell
+# $env:OPENAI_API_KEY="sk-..."
 ```
 
-## Usage
+## Quick Start
 
-### 1) Produce Vel trace
+### Basic Chat (Text-only)
 
-**Chat Completions API:**
-```bash
-PYTHONPATH=. python scripts/vel_trace.py --prompt "Write a haiku" > traces/vel.jsonl
-```
-
-**Responses API (o1/o3 with reasoning):**
-```bash
-PYTHONPATH=. VEL_RESPONSES=1 python scripts/vel_trace.py --prompt "What is 13^2 + 7?" --model "o1" > traces/vel_responses.jsonl
-```
-
-### 2) Produce AI-SDK trace (Node)
-
-**Chat Completions API:**
-```bash
-node scripts/ai_sdk_trace.mjs --prompt "Write a haiku" > traces/ai.jsonl
-```
-
-**Note:** The AI SDK trace script can be configured for Responses API by modifying the model provider in the script.
-
-### 3) Compare
+Run the automated test script:
 
 ```bash
-python scripts/compare_traces.py traces/vel.jsonl traces/ai.jsonl
+./scripts/basic_chat/run_test.sh "Write a haiku about nature"
 ```
+
+This will:
+1. Generate Vel trace → `traces/vel.jsonl`
+2. Generate AI SDK trace → `traces/ai.jsonl`
+3. Compare and report parity status
 
 Expected output:
 ```
+✅ Event type order matches
+✅ finish-step.finishReason present in both
+✅ finish-step.usage present in both
+✅ finish-step.response present in both
+✅ finish.finishReason present in both
+✅ finish.totalUsage present in both
 ✅ Parity
+```
+
+### Manual Usage
+
+If you prefer to run steps individually:
+
+```bash
+# 1. Generate Vel trace
+python scripts/basic_chat/vel_trace.py --prompt "Write a haiku" > traces/vel.jsonl
+
+# 2. Generate AI SDK trace
+node scripts/basic_chat/ai_sdk_trace.mjs --prompt "Write a haiku" > traces/ai.jsonl
+
+# 3. Compare
+python scripts/compare_traces.py traces/vel.jsonl traces/ai.jsonl
 ```
 
 ## Test Scenarios
 
-### Simple Text Generation
+### Basic Chat - Simple Text Generation
 
 ```bash
-# Vel
-PYTHONPATH=. python scripts/vel_trace.py --prompt "Hello, how are you?" > traces/vel_text.jsonl
-
-# AI SDK
-node scripts/ai_sdk_trace.mjs --prompt "Hello, how are you?" > traces/ai_text.jsonl
-
-# Compare
-python scripts/compare_traces.py traces/vel_text.jsonl traces/ai_text.jsonl
+./scripts/basic_chat/run_test.sh "Hello, how are you?"
 ```
 
-### Tool Calls (requires tool setup)
-
-Add tools to both scripts, then:
+### Basic Chat - Short Response
 
 ```bash
-# Vel
-PYTHONPATH=. python scripts/vel_trace.py --prompt "What's the weather in SF?" > traces/vel_tools.jsonl
-
-# AI SDK
-node scripts/ai_sdk_trace.mjs --prompt "What's the weather in SF?" > traces/ai_tools.jsonl
-
-# Compare
-python scripts/compare_traces.py traces/vel_tools.jsonl traces/ai_tools.jsonl
+./scripts/basic_chat/run_test.sh "Say hello"
 ```
 
-### Reasoning Models (o1/o3)
+### Basic Chat - Creative Writing
 
 ```bash
-# Vel
-PYTHONPATH=. VEL_RESPONSES=1 python scripts/vel_trace.py --prompt "What is the square root of 169?" --model "o1-mini" > traces/vel_reasoning.jsonl
-
-# AI SDK (modify script for responses model)
-# Compare reasoning-start, reasoning-delta, reasoning-end events
+./scripts/basic_chat/run_test.sh "Write a haiku about programming"
 ```
+
+### Tool Calls (Coming Soon)
+
+Create `scripts/tools/` directory with trace generators that include tool definitions.
+
+### Reasoning Models (Coming Soon)
+
+Create `scripts/reasoning/` directory for o1/o3 model testing with reasoning events.
 
 ## Comparison Logic
 
@@ -99,24 +111,29 @@ The `compare_traces.py` script:
 4. **Compares tool calls**: Validates tool names, inputs, and outputs
 5. **Allows optional events**: `finish-message`, `response-metadata`, `source` are optional
 
-## Normalized Trace Format
+## Trace Format
 
-Both scripts output JSONL with normalized event structure:
+Both scripts output JSONL with AI SDK V5 stream protocol event structure:
 
 ```jsonl
-{"t": "text-start", "id": "block_1"}
-{"t": "text-delta", "id": "block_1", "d": "Hello"}
-{"t": "text-delta", "id": "block_1", "d": " world"}
-{"t": "text-end", "id": "block_1"}
+{"type": "text-start", "id": "0"}
+{"type": "text-delta", "id": "0", "delta": "Hello"}
+{"type": "text-delta", "id": "0", "delta": " world"}
+{"type": "text-end", "id": "0"}
+{"type": "finish-step", "finishReason": "stop", "usage": {...}, "response": {...}}
+{"type": "finish", "finishReason": "stop", "totalUsage": {...}}
 ```
 
-**Field Mapping:**
-- `t` - Event type
+**Key Fields:**
+- `type` - Event type (text-start, text-delta, tool-input-available, finish-step, etc.)
 - `id` - Block identifier
-- `d` - Delta content (text/reasoning)
-- `tool` - Tool name (for tool events)
-- `args` - Tool input (for tool-input-available)
-- `out` - Tool output (for tool-output-available)
+- `delta` - Delta content (text/reasoning)
+- `toolName` - Tool name (for tool events)
+- `input` - Tool input (for tool-input-available)
+- `output` - Tool output (for tool-output-available)
+- `finishReason` - Completion reason (stop, length, tool_calls, error, etc.)
+- `usage` - Token usage statistics
+- `response` - Response metadata (id, modelId, etc.)
 
 ## Debugging Failed Comparisons
 
@@ -125,14 +142,14 @@ If comparison fails:
 1. **Check event types:**
    ```bash
    # Extract just event types
-   jq -r '.t' < traces/vel.jsonl
-   jq -r '.t' < traces/ai.jsonl
+   jq -r '.type' < traces/vel.jsonl
+   jq -r '.type' < traces/ai.jsonl
    ```
 
 2. **Check concatenated text:**
    ```bash
    # Concatenate all text deltas
-   jq -r 'select(.t == "text-delta") | .d' < traces/vel.jsonl | tr -d '\n'
+   jq -r 'select(.type == "text-delta") | .delta' < traces/vel.jsonl | tr -d '\n'
    ```
 
 3. **Inspect full events:**
@@ -157,7 +174,22 @@ The comparison script allows these differences:
 
 ## Files
 
-- `scripts/vel_trace.py` - Vel translator trace generator
-- `scripts/ai_sdk_trace.mjs` - AI SDK trace generator
-- `scripts/compare_traces.py` - Trace comparison tool
-- `scripts/README.md` - This file
+```
+scripts/
+├── basic_chat/              # Basic chat test scenario (text-only)
+│   ├── run_test.sh          # Automated test runner
+│   ├── vel_trace.py         # Vel trace generator
+│   └── ai_sdk_trace.mjs     # AI SDK trace generator
+├── compare_traces.py        # Trace comparison tool
+├── package.json             # Node.js dependencies for AI SDK scripts
+└── README.md                # This file
+```
+
+**Planned structure for additional scenarios:**
+```
+scripts/
+├── basic_chat/              # Text-only generation
+├── tools/                   # Tool calling tests (coming soon)
+├── reasoning/               # o1/o3 reasoning models (coming soon)
+└── multimodal/              # Vision/audio tests (coming soon)
+```

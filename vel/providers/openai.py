@@ -47,7 +47,8 @@ class OpenAIProvider(BaseProvider):
         payload = {
             'model': model,
             'messages': msgs,
-            'stream': True
+            'stream': True,
+            'stream_options': {'include_usage': True}  # AI SDK v5 parity: include usage in stream
         }
         if oaitools:
             payload['tools'] = oaitools
@@ -108,20 +109,15 @@ class OpenAIProvider(BaseProvider):
                                     break
                                 yield pending_event
 
-                            # Check for finish
-                            finish_reason = chunk.get('choices', [{}])[0].get('finish_reason')
-                            if finish_reason:
-                                # Finalize tool calls
-                                for tool_event in self.translator.finalize_tool_calls():
-                                    yield tool_event
+                            # Track finish_reason but don't return yet (usage comes in next chunk)
+                            choices = chunk.get('choices', [])
+                            if choices and choices[0].get('finish_reason'):
+                                finish_reason = choices[0]['finish_reason']
 
-                                yield FinishMessageEvent(finish_reason=finish_reason)
-                                return
-
-                    # Fallback if stream ended without finish_reason
+                    # Stream ended - emit finish-message and finalize
                     for tool_event in self.translator.finalize_tool_calls():
                         yield tool_event
-                    yield FinishMessageEvent(finish_reason='stop')
+                    yield FinishMessageEvent(finish_reason=finish_reason if finish_reason else 'stop')
 
         except Exception as e:
             yield self._create_error_event(e, 'openai')

@@ -40,8 +40,8 @@ All events have a `type` field identifying the event:
 | `reasoning-end` | Reasoning block ended |
 | `response-metadata` | Response metadata (usage, model info) |
 | `source` | Source/citation event (web search, documents) |
-| `step-start` | Agent step started (multi-step agents) |
-| `step-finish` | Agent step finished (multi-step agents) |
+| `start-step` | Agent step started (multi-step agents) |
+| `finish-step` | Agent step finished (multi-step agents) |
 | `data-*` | Custom application data (e.g., `data-notification`, `data-progress`) |
 | `finish-message` | Message generation complete |
 | `finish` | Generation complete (V5 UI Stream Protocol) |
@@ -1260,7 +1260,7 @@ async def chat_with_storage(user_input: str, conversation_id: str, db):
 
 ### Multi-Step Agent Pattern
 
-MessageReducer automatically handles step-start events for multi-step agents:
+MessageReducer automatically handles start-step events for multi-step agents:
 
 ```python
 from vel import Agent, MessageReducer
@@ -1281,15 +1281,15 @@ async for event in agent.run_stream({'message': "Should I invest in crypto?"}):
 messages = reducer.get_messages()
 assistant_msg = messages[1]
 
-# Assistant message parts include step-start events:
+# Assistant message parts include start-step events:
 # [
-#   {"type": "step-start"},
+#   {"type": "start-step"},
 #   {"type": "tool-call", "toolName": "websearch", ...},
 #   {"type": "tool-result", ...},
-#   {"type": "step-start"},
+#   {"type": "start-step"},
 #   {"type": "tool-call", "toolName": "analyze", ...},
 #   {"type": "tool-result", ...},
-#   {"type": "step-start"},
+#   {"type": "start-step"},
 #   {"type": "text", "text": "Based on my analysis...", ...}
 # ]
 ```
@@ -1337,7 +1337,7 @@ class MessageReducer:
 - `text-delta` → Accumulates text chunks
 - `tool-input-available` → Creates tool-call part
 - `tool-output-available` → Creates tool-result part
-- `step-start` → Creates step-start part
+- `start-step` → Creates start-step part
 - `finish-message` → Flushes accumulated text to parts array
 
 **See also:** `examples/message_reducer_example.py` for comprehensive usage examples.
