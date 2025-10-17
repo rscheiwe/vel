@@ -106,30 +106,19 @@ class GeminiProvider(BaseProvider):
                 stream=True
             )
 
-            tool_calls_seen = []  # Track tool calls to emit ToolInputAvailable after start
-
             async for chunk in response:
                 # Translate chunk to Vel event
                 vel_event = self.translator.translate_chunk(chunk)
                 if vel_event:
                     yield vel_event
 
-                # Handle function calls (Gemini emits complete calls, need to emit available)
-                if hasattr(chunk, 'parts'):
-                    for part in chunk.parts:
-                        if hasattr(part, 'function_call'):
-                            fc = part.function_call
-                            tool_call_id = f"call_{fc.name}_{len(tool_calls_seen)}"
-                            tool_name = fc.name
-                            args = dict(fc.args) if hasattr(fc, 'args') else {}
-
-                            # Emit ToolInputAvailableEvent for V5 UI Stream Protocol
-                            yield ToolInputAvailableEvent(
-                                tool_call_id=tool_call_id,
-                                tool_name=tool_name,
-                                input=args
-                            )
-                            tool_calls_seen.append(tool_call_id)
+                # Drain any pending events from translator
+                # (Gemini emits complete function calls, translator queues tool-input-available)
+                while True:
+                    pending = self.translator.get_pending_event()
+                    if pending is None:
+                        break
+                    yield pending
 
             # End text block if active
             text_end_event = self.translator.finalize_text_block()

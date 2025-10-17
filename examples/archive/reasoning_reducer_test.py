@@ -18,7 +18,7 @@ async def test_reasoning_reducer():
     # Simulate streaming events from o1 model
     events = [
         {'type': 'start'},
-        {'type': 'step-start'},
+        {'type': 'start-step'},
         {'type': 'reasoning-start', 'id': 'rs_084b321b9f935e570068f123d553d881989b96899a08889f58'},
         # Note: OpenAI encrypts reasoning, so no reasoning-delta events
         {'type': 'reasoning-end', 'id': 'rs_084b321b9f935e570068f123d553d881989b96899a08889f58'},
@@ -32,7 +32,7 @@ async def test_reasoning_reducer():
         {'type': 'text-delta', 'id': 'msg_084b321b9f935e570068f123d6e7848198a9663aa96c84ccef', 'delta': '13.'},
         {'type': 'text-end', 'id': 'msg_084b321b9f935e570068f123d6e7848198a9663aa96c84ccef'},
         {'type': 'finish-message', 'finishReason': 'stop'},
-        {'type': 'step-finish'},
+        {'type': 'finish-step'},
         {'type': 'finish'}
     ]
 

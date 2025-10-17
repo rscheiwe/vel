@@ -136,11 +136,11 @@ async def test_agent():
     async for event in agent.run_stream({'message': query}):
         event_type = event.get('type')
 
-        if event_type == 'step-start':
+        if event_type == 'start-step':
             step_count += 1
             print(f"[Step {step_count} Start]")
 
-        elif event_type == 'step-finish':
+        elif event_type == 'finish-step':
             print(f"[Step {step_count} Finish]")
 
         elif event_type == 'tool-input-available':

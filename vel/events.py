@@ -23,8 +23,8 @@ EventType = Literal[
     'response-metadata',
     'source',
     'file',
-    'step-start',  # V5 UI Stream Protocol (multi-step agents)
-    'step-finish',  # V5 UI Stream Protocol (multi-step agents)
+    'start-step',  # V5 UI Stream Protocol (multi-step agents)
+    'finish-step',  # V5 UI Stream Protocol (multi-step agents)
     'finish-message',
     'finish',  # V5 UI Stream Protocol (end of generation)
     'error'
@@ -175,7 +175,7 @@ class StepStartEvent(StreamEvent):
     Emitted at the beginning of each agent step in multi-step agent patterns.
     Matches Vercel AI SDK V5 UI Stream Protocol for agent steps.
     """
-    type: Literal['step-start'] = 'step-start'
+    type: Literal['start-step'] = 'start-step'
 
     def to_dict(self) -> Dict[str, Any]:
         return super().to_dict()
@@ -187,7 +187,7 @@ class StepFinishEvent(StreamEvent):
     Emitted at the end of each agent step in multi-step agent patterns.
     Matches Vercel AI SDK V5 UI Stream Protocol for agent steps.
     """
-    type: Literal['step-finish'] = 'step-finish'
+    type: Literal['finish-step'] = 'finish-step'
 
     def to_dict(self) -> Dict[str, Any]:
         return super().to_dict()

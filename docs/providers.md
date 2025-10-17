@@ -666,8 +666,64 @@ Providers have different capabilities:
 
 These differences are normalized by the stream protocol, but may affect performance characteristics.
 
+## Using Translators Directly
+
+Vel's providers use **translators** internally to convert provider-specific events to standardized stream protocol events. You can also use translators directly for custom orchestration.
+
+### When to Use Translators
+
+- Building custom orchestrator with specific control flow
+- Integrating with external frameworks (Mesh, LangGraph)
+- Single-shot LLM calls without multi-step logic
+- Protocol testing and validation
+
+### Quick Example
+
+```python
+from vel.providers.translators import OpenAIAPITranslator
+from openai import AsyncOpenAI
+
+translator = OpenAIAPITranslator()
+client = AsyncOpenAI()
+
+stream = await client.chat.completions.create(
+    model='gpt-4o',
+    messages=[{'role': 'user', 'content': 'Hello'}],
+    stream=True
+)
+
+async for chunk in stream:
+    event = translator.translate_chunk(chunk.model_dump())
+    if event:
+        print(event.type, event.delta if hasattr(event, 'delta') else '')
+```
+
+### Important: Filling the Gaps
+
+Translators only emit **content events** (text-delta, tool-input-available, etc.). They don't emit:
+- `start` / `start-step` / `finish-step` / `finish` (orchestration events)
+- `tool-output-available` (requires tool execution)
+
+**If using with AI SDK frontend components**, you must manually emit these events. See the complete guides:
+
+**👉 [Event Translators](event-translators)** - Architecture overview and internal composition
+**👉 [Using Translators Directly](using-translators)** - Full guide with working examples
+
+### Available Translators
+
+```python
+from vel.providers.translators import (
+    OpenAIAPITranslator,           # OpenAI Chat Completions API
+    OpenAIResponsesAPITranslator,  # OpenAI Responses API (o1/o3)
+    OpenAIAgentsSDKTranslator,     # OpenAI Agents SDK
+    AnthropicAPITranslator,        # Anthropic Messages API
+    GeminiAPITranslator,           # Google Gemini API
+)
+```
+
 ## Next Steps
 
+- [Event Translators](event-translators) - Protocol adapter architecture and internal composition
 - [Tools](tools.md) - Add function calling to your agents
 - [Stream Protocol](stream-protocol.md) - Understand streaming events
 - [Session Management](sessions.md) - Multi-turn conversations

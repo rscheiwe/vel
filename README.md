@@ -36,7 +36,8 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 - [Providers](https://rscheiwe.github.io/vel/providers) - OpenAI, Gemini, and Claude configuration
 - [Tools](https://rscheiwe.github.io/vel/tools) - Custom tool creation
 - [Stream Protocol](https://rscheiwe.github.io/vel/stream-protocol) - Event streaming reference
-- [Event Translators](https://rscheiwe.github.io/vel/event-translators) - Translate provider events to Vel format (OpenAI, Anthropic, Gemini)
+- [Event Translators](https://rscheiwe.github.io/vel/event-translators) - Protocol adapter architecture and usage guide
+  - [Using Translators Directly](https://rscheiwe.github.io/vel/using-translators) - Custom orchestration with frontend compatibility
 - [Memory System](https://rscheiwe.github.io/vel/memory) - Optional memory with Fact Store and ReasoningBank
 - [API Reference](https://rscheiwe.github.io/vel/api-reference) - Complete API docs
 - [12-Factor Alignment](https://rscheiwe.github.io/vel/12-factor-alignment) - Production-ready agent principles
@@ -58,6 +59,26 @@ vel/
 agents_service/
 └── main.py         # FastAPI service with streaming & sync endpoints
 ```
+
+## Architecture
+
+Vel uses a **two-layer architecture** based on the Single Responsibility Principle:
+
+### Layer 1: Translators (Protocol Adapters)
+
+- **Job:** Convert provider-specific → standard protocol
+- **Scope:** Single LLM response stream
+- **Stateful:** Only tracks current response (text blocks, tool calls)
+- **Reusable:** Works with any orchestrator (Vel Agent, Mesh, LangGraph, custom)
+
+### Layer 2: Agent (Orchestrator)
+
+- **Job:** Multi-step execution, tool calling, context management
+- **Scope:** Full agentic workflow
+- **Stateful:** Sessions, context, run history
+- **Opinionated:** Implements specific orchestration pattern
+
+This separation enables **composability**: use Agent for turnkey workflows, or use Event Translators directly with custom orchestrators. See [Event Translators](https://rscheiwe.github.io/vel/event-translators) for complete architecture details and integration examples.
 
 ## Installation
 
@@ -135,7 +156,7 @@ Vel uses the [Vercel AI SDK V5 UI Stream Protocol](https://ai-sdk.dev/docs/ai-sd
 - `tool-input-start`, `tool-input-delta` - Tool input streaming
 - `tool-input-available` - Complete tool input ready for execution
 - `tool-output-available` - Tool execution result
-- `step-start`, `step-finish` - Multi-step agent progress
+- `start-step`, `finish-step` - Multi-step agent progress
 - `data-*` - Custom application events (notifications, progress, metrics) with transient flag support
 - `response-metadata` - Token usage and model info
 - `source` - Citations and grounding (Gemini)
@@ -235,7 +256,7 @@ async for event in agent.run_stream({'message': 'What is sqrt(169)?'}):
 
 messages = reducer.get_messages()
 # assistant message parts: [
-#   {'type': 'step-start'},
+#   {'type': 'start-step'},
 #   {'type': 'reasoning', 'text': '', 'state': 'done', 'providerMetadata': {...}},
 #   {'type': 'text', 'text': 'The answer is 13', 'state': 'done'}
 # ]

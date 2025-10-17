@@ -308,12 +308,60 @@ curl -X POST http://localhost:8000/runs/sync \
   }'
 ```
 
+## Architecture Overview
+
+Vel uses a two-layer architecture based on the **Single Responsibility Principle**:
+
+### Layer 1: Translators (Protocol Adapters)
+
+**Responsibility:** Convert provider-specific events → standard stream protocol
+
+```python
+from vel.providers.translators import OpenAIAPITranslator
+
+translator = OpenAIAPITranslator()
+# Converts OpenAI chunks → Vel protocol events
+```
+
+- **Job:** Protocol translation only
+- **Scope:** Single LLM response stream
+- **Stateful:** Only tracks current response (text blocks, tool calls)
+- **Reusable:** Works with any orchestrator (Vel Agent, Mesh, LangGraph)
+
+### Layer 2: Agent (Orchestrator)
+
+**Responsibility:** Multi-step execution, tool calling, context management
+
+```python
+from vel import Agent
+
+agent = Agent(id='my-agent', model={...}, tools=[...])
+# Handles orchestration, tool execution, sessions
+```
+
+- **Job:** Full agentic workflow
+- **Scope:** Multi-step execution with tools
+- **Stateful:** Sessions, context, run history
+- **Opinionated:** Implements specific orchestration pattern
+
+### Why Two Layers?
+
+This separation enables **composability**:
+
+1. **Use Agent** for turnkey agentic workflows (most common)
+2. **Use Translator** when integrating with external frameworks or building custom orchestrators
+
+The translator layer can be reused across different orchestration strategies without modification.
+
+**Learn more:** [Event Translators](event-translators) - Complete architecture details and usage guide
+
 ## Next Steps
 
 - [Session Management](sessions.md) - Learn about multi-turn conversations
 - [Providers](providers.md) - Configure OpenAI, Gemini, and Claude
 - [Tools](tools.md) - Create custom tools
 - [Stream Protocol](stream-protocol.md) - Understand streaming events and custom data-* events for RAG, progress tracking, and analytics
+- [Event Translators](event-translators) - Protocol adapter architecture and custom orchestration
 - [API Reference](api-reference.md) - Complete API documentation
 
 ## Troubleshooting

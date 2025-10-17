@@ -62,12 +62,12 @@ async def main():
     accumulated_text = []
     async for event in agent.run_stream({'message': user_input}):
         reducer.process_event(event)
-
+        print(event)
         # Display text as it streams
-        if event.get('type') == 'text-delta':
-            delta = event.get('delta', '')
-            accumulated_text.append(delta)
-            print(delta, end='', flush=True)
+        # if event.get('type') == 'text-delta':
+        #     delta = event.get('delta', '')
+        #     accumulated_text.append(delta)
+        #     print(delta, end='', flush=True)
 
     print()
     print("-" * 70)
