@@ -1,25 +1,25 @@
 ---
 layout: default
-title: Event Translators
-nav_order: 8
+title: Translator API Reference
+parent: Event Translators
+nav_order: 2
 ---
 
-# Event Translators
+# Translator API Reference
+
+Code examples and API documentation for Vel's translator classes.
 
 ## Overview
 
-Vel Event Translators provide a clean API for translating native provider events to Vel's standardized stream protocol. These translators support:
+Vel translators provide a clean API for converting native provider events to Vel's standardized stream protocol. Each translator:
 
-1. **Direct API usage** (OpenAI Chat API, Anthropic Messages API, Google Gemini API)
-2. **Agent SDKs** (OpenAI Agents SDK, and more)
-3. **Consistent event formatting** across all providers
-4. **Single source of truth** - no duplicated translation logic
+- ✅ Handles a specific provider's event format
+- ✅ Converts to standardized Vel events
+- ✅ Tracks state within a single response
+- ❌ Does NOT make API calls (you handle HTTP)
+- ❌ Does NOT add orchestration events (use Agent or add manually)
 
-Translators can be used:
-- **Internally** by Vel providers (already integrated)
-- **Externally** by orchestration libraries like Mesh
-
-**Important:** Translators only translate events - they do NOT make API calls.
+**See also:** [Event Translators Overview](event-translators) for architecture details and [Using Translators Directly](using-translators) for complete examples.
 
 ## Installation
 
@@ -32,6 +32,7 @@ pip install vel
 | Translator | Source | Use Case |
 |------------|--------|----------|
 | `OpenAIAPITranslator` | OpenAI Chat Completions API | Direct API calls to OpenAI |
+| `OpenAIResponsesAPITranslator` | OpenAI Responses API | OpenAI o1/o3 models with reasoning, provider-executed tools |
 | `OpenAIAgentsSDKTranslator` | OpenAI Agents SDK | Using OpenAI's agent framework |
 | `AnthropicAPITranslator` | Anthropic Messages API | Direct API calls to Claude |
 | `GeminiAPITranslator` | Google Gemini API | Direct API calls to Gemini |
@@ -54,6 +55,26 @@ async with httpx.AsyncClient() as client:
             if line.startswith('data: '):
                 chunk = json.loads(line[6:])
                 vel_event = translator.translate_chunk(chunk)
+                if vel_event:
+                    print(vel_event.to_dict())
+```
+
+### OpenAI Responses API
+
+```python
+from vel import get_openai_responses_translator
+import httpx
+import json
+
+translator = get_openai_responses_translator()
+
+# Make API call to Responses API (for o1/o3 models with reasoning)
+async with httpx.AsyncClient() as client:
+    async with client.stream('POST', 'https://api.openai.com/v1/responses', ...) as response:
+        async for line in response.aiter_lines():
+            if line.startswith('data: '):
+                event = json.loads(line[6:])
+                vel_event = translator.translate_event(event)
                 if vel_event:
                     print(vel_event.to_dict())
 ```
@@ -113,6 +134,7 @@ All translators can be instantiated via convenience functions:
 ```python
 from vel import (
     get_openai_api_translator,        # OpenAI Chat API
+    get_openai_responses_translator,  # OpenAI Responses API (o1/o3 with reasoning)
     get_openai_agents_translator,     # OpenAI Agents SDK
     get_anthropic_translator,         # Anthropic Messages API
     get_gemini_translator,            # Google Gemini API
@@ -130,6 +152,24 @@ Get a translator for OpenAI Chat Completions API.
 ```python
 from vel import get_openai_api_translator
 translator = get_openai_api_translator()
+```
+
+### `get_openai_responses_translator()`
+
+Get a translator for OpenAI Responses API (`/v1/responses`).
+
+Use this for:
+- OpenAI o1/o3 models with reasoning capabilities
+- Provider-executed tools (web_search, computer use)
+- Output synthesis with citations and sources
+
+**Returns:**
+- `OpenAIResponsesAPITranslator` instance
+
+**Example:**
+```python
+from vel import get_openai_responses_translator
+translator = get_openai_responses_translator()
 ```
 
 ### `get_anthropic_translator()`
@@ -170,6 +210,59 @@ Get a translator for OpenAI Agents SDK events.
 from vel import get_openai_agents_translator
 
 translator = get_openai_agents_translator()
+```
+
+### `OpenAIResponsesAPITranslator`
+
+Translates OpenAI Responses API events to Vel stream protocol.
+
+Handles the structured event format from `/v1/responses` endpoint:
+- `response.text.delta`, `response.output_text.delta`
+- `response.reasoning.delta` (OpenAI o1/o3 chain-of-thought)
+- `response.function_call_arguments.delta`
+- Provider-executed tools (web_search, computer use)
+- Citations and sources
+
+**Key Features:**
+- Normalizes all reasoning variants to single event type
+- Deduplicates reasoning-start events
+- Maps provider-executed tools
+- Extracts and emits sources/citations
+- Early metadata emission with later usage updates
+
+#### `translate_event(event)`
+
+Translate a Responses API event to Vel format.
+
+**Parameters:**
+- `event`: Parsed event from Responses API SSE stream
+
+**Returns:**
+- `StreamEvent` in Vel format, or `None` if event should be skipped
+
+**Example:**
+```python
+translator = get_openai_responses_translator()
+
+async for line in response.aiter_lines():
+    if line.startswith('data: '):
+        event = json.loads(line[6:])
+        vel_event = translator.translate_event(event)
+        if vel_event:
+            if vel_event.type == "reasoning-delta":
+                print(f"[Reasoning] {vel_event.delta}")
+            elif vel_event.type == "text-delta":
+                print(vel_event.delta, end="", flush=True)
+```
+
+#### `reset()`
+
+Reset translator state between messages.
+
+**Example:**
+```python
+# After processing one message, reset for next message
+translator.reset()
 ```
 
 ### `OpenAIAgentsSDKTranslator`
@@ -221,6 +314,25 @@ translator.reset()
 | `run_item_stream_event` (tool in_progress) | `tool-input-start` | Tool call begins |
 | `run_item_stream_event` (tool completed) | `tool-output-available` | Tool result |
 | `agent_updated_stream_event` | (skipped) | Agent state changes |
+
+### OpenAI Responses API → Vel
+
+| Responses API Event | Vel Event | Description |
+|---------------------|-----------|-------------|
+| `response.created` | `response-metadata` | Response ID and model |
+| `response.text.delta` | `text-delta` | Text content streaming |
+| `response.output_text.delta` | `text-delta` | Final output text |
+| `response.reasoning.delta` | `reasoning-delta` | Chain-of-thought reasoning (o1/o3) |
+| `response.reasoning_summary.delta` | `reasoning-delta` | Reasoning summary |
+| `response.function_call_arguments.delta` | `tool-input-delta` | Tool call arguments |
+| `response.output_item.added` | Various | Output synthesis (text/tool results) |
+| `response.done` | `finish-message` | Response complete |
+| `response.error` | `error` | Error occurred |
+
+**Special Mappings:**
+- Provider tools (web_search, computer use) → `tool-input-available` + `tool-output-available`
+- Citations and sources → `source` events
+- All reasoning variants normalized to single `reasoning-delta` type
 
 ## Complete Example
 

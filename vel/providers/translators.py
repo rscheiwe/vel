@@ -5,13 +5,83 @@ This module provides translators for converting native provider events to Vel's
 standardized stream protocol events. These translators can be used:
 
 1. Internally by Vel providers (composition pattern)
-2. Externally by orchestration libraries (like Mesh)
+2. Externally by orchestration libraries (like Mesh, LangGraph)
 
 Supported Sources:
 - OpenAI Chat Completions API
 - OpenAI Agents SDK
 - Anthropic Messages API
 - Google Gemini API
+
+## Scope & Responsibility
+
+**Translators handle:** Protocol conversion for a SINGLE LLM response
+- text-start/delta/end
+- tool-input-start/delta/available
+- response-metadata
+- finish-message
+
+**Translators do NOT handle:** Multi-step orchestration
+- ❌ start-step / finish-step (use Agent for multi-step)
+- ❌ Tool execution (translators only detect tool calls)
+- ❌ Context/memory management
+- ❌ Agentic loops
+
+## When to Use What
+
+**Use Translator directly when:**
+- Building a custom orchestrator
+- Using with external frameworks (Mesh, LangGraph)
+- Single-shot LLM calls (no multi-step needed)
+- Protocol testing/validation
+
+**Use Agent when:**
+- You need multi-step execution
+- You need tool calling with execution
+- You need context/session management
+- You want full agentic runtime
+
+**⚠️ Important:** If using translator directly with AI SDK frontend components,
+you must manually emit orchestration events (start, start-step, finish-step, finish).
+See docs/using-translators.md for a complete guide with working examples.
+
+## Example: Translator in Custom Orchestrator
+
+```python
+from vel.providers.translators import OpenAIAPITranslator
+
+translator = OpenAIAPITranslator()
+
+# Your orchestration logic
+while not done:
+    async for chunk in openai_stream:
+        event = translator.translate_chunk(chunk)
+
+        if event.type == 'tool-input-available':
+            # Your tool execution logic
+            result = await execute_tool(event.tool_name, event.input)
+            # Your next step logic
+
+        elif event.type == 'text-delta':
+            # Your streaming logic
+            print(event.delta)
+```
+
+## Example: Agent for Full Orchestration
+
+```python
+from vel import Agent
+
+agent = Agent(
+    id='my-agent:v1',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['get_weather']
+)
+
+# Agent handles everything: multi-step, tool execution, context
+async for event in agent.run_stream({'message': 'What's the weather?'}):
+    print(event)  # Includes start-step, finish-step, tool-output-available
+```
 """
 from __future__ import annotations
 from typing import Any, Dict, Optional
@@ -1245,6 +1315,21 @@ class OpenAIResponsesAPITranslator:
         self._metadata_emitted = False
 
 
+def get_openai_responses_translator() -> OpenAIResponsesAPITranslator:
+    """
+    Get a translator for OpenAI Responses API (/v1/responses).
+
+    Use this for:
+    - OpenAI o1/o3 models with reasoning
+    - Provider-executed tools (web_search, computer use)
+    - Output synthesis with citations
+
+    Returns:
+        OpenAIResponsesAPITranslator instance
+    """
+    return OpenAIResponsesAPITranslator()
+
+
 __all__ = [
     'OpenAIAPITranslator',
     'OpenAIResponsesAPITranslator',
@@ -1252,6 +1337,7 @@ __all__ = [
     'AnthropicAPITranslator',
     'GeminiAPITranslator',
     'get_openai_api_translator',
+    'get_openai_responses_translator',
     'get_openai_agents_translator',
     'get_anthropic_translator',
     'get_gemini_translator',
