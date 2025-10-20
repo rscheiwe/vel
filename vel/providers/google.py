@@ -15,14 +15,22 @@ class GeminiProvider(BaseProvider):
     """Google Gemini provider implementing stream protocol"""
     name = 'google'
 
-    def __init__(self):
+    def __init__(self, api_key: Optional[str] = None):
+        """
+        Initialize Gemini provider.
+
+        Args:
+            api_key: Optional API key. If not provided, falls back to GOOGLE_API_KEY environment variable.
+        """
         if genai is None:
             raise ImportError("google-generativeai not installed. Install with: pip install google-generativeai")
 
-        api_key = os.getenv('GOOGLE_API_KEY')
-        if not api_key:
-            raise ValueError("GOOGLE_API_KEY environment variable is not set. Set it in your .env file or export it.")
-        genai.configure(api_key=api_key)
+        # Use provided API key or fall back to environment variable
+        self.api_key = api_key or os.getenv('GOOGLE_API_KEY', '')
+        if not self.api_key:
+            raise ValueError("Google API key not provided. Either pass api_key parameter or set GOOGLE_API_KEY environment variable.")
+
+        genai.configure(api_key=self.api_key)
         self.translator = GeminiAPITranslator()
 
     def _convert_messages(self, messages: List[LLMMessage]) -> List[Dict[str, Any]]:
