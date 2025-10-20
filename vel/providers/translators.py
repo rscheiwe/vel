@@ -218,7 +218,7 @@ class OpenAIAPITranslator:
         # AI SDK parity: Robust handling of malformed tool_calls
         # Some providers send tool_calls[].type as empty string after first delta
         # Reference: vercel/ai#7255 - Accept "type": "" tool calls
-        if 'tool_calls' in delta:
+        if delta.get('tool_calls'):  # Check if tool_calls exists and is not None
             for tc in delta['tool_calls']:
                 # Use index as primary identifier (more reliable than type field)
                 idx = tc.get('index')

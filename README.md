@@ -95,6 +95,34 @@ cp .env.example .env
 
 ## Quick Start
 
+### API Key Configuration
+
+Vel supports two ways to provide API keys:
+
+**1. Environment Variables (recommended for development)**
+```bash
+export OPENAI_API_KEY='sk-...'
+export ANTHROPIC_API_KEY='sk-ant-...'
+export GOOGLE_API_KEY='...'
+```
+
+**2. Explicit API Keys (recommended for libraries/production)**
+```python
+agent = Agent(
+    id='my-agent',
+    model={
+        'provider': 'openai',
+        'model': 'gpt-4o',
+        'api_key': 'sk-...'  # Override environment variable
+    }
+)
+```
+
+This makes Vel suitable for:
+- **Applications**: Use environment variables
+- **Libraries**: Pass API keys programmatically
+- **Multi-tenant**: Different agents can use different API keys
+
 ### Python SDK
 
 ```python
@@ -102,13 +130,23 @@ import asyncio
 from vel import Agent
 
 async def main():
-    # Non-streaming mode
+    # Option 1: Use environment variable (OPENAI_API_KEY)
     agent = Agent(
         id='chat-general:v1',
         model={'provider': 'openai', 'model': 'gpt-4o'},
         tools=['get_weather'],
         policies={'max_steps': 8}
     )
+
+    # Option 2: Explicit API key
+    agent = Agent(
+        id='chat-general:v1',
+        model={'provider': 'openai', 'model': 'gpt-4o', 'api_key': 'sk-...'},
+        tools=['get_weather'],
+        policies={'max_steps': 8}
+    )
+
+    # Non-streaming mode
     answer = await agent.run({'message': 'What is the weather?'})
     print(answer)
 

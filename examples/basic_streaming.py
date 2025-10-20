@@ -10,16 +10,20 @@ Shows how to:
 import asyncio
 import json
 import os
+from dotenv import load_dotenv
 from vel import Agent, MessageReducer
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ====== CONFIGURATION ======
 # Change this to test different providers
 PROVIDER = 'openai'  # Options: 'openai', 'anthropic', 'gemini'
 
 PROVIDER_CONFIG = {
-    'openai': {'provider': 'openai', 'model': 'gpt-4o-mini'},
-    'anthropic': {'provider': 'anthropic', 'model': 'claude-sonnet-4-20250514'},
-    'gemini': {'provider': 'google', 'model': 'gemini-1.5-flash'}
+    'openai': {'provider': 'openai', 'model': 'gpt-4o-mini', 'api_key': os.getenv('OPENAI_API_KEY')},
+    'anthropic': {'provider': 'anthropic', 'model': 'claude-sonnet-4-20250514', 'api_key': os.getenv('ANTHROPIC_API_KEY')},
+    'gemini': {'provider': 'google', 'model': 'gemini-1.5-flash', 'api_key': os.getenv('GOOGLE_API_KEY')},
 }
 
 async def main():
