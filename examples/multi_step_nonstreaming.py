@@ -10,7 +10,11 @@ Shows how to:
 import asyncio
 import json
 import os
+from dotenv import load_dotenv
 from vel import Agent, MessageReducer, ToolSpec, register_tool
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Register tools for multi-step reasoning
 register_tool(ToolSpec(

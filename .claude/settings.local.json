@@ -27,7 +27,9 @@
       "Read(//Users/richard.s/Downloads/ai-chat-agent-multi-step-tool-pattern/**)",
       "Bash(pip install:*)",
       "Bash(env)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Read(//Users/richard.s/mesh/**)",
+      "Read(//Users/richard.s/mesh-app/**)"
     ],
     "deny": [],
     "ask": []

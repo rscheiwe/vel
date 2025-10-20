@@ -10,7 +10,11 @@ Shows how to:
 import asyncio
 import json
 import os
+from dotenv import load_dotenv
 from vel import Agent, MessageReducer
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ====== CONFIGURATION ======
 # Change this to test different providers
