@@ -48,9 +48,15 @@ Agent(
 
 **model** (required)
 - Type: `Dict[str, Any]`
-- Model configuration with `provider` and `model` keys
-- Example: `{'provider': 'openai', 'model': 'gpt-4o'}`
+- Model configuration with `provider`, `model`, and optional `api_key` keys
+- Examples:
+  - `{'provider': 'openai', 'model': 'gpt-4o'}` - Uses `OPENAI_API_KEY` env var
+  - `{'provider': 'openai', 'model': 'gpt-4o', 'api_key': 'sk-...'}` - Uses explicit API key
 - Supported providers: `'openai'`, `'google'`, `'anthropic'`
+- **API Key Handling:**
+  - If `api_key` is provided, it overrides the environment variable for this agent instance
+  - If `api_key` is not provided, falls back to environment variable (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`)
+  - This enables multi-tenant applications where different agents use different API keys
 
 **prompt_env**
 - Type: `str`

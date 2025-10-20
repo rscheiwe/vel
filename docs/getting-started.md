@@ -71,6 +71,65 @@ OPENAI_API_BASE=https://api.openai.com/v1
 
 **Note:** If `POSTGRES_DSN` and `REDIS_URL` are not set, Vel will use in-memory storage (fine for development).
 
+### API Key Configuration Methods
+
+Vel supports **two ways** to provide API keys, making it suitable for both applications and libraries:
+
+#### Method 1: Environment Variables (recommended for applications)
+
+Set environment variables as shown above. Agents will automatically use them:
+
+```python
+agent = Agent(
+    id='my-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'}
+)
+# Uses OPENAI_API_KEY from environment
+```
+
+**Pros:**
+- ✓ Secure (not in code)
+- ✓ Easy for development
+- ✓ Standard practice
+
+**Cons:**
+- ✗ Not suitable for libraries imported by others
+- ✗ Can't use different keys for different agents
+
+#### Method 2: Explicit API Keys (recommended for libraries/production)
+
+Pass API keys directly in the model config:
+
+```python
+agent = Agent(
+    id='my-agent',
+    model={
+        'provider': 'openai',
+        'model': 'gpt-4o',
+        'api_key': 'sk-...'  # Override environment variable
+    }
+)
+```
+
+**Pros:**
+- ✓ Works in any environment
+- ✓ Suitable for installable packages
+- ✓ Different agents can use different keys
+- ✓ Perfect for multi-tenant applications
+
+**Cons:**
+- ✗ Must manage secrets carefully
+
+#### Use Cases
+
+| Scenario | Method |
+|----------|--------|
+| Building an application | Environment variables |
+| Building a library/package | Explicit API keys |
+| Multi-tenant SaaS | Explicit API keys (per-tenant) |
+| Development/testing | Environment variables |
+| CI/CD | Environment variables |
+
 ## Quick Start
 
 ### Basic Usage
