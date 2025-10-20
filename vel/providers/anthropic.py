@@ -6,27 +6,32 @@ from .base import BaseProvider, LLMMessage
 from .translators import AnthropicAPITranslator
 from ..events import StreamEvent, ErrorEvent
 
-def _headers():
-    api_key = os.getenv('ANTHROPIC_API_KEY', '')
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
-    return {
-        'x-api-key': api_key,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
-    }
-
 class AnthropicProvider(BaseProvider):
     """Anthropic Claude provider implementing stream protocol"""
     name = 'anthropic'
 
-    def __init__(self):
+    def __init__(self, api_key: Optional[str] = None):
+        """
+        Initialize Anthropic provider.
+
+        Args:
+            api_key: Optional API key. If not provided, falls back to ANTHROPIC_API_KEY environment variable.
+        """
         self.base = os.getenv('ANTHROPIC_API_BASE', 'https://api.anthropic.com')
         self.translator = AnthropicAPITranslator()
-        # Validate API key is set
-        api_key = os.getenv('ANTHROPIC_API_KEY', '')
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable is not set. Set it in your .env file or export it.")
+
+        # Use provided API key or fall back to environment variable
+        self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY', '')
+        if not self.api_key:
+            raise ValueError("Anthropic API key not provided. Either pass api_key parameter or set ANTHROPIC_API_KEY environment variable.")
+
+    def _headers(self):
+        """Get headers with API key"""
+        return {
+            'x-api-key': self.api_key,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json'
+        }
 
     def _convert_messages(self, messages: List[LLMMessage]) -> tuple[str, List[Dict[str, Any]]]:
         """Convert messages to Anthropic format, extracting system message"""
@@ -114,7 +119,7 @@ class AnthropicProvider(BaseProvider):
                 async with client.stream(
                     'POST',
                     f"{self.base}/v1/messages",
-                    headers=_headers(),
+                    headers=self._headers(),
                     json=payload
                 ) as response:
                     response.raise_for_status()
@@ -245,7 +250,7 @@ class AnthropicProvider(BaseProvider):
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(
                 f"{self.base}/v1/messages",
-                headers=_headers(),
+                headers=self._headers(),
                 json=payload
             )
             r.raise_for_status()

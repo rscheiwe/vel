@@ -37,7 +37,11 @@ class Agent:
 
         Args:
             id: Agent identifier
-            model: Model config with 'provider' and 'model' keys
+            model: Model config with 'provider' and 'model' keys. Optionally include 'api_key'
+                   to override environment variable for this specific agent instance.
+                   Examples:
+                   - {'provider': 'openai', 'model': 'gpt-4o'}  # Uses OPENAI_API_KEY env var
+                   - {'provider': 'openai', 'model': 'gpt-4o', 'api_key': 'sk-...'}  # Uses provided key
             prompt_env: Environment for prompts (default: 'prod')
             tools: List of tool names to enable
             policies: Execution policies (max_steps, retry, etc.)
@@ -106,7 +110,32 @@ class Agent:
 
         # Set session persistence (default to 'transient')
         self.session_persistence = session_persistence or 'transient'
+
+        # Provider setup: If model config has api_key, create provider instance directly
+        # Otherwise, use shared registry (backward compatible)
         self.providers = ProviderRegistry.default()
+        self._custom_provider = None
+
+        # Check if model config has api_key - if so, create custom provider instance
+        if 'api_key' in self.model_cfg:
+            provider_name = self.model_cfg['provider']
+            api_key = self.model_cfg['api_key']
+
+            # Import provider classes
+            from .providers import OpenAIProvider, OpenAIResponsesProvider, GeminiProvider, AnthropicProvider
+
+            # Create provider instance with API key
+            if provider_name == 'openai':
+                self._custom_provider = OpenAIProvider(api_key=api_key)
+            elif provider_name == 'openai-responses':
+                self._custom_provider = OpenAIResponsesProvider(api_key=api_key)
+            elif provider_name == 'google':
+                self._custom_provider = GeminiProvider(api_key=api_key)
+            elif provider_name == 'anthropic':
+                self._custom_provider = AnthropicProvider(api_key=api_key)
+            else:
+                raise ValueError(f"Unknown provider: {provider_name}. Cannot create instance with custom API key.")
+
         self.toolreg = ToolRegistry.default()
 
         # Context manager setup with prompt support
@@ -126,6 +155,12 @@ class Agent:
 
         self.store = RunStore.default()
 
+    def _get_provider(self):
+        """Get provider instance (custom or from registry)"""
+        if self._custom_provider:
+            return self._custom_provider
+        return self.providers.get(self.model_cfg['provider'])
+
     async def _load_session(self, session_id: str):
         """Load session from database if using persistent storage"""
         if self.session_persistence == 'persistent':
@@ -142,7 +177,7 @@ class Agent:
     async def _call_llm_generate(self, run_id: str, session_id: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Non-streaming LLM call"""
         messages = self.ctxmgr.messages_for_llm(run_id, session_id)
-        provider = self.providers.get(self.model_cfg['provider'])
+        provider = self._get_provider()
         # Merge agent-level and call-level generation configs
         config = {**self.generation_config, **(generation_config or {})}
         step = await provider.generate(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas(), generation_config=config)
@@ -317,7 +352,7 @@ class Agent:
 
                 # Get messages and stream LLM response
                 messages = self.ctxmgr.messages_for_llm(run_id, session_id)
-                provider = self.providers.get(self.model_cfg['provider'])
+                provider = self._get_provider()
 
                 # Merge agent-level and per-run generation configs
                 config = {**self.generation_config, **(generation_config or {})}

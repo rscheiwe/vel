@@ -6,26 +6,31 @@ from .base import BaseProvider, LLMMessage
 from .translators import OpenAIAPITranslator, OpenAIResponsesAPITranslator
 from ..events import StreamEvent, FinishMessageEvent, ErrorEvent
 
-def _headers():
-    api_key = os.getenv('OPENAI_API_KEY', '')
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY environment variable is not set")
-    return {
-        'Authorization': f"Bearer {api_key}",
-        'Content-Type': 'application/json'
-    }
-
 class OpenAIProvider(BaseProvider):
     """OpenAI provider implementing stream protocol"""
     name = 'openai'
 
-    def __init__(self):
+    def __init__(self, api_key: Optional[str] = None):
+        """
+        Initialize OpenAI provider.
+
+        Args:
+            api_key: Optional API key. If not provided, falls back to OPENAI_API_KEY environment variable.
+        """
         self.base = os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
         self.translator = OpenAIAPITranslator()
-        # Validate API key is set
-        api_key = os.getenv('OPENAI_API_KEY', '')
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is not set. Set it in your .env file or export it.")
+
+        # Use provided API key or fall back to environment variable
+        self.api_key = api_key or os.getenv('OPENAI_API_KEY', '')
+        if not self.api_key:
+            raise ValueError("OpenAI API key not provided. Either pass api_key parameter or set OPENAI_API_KEY environment variable.")
+
+    def _headers(self):
+        """Get headers with API key"""
+        return {
+            'Authorization': f"Bearer {self.api_key}",
+            'Content-Type': 'application/json'
+        }
 
     async def stream(
         self,
@@ -80,7 +85,7 @@ class OpenAIProvider(BaseProvider):
                 async with client.stream(
                     'POST',
                     f"{self.base}/chat/completions",
-                    headers=_headers(),
+                    headers=self._headers(),
                     json=payload
                 ) as response:
                     response.raise_for_status()
@@ -217,7 +222,7 @@ class OpenAIProvider(BaseProvider):
         async with httpx.AsyncClient(timeout=60.0) as client:
             r = await client.post(
                 f"{self.base}/chat/completions",
-                headers=_headers(),
+                headers=self._headers(),
                 json=payload
             )
             r.raise_for_status()
@@ -250,13 +255,27 @@ class OpenAIResponsesProvider(BaseProvider):
     """
     name = 'openai-responses'
 
-    def __init__(self):
+    def __init__(self, api_key: Optional[str] = None):
+        """
+        Initialize OpenAI Responses API provider.
+
+        Args:
+            api_key: Optional API key. If not provided, falls back to OPENAI_API_KEY environment variable.
+        """
         self.base = os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
         self.translator = OpenAIResponsesAPITranslator()
-        # Validate API key is set
-        api_key = os.getenv('OPENAI_API_KEY', '')
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is not set. Set it in your .env file or export it.")
+
+        # Use provided API key or fall back to environment variable
+        self.api_key = api_key or os.getenv('OPENAI_API_KEY', '')
+        if not self.api_key:
+            raise ValueError("OpenAI API key not provided. Either pass api_key parameter or set OPENAI_API_KEY environment variable.")
+
+    def _headers(self):
+        """Get headers with API key"""
+        return {
+            'Authorization': f"Bearer {self.api_key}",
+            'Content-Type': 'application/json'
+        }
 
     async def stream(
         self,
@@ -321,7 +340,7 @@ class OpenAIResponsesProvider(BaseProvider):
                 async with client.stream(
                     'POST',
                     f"{self.base}/responses",
-                    headers=_headers(),
+                    headers=self._headers(),
                     json=payload
                 ) as response:
                     response.raise_for_status()
