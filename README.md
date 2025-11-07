@@ -19,17 +19,76 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
   - Reasoning events (OpenAI o1/o3 chain-of-thought streaming)
   - Anthropic thinking blocks
   - Enhanced error details
-- **Message Aggregation**: MessageReducer for converting streaming events (text, reasoning, tools) to Vercel AI SDK message format for database storage
+- **Message Aggregation**: MessageReducer for converting streaming events (text, reasoning, tools) to Vercel AI SDK message format
 - **Tool System**: JSON schema-validated tools with async support
 - **Flexible Prompts**: Jinja2 templating with XML formatting, environment-based configuration, and version control
-- **Persistent Storage**: PostgreSQL for durability, Redis for caching
-- **FastAPI Service**: Production-ready REST API with health checks
+- **Message Format Compatibility**: Works with Vercel AI SDK's `convertToModelMessages()` and includes Python converter for UIMessage → ModelMessage
+- **Automatic Provider Translation**: Converts ModelMessage format to provider-specific formats (OpenAI/Anthropic/Gemini) automatically
+
+## Message Format Compatibility
+
+Vel supports multiple message format patterns for seamless integration:
+
+### React Frontend + Vel Backend
+```typescript
+// Frontend (React with Vercel AI SDK)
+import { useChat, convertToModelMessages } from 'ai';
+
+const { messages } = useChat();
+const modelMessages = convertToModelMessages(messages);
+
+fetch('/api/chat', {
+  body: JSON.stringify({ messages: modelMessages })
+});
+```
+
+```python
+# Backend (FastAPI with Vel)
+from vel import Agent
+
+@app.post("/api/chat")
+async def chat(request: dict):
+    agent = Agent(
+        id='chat',
+        model={'provider': 'openai', 'model': 'gpt-4o'}
+    )
+
+    # Vel translates ModelMessage → OpenAI format automatically
+    response = await agent.run({'messages': request['messages']})
+    return {'response': response}
+```
+
+### Python-Only Applications
+```python
+from vel import Agent
+from vel.utils import convert_to_model_messages
+
+# Option 1: Build ModelMessages manually
+messages = [
+    {'role': 'user', 'content': 'Hello'},
+    {'role': 'assistant', 'content': 'Hi!'}
+]
+
+# Option 2: Convert UIMessages from database
+ui_messages = db.get_conversation(user_id)
+messages = convert_to_model_messages(ui_messages)
+
+# Use with any provider - translation is automatic
+agent = Agent(
+    id='chat',
+    model={'provider': 'anthropic', 'model': 'claude-3-5-sonnet-20241022'}
+)
+response = await agent.run({'messages': messages})
+```
+
+**See [Message Formats Documentation](https://rscheiwe.github.io/vel/message-formats) for detailed patterns and examples.**
 
 ## Documentation
 
 **📚 [Complete Documentation](https://rscheiwe.github.io/vel)**
 
 - [Getting Started](https://rscheiwe.github.io/vel/getting-started) - Installation and quick start
+- [Message Formats](https://rscheiwe.github.io/vel/message-formats) - UIMessage, ModelMessage, and automatic provider translation
 - [Session Management](https://rscheiwe.github.io/vel/sessions) - Multi-turn conversations
 - [RLM (Recursive Language Model)](https://rscheiwe.github.io/vel/rlm) - Long context support (5MB+) with iterative reasoning
 - [Prompt Templates](https://rscheiwe.github.io/vel/prompts) - Flexible prompt management with Jinja2 and XML
@@ -49,15 +108,11 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 vel/
 ├── providers/      # LLM provider implementations (OpenAI, Gemini, Anthropic)
 ├── rlm/            # RLM (Recursive Language Model) for long context support
-├── storage/        # Storage layer (Postgres, Redis)
 ├── tools/          # Tool registry and specifications
 ├── prompts/        # Prompt templates with Jinja2 and XML formatting
 ├── core/           # State management, reducer, context
 ├── events.py       # Stream protocol event definitions
 └── agent.py        # Main Agent class
-
-agents_service/
-└── main.py         # FastAPI service with streaming & sync endpoints
 ```
 
 ## Architecture
@@ -158,33 +213,6 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
-### REST API
-
-```bash
-# Start the service
-uvicorn agents_service.main:app --reload
-
-# Streaming endpoint (SSE)
-curl -X POST http://localhost:8000/runs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "chat-general:v1",
-    "provider": "openai",
-    "model": "gpt-4o",
-    "input": {"message": "hello"}
-  }'
-
-# Non-streaming endpoint (JSON)
-curl -X POST http://localhost:8000/runs/sync \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "chat-general:v1",
-    "provider": "google",
-    "model": "gemini-1.5-pro",
-    "input": {"message": "hello"}
-  }'
-```
-
 ## Stream Protocol
 
 Vel uses the [Vercel AI SDK V5 UI Stream Protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) for frontend-compatible event streaming:
@@ -246,7 +274,7 @@ logging.basicConfig(level=logging.ERROR)
 
 ### Message Aggregation
 
-**MessageReducer** aggregates streaming events into structured messages for database storage:
+**MessageReducer** aggregates streaming events into structured messages (Vercel AI SDK format):
 
 ```python
 from vel import Agent, MessageReducer
@@ -272,9 +300,8 @@ messages = reducer.get_messages()
 #   {assistant message with parts: [tool-call, tool-result, text]}
 # ]
 
-# Store in database
-for msg in messages:
-    await db.insert_message(msg)
+# Use messages however you need (store in DB, return to client, etc.)
+print(messages)
 ```
 
 **With Reasoning (o1/o3 models):**
@@ -384,8 +411,7 @@ Sessions enable multi-turn conversations where the agent remembers context acros
 ```python
 agent = Agent(
     id='my-agent',
-    model={'provider': 'openai', 'model': 'gpt-4o'},
-    session_persistence='transient'  # or 'persistent'
+    model={'provider': 'openai', 'model': 'gpt-4o'}
 )
 
 # Multi-turn conversation - same session_id = shared history
@@ -396,29 +422,8 @@ answer1 = await agent.run({'message': 'My name is Alice'}, session_id=session_id
 
 answer2 = await agent.run({'message': 'What is my name?'}, session_id=session_id)
 # "Your name is Alice."
-```
 
-### Session Persistence Modes
-
-#### Transient (Default - Fast, Not Persistent)
-
-```python
-agent = Agent(
-    id='my-agent',
-    model={'provider': 'openai', 'model': 'gpt-4o'},
-    session_persistence='transient'  # Message history lost on restart
-)
-```
-
-#### Persistent (Database-Backed, Survives Restarts)
-
-```python
-# Requires POSTGRES_DSN configured
-agent = Agent(
-    id='my-agent',
-    model={'provider': 'openai', 'model': 'gpt-4o'},
-    session_persistence='persistent'  # Message history stored in Postgres
-)
+# Note: Sessions are in-memory. For persistent storage, save/load messages yourself.
 ```
 
 ### Message History Modes
@@ -643,10 +648,6 @@ Inspired by [Alex Zhang's RLM approach](https://alexzhang13.github.io/blog/2025/
 Environment variables (see `.env.example`):
 
 ```bash
-# Database & Cache
-POSTGRES_DSN=postgresql+psycopg://user:pass@localhost:5432/vel
-REDIS_URL=redis://localhost:6379/0
-
 # OpenAI
 OPENAI_API_KEY=sk-...
 OPENAI_API_BASE=https://api.openai.com/v1
@@ -668,7 +669,7 @@ Vel includes comprehensive examples demonstrating various patterns:
 **Core Examples:**
 - `examples/quickstart.py` - Basic agent usage (streaming & non-streaming)
 - `examples/rlm_basic.py` - RLM for long contexts (5MB+ documents)
-- `examples/message_reducer_example.py` - MessageReducer for database storage
+- `examples/message_reducer_example.py` - MessageReducer for message aggregation
 - `examples/custom_data_events.py` - Custom data-* events with transient flag
 - `examples/context_modes.py` - Different context management strategies
 - `examples/generation_config_example.py` - Model parameter control
@@ -700,8 +701,8 @@ pip install -e ".[dev]"
 pytest
 
 # Format code
-black vel/ agents_service/
-ruff check vel/ agents_service/
+black vel/
+ruff check vel/
 
 # Type checking
 mypy vel/
@@ -717,7 +718,6 @@ Vel is designed following the [12-Factor Agent principles](https://github.com/hu
 - **Reducer**: Pure function for state transitions and effect generation (stateless, reproducible)
 - **Providers**: LLM-specific implementations with stream protocol translation
 - **Tools**: Validated, async-capable function execution (structured outputs)
-- **Storage**: Dual-layer persistence (Postgres + Redis) with in-memory fallback
 - **Memory** (optional): Fact store and ReasoningBank for long-term structured data and strategy learning
 
 **Key Principles:**

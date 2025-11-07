@@ -25,6 +25,12 @@ A production-ready AI agent runtime aligned with 12-Factor Agent principles. Bui
 **Multiple LLM Providers**
 : OpenAI, Google Gemini, and Anthropic Claude with plug-and-play architecture
 
+**Vercel AI SDK Compatible**
+: Seamless integration with React frontends using `useChat` hook and `convertToModelMessages()`
+
+**Message Translation**
+: Automatic conversion from ModelMessage to provider-specific formats (OpenAI/Anthropic/Gemini)
+
 **Flexible Prompts**
 : Jinja2 templating with XML formatting, environment-based configuration, and version control
 
@@ -34,11 +40,8 @@ A production-ready AI agent runtime aligned with 12-Factor Agent principles. Bui
 **Tool System**
 : JSON schema-validated tools with async support
 
-**Persistent Storage**
-: PostgreSQL for durability, Redis for caching
-
 **Production-Ready**
-: FastAPI service with health checks and 12-Factor alignment
+: Pure Python library with minimal dependencies and 12-Factor alignment
 
 ---
 
@@ -95,6 +98,11 @@ if __name__ == '__main__':
   <div class="grid-item">
     <h3><a href="prompts">Prompt Templates</a></h3>
     <p>Flexible prompt management with Jinja2</p>
+  </div>
+
+  <div class="grid-item">
+    <h3><a href="message-formats">Message Formats</a></h3>
+    <p>UIMessage, ModelMessage, and provider translation</p>
   </div>
 
   <div class="grid-item">

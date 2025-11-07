@@ -4,7 +4,11 @@ import os, json
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from .base import BaseProvider, LLMMessage
 from .translators import GeminiAPITranslator
+from .message_translator import translate_to_gemini, MessageTranslationError
 from ..events import StreamEvent, FinishMessageEvent, ErrorEvent, ToolInputAvailableEvent
+import logging
+
+logger = logging.getLogger('vel.providers.google')
 
 try:
     import google.generativeai as genai
@@ -56,7 +60,7 @@ class GeminiProvider(BaseProvider):
         for name, schema in tools.items():
             declarations.append({
                 'name': name,
-                'description': schema.get('description', f"Function {name}"),
+                'description': schema.get('description', f'Tool: {name}'),
                 'parameters': schema['input']
             })
         return declarations
@@ -73,8 +77,23 @@ class GeminiProvider(BaseProvider):
         self.translator.reset()
 
         try:
-            gemini_model = genai.GenerativeModel(model)
-            gemini_messages = self._convert_messages(messages)
+            # Translate ModelMessage format to Gemini format
+            try:
+                system_instruction, gemini_messages = translate_to_gemini(messages)
+                logger.debug(f"Translated {len(messages)} messages to Gemini format: {len(gemini_messages)} messages")
+            except MessageTranslationError as e:
+                logger.error(f"Message translation failed: {e}")
+                yield ErrorEvent(error=str(e))
+                return
+
+            # Create model with optional system instruction
+            if system_instruction:
+                gemini_model = genai.GenerativeModel(
+                    model,
+                    system_instruction=system_instruction
+                )
+            else:
+                gemini_model = genai.GenerativeModel(model)
 
             # Build generation config
             config = generation_config or {}
@@ -169,8 +188,22 @@ class GeminiProvider(BaseProvider):
     ) -> Dict[str, Any]:
         """Non-streaming generation"""
         try:
-            gemini_model = genai.GenerativeModel(model)
-            gemini_messages = self._convert_messages(messages)
+            # Translate ModelMessage format to Gemini format
+            try:
+                system_instruction, gemini_messages = translate_to_gemini(messages)
+                logger.debug(f"Translated {len(messages)} messages to Gemini format in generate()")
+            except MessageTranslationError as e:
+                logger.error(f"Message translation failed in generate(): {e}")
+                raise ValueError(f"Failed to translate messages to Gemini format: {e}") from e
+
+            # Create model with optional system instruction
+            if system_instruction:
+                gemini_model = genai.GenerativeModel(
+                    model,
+                    system_instruction=system_instruction
+                )
+            else:
+                gemini_model = genai.GenerativeModel(model)
 
             # Build generation config
             config = generation_config or {}

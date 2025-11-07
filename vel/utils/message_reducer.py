@@ -288,8 +288,8 @@ class MessageReducer:
         }
 
         # Add provider metadata if available
-        if 'callProviderMetadata' in event:
-            part['callProviderMetadata'] = event['callProviderMetadata']
+        if 'providerMetadata' in event:
+            part['providerMetadata'] = event['providerMetadata']
 
         self._parts.append(part)
 

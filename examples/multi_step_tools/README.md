@@ -6,7 +6,11 @@ AI SDK compatible tools for building multi-step agents in Vel. Each tool returns
 
 ### 1. Web Search (`websearch`)
 
-Searches the web for current information and resources.
+Searches the web for current information and resources using **Perplexity Sonar API**.
+
+**Setup:**
+1. Get API key from: https://www.perplexity.ai/settings/api
+2. Set environment variable: `export PERPLEXITY_API_KEY=pplx-...`
 
 **Input:**
 ```python
@@ -37,6 +41,8 @@ Searches the web for current information and resources.
 # In agent with tools=['websearch']
 # Agent will call: websearch(query="AI trends 2024", limit=5)
 ```
+
+**See also:** `examples/perplexity_web_search_example.py` for complete usage example.
 
 ---
 

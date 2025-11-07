@@ -4,7 +4,11 @@ import os, httpx, json
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from .base import BaseProvider, LLMMessage
 from .translators import OpenAIAPITranslator, OpenAIResponsesAPITranslator
+from .message_translator import translate_to_openai, MessageTranslationError
 from ..events import StreamEvent, FinishMessageEvent, ErrorEvent
+import logging
+
+logger = logging.getLogger('vel.providers.openai')
 
 class OpenAIProvider(BaseProvider):
     """OpenAI provider implementing stream protocol"""
@@ -43,9 +47,17 @@ class OpenAIProvider(BaseProvider):
         # Reset translator state
         self.translator.reset()
 
-        msgs = [{'role': m.get('role', 'user'), 'content': m.get('content', '')} for m in messages]
+        # Translate ModelMessage format to OpenAI format
+        try:
+            msgs = translate_to_openai(messages)
+            logger.debug(f"Translated {len(messages)} messages to OpenAI format: {len(msgs)} messages")
+        except MessageTranslationError as e:
+            logger.error(f"Message translation failed: {e}")
+            yield ErrorEvent(error=str(e))
+            return
+
         oaitools = [
-            {'type': 'function', 'function': {'name': n, 'parameters': s['input']}}
+            {'type': 'function', 'function': {'name': n, 'description': s.get('description', f'Tool: {n}'), 'parameters': s['input']}}
             for n, s in tools.items()
         ] if tools else []
 
@@ -187,9 +199,16 @@ class OpenAIProvider(BaseProvider):
         generation_config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Non-streaming generation"""
-        msgs = [{'role': m.get('role', 'user'), 'content': m.get('content', '')} for m in messages]
+        # Translate ModelMessage format to OpenAI format
+        try:
+            msgs = translate_to_openai(messages)
+            logger.debug(f"Translated {len(messages)} messages to OpenAI format: {len(msgs)} messages")
+        except MessageTranslationError as e:
+            logger.error(f"Message translation failed in generate(): {e}")
+            raise ValueError(f"Failed to translate messages to OpenAI format: {e}") from e
+
         oaitools = [
-            {'type': 'function', 'function': {'name': n, 'parameters': s['input']}}
+            {'type': 'function', 'function': {'name': n, 'description': s.get('description', f'Tool: {n}'), 'parameters': s['input']}}
             for n, s in tools.items()
         ] if tools else []
 
@@ -288,16 +307,34 @@ class OpenAIResponsesProvider(BaseProvider):
         # Reset translator state
         self.translator.reset()
 
-        # Convert messages to Responses API format
-        # Responses API uses 'input' field with role-based messages
+        # Translate ModelMessage format to OpenAI format first
+        try:
+            openai_messages = translate_to_openai(messages)
+            logger.debug(f"Translated {len(messages)} messages to OpenAI format for Responses API")
+        except MessageTranslationError as e:
+            logger.error(f"Message translation failed: {e}")
+            yield ErrorEvent(error=str(e))
+            return
+
+        # Convert OpenAI format messages to Responses API format
+        # Responses API uses 'input' field with special input_text type
         input_messages = []
-        for m in messages:
+        for m in openai_messages:
+            # Extract text content from OpenAI message
+            content = m.get('content', '')
+            if isinstance(content, list):
+                # Multimodal content - extract text parts
+                text_parts = [p.get('text', '') for p in content if p.get('type') == 'text']
+                content_text = ' '.join(text_parts)
+            else:
+                content_text = content
+
             input_messages.append({
                 'role': m.get('role', 'user'),
                 'content': [
                     {
                         'type': 'input_text',
-                        'text': m.get('content', '')
+                        'text': content_text
                     }
                 ]
             })
@@ -310,6 +347,7 @@ class OpenAIResponsesProvider(BaseProvider):
                     'type': 'function',
                     'function': {
                         'name': name,
+                        'description': schema.get('description', f'Tool: {name}'),
                         'parameters': schema['input']
                     }
                 })
@@ -447,7 +485,13 @@ class OpenAIResponsesProvider(BaseProvider):
         Note: Responses API is primarily designed for streaming.
         This method aggregates the stream into a single response.
         """
-        msgs = [{'role': m.get('role', 'user'), 'content': m.get('content', '')} for m in messages]
+        # Translate ModelMessage format to OpenAI format
+        try:
+            msgs = translate_to_openai(messages)
+            logger.debug(f"Translated {len(messages)} messages to OpenAI format for Responses API generate()")
+        except MessageTranslationError as e:
+            logger.error(f"Message translation failed in generate(): {e}")
+            raise ValueError(f"Failed to translate messages to OpenAI format: {e}") from e
 
         response_tools = []
         if tools:
@@ -456,6 +500,7 @@ class OpenAIResponsesProvider(BaseProvider):
                     'type': 'function',
                     'function': {
                         'name': name,
+                        'description': schema.get('description', f'Tool: {name}'),
                         'parameters': schema['input']
                     }
                 })

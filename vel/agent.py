@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import warnings
 import logging
+import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Literal
 
 # Configure logger for error surfacing
@@ -9,7 +10,6 @@ logger = logging.getLogger('vel.agent')
 from .core import State, reduce, ContextManager
 from .providers import ProviderRegistry
 from .tools import ToolRegistry, validate_io
-from .storage import RunStore
 from .events import (
     StreamEvent, StartEvent, FinishEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
     ErrorEvent, FinishMessageEvent, StepStartEvent, StepFinishEvent
@@ -153,26 +153,11 @@ class Agent:
             # Default context manager (backwards compatible)
             self.ctxmgr = ContextManager()
 
-        self.store = RunStore.default()
-
     def _get_provider(self):
         """Get provider instance (custom or from registry)"""
         if self._custom_provider:
             return self._custom_provider
         return self.providers.get(self.model_cfg['provider'])
-
-    async def _load_session(self, session_id: str):
-        """Load session from database if using persistent storage"""
-        if self.session_persistence == 'persistent':
-            context = await self.store.load_session(session_id)
-            if context:
-                self.ctxmgr.set_session_context(session_id, context)
-
-    async def _save_session(self, session_id: str):
-        """Save session to database if using persistent storage"""
-        if self.session_persistence == 'persistent':
-            context = self.ctxmgr.get_session_context(session_id)
-            await self.store.save_session(session_id, context)
 
     async def _call_llm_generate(self, run_id: str, session_id: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Non-streaming LLM call"""
@@ -203,9 +188,18 @@ class Agent:
         Non-streaming run - returns final answer only.
 
         Args:
-            input: Input dict with 'message' field
+            input: Input dict with either:
+                   - 'message': str - Single message (Vel manages history via session_id)
+                   - 'messages': List[Dict] - Full conversation history (stateless, client-managed)
+
+                   Examples:
+                   - {'message': 'Hello'} - Session-based (use with session_id)
+                   - {'messages': [{'role': 'user', 'content': 'Hello'}]} - Stateless
+
             session_id: Optional session ID for multi-turn conversations.
+                       Only used with 'message' input (ignored when 'messages' provided).
                        If provided, context persists across multiple run() calls.
+
             generation_config: Optional per-run generation config that overrides agent-level config.
             context_refs: Optional context references for RLM (large documents, files, URLs)
             rlm: Optional per-run RLM config that overrides agent-level config
@@ -229,14 +223,10 @@ class Agent:
                 session_id=session_id
             )
             return result['answer']
-        # Load session from DB if using database storage
-        if session_id:
-            await self._load_session(session_id)
 
-        run_id = await self.store.create_run(self.id)
+        run_id = str(uuid.uuid4())
         self.ctxmgr.set_input(run_id, input, session_id)
         state = State(run_id=run_id)
-        await self.store.append_event(run_id, {'kind':'start', 'agent_id': self.id, 'input':input})
         event: Dict[str, Any] = {'kind':'start'}
         steps = 0
         final_answer = ''
@@ -248,46 +238,28 @@ class Agent:
                     if eff.kind == 'call_llm':
                         step = await self._call_llm_generate(run_id, session_id, generation_config)
                         event = {'kind':'llm_step', 'step': step}
-                        await self.store.append_event(run_id, event)
                         break
                     elif eff.kind == 'call_tool':
                         result = await self._call_tool(eff.payload['tool'], eff.payload.get('args', {}))
                         # Add tool result to context
                         self.ctxmgr.append_tool_result(run_id, eff.payload['tool'], result, session_id)
                         event = {'kind':'tool_result', 'result': result}
-                        await self.store.append_event(run_id, event)
                         break
                     elif eff.kind == 'halt':
                         final_answer = eff.payload.get('final','')
                         # Add assistant response to context
                         self.ctxmgr.append_assistant_message(run_id, final_answer, session_id)
-                        # Save session to DB if using database storage
-                        if session_id:
-                            await self._save_session(session_id)
-                        await self.store.append_event(run_id, {'kind':'final','answer':final_answer})
-                        await self.store.update_status(run_id, 'completed')
                         return final_answer
                 steps += 1
                 if steps > self.policies.get('max_steps', 24):
                     msg = 'max steps exceeded'
-                    await self.store.append_event(run_id, {'kind':'error','message': msg})
-                    await self.store.update_status(run_id, 'failed')
                     raise RuntimeError(msg)
         except asyncio.CancelledError:
-            await self.store.update_status(run_id, 'canceled')
             raise
         except Exception as e:
             # Log detailed error information
             error_type = type(e).__name__
             logger.error(f"Agent run failed: {error_type}: {str(e)}", exc_info=True)
-
-            # Store error with context
-            await self.store.append_event(run_id, {
-                'kind': 'error',
-                'message': str(e),
-                'error_type': error_type
-            })
-            await self.store.update_status(run_id, 'failed')
             raise
 
     async def run_stream(
@@ -302,9 +274,18 @@ class Agent:
         Streaming run - yields stream protocol events as they occur.
 
         Args:
-            input: Input dict with 'message' field
+            input: Input dict with either:
+                   - 'message': str - Single message (Vel manages history via session_id)
+                   - 'messages': List[Dict] - Full conversation history (stateless, client-managed)
+
+                   Examples:
+                   - {'message': 'Hello'} - Session-based (use with session_id)
+                   - {'messages': [{'role': 'user', 'content': 'Hello'}]} - Stateless
+
             session_id: Optional session ID for multi-turn conversations.
+                       Only used with 'message' input (ignored when 'messages' provided).
                        If provided, context persists across multiple run_stream() calls.
+
             generation_config: Optional per-run generation config that overrides agent-level config.
             context_refs: Optional context references for RLM (large documents, files, URLs)
             rlm: Optional per-run RLM config that overrides agent-level config
@@ -329,13 +310,9 @@ class Agent:
             ):
                 yield event
             return
-        # Load session from DB if using database storage
-        if session_id:
-            await self._load_session(session_id)
 
-        run_id = await self.store.create_run(self.id)
+        run_id = str(uuid.uuid4())
         self.ctxmgr.set_input(run_id, input, session_id)
-        await self.store.append_event(run_id, {'kind':'start', 'agent_id': self.id, 'input':input})
 
         # Emit start event (V5 UI Stream Protocol)
         yield StartEvent().to_dict()
@@ -414,17 +391,9 @@ class Agent:
                         }
                         logger.error(f"Agent error: {error_context}")
 
-                        # Store error in run store
-                        await self.store.append_event(run_id, {
-                            'kind': 'error',
-                            'message': event.error,
-                            'details': error_context
-                        })
-                        await self.store.update_status(run_id, 'failed')
-
                         # Yield the full error event (includes all context)
                         yield event.to_dict()
-                        yield {'type': 'finish', 'finishReason': 'error'}
+                        yield {'type': 'finish'}
                         return
 
                 # If we got text and no tool calls, we're done
@@ -432,25 +401,11 @@ class Agent:
                     answer = ''.join(full_text)
                     self.ctxmgr.append_assistant_message(run_id, answer, session_id)
 
-                    # Emit finish-step event with metadata (AI SDK v5 parity)
-                    finish_step_dict = {'type': 'finish-step', 'finishReason': finish_reason}
-                    if usage:
-                        finish_step_dict['usage'] = usage
-                    if response_metadata:
-                        finish_step_dict['response'] = response_metadata
-                    yield finish_step_dict
+                    # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
+                    yield {'type': 'finish-step'}
 
-                    # Save session to DB if using database storage
-                    if session_id:
-                        await self._save_session(session_id)
-                    await self.store.append_event(run_id, {'kind':'final', 'answer': answer})
-                    await self.store.update_status(run_id, 'completed')
-
-                    # Emit finish event with metadata (AI SDK v5 parity)
-                    finish_dict = {'type': 'finish', 'finishReason': finish_reason}
-                    if usage:
-                        finish_dict['totalUsage'] = usage
-                    yield finish_dict
+                    # Emit finish event (AI SDK v5 spec: simple event, no fields)
+                    yield {'type': 'finish'}
                     return
 
                 # If we got tool calls, execute them and continue
@@ -461,67 +416,42 @@ class Agent:
                             result = await self._call_tool(tc['tool_name'], tc['input'])
 
                             # Emit tool output event (V5 UI Stream Protocol)
-                            # Include provider metadata (tool call ID as itemId)
                             output_event = ToolOutputAvailableEvent(
                                 tool_call_id=tc['tool_call_id'],
-                                output=result,
-                                call_provider_metadata={
-                                    'openai': {
-                                        'itemId': tc['tool_call_id']
-                                    }
-                                }
+                                output=result
                             )
                             yield output_event.to_dict()
 
                             # Add to context for next iteration
                             self.ctxmgr.append_tool_result(run_id, tc['tool_name'], result, session_id)
 
-                            await self.store.append_event(run_id, {
-                                'kind': 'tool_result',
-                                'tool': tc['tool_name'],
-                                'result': result
-                            })
                         except Exception as e:
                             error_event = ErrorEvent(error=f"Tool execution failed: {str(e)}")
                             yield error_event.to_dict()
-                            await self.store.append_event(run_id, {'kind':'error', 'message': str(e)})
-                            await self.store.update_status(run_id, 'failed')
-                            yield {'type': 'finish', 'finishReason': 'error'}
+                            yield {'type': 'finish'}
                             return
 
-                    # Emit finish-step event with metadata after tool execution (AI SDK v5 parity)
-                    finish_step_dict = {'type': 'finish-step', 'finishReason': finish_reason}
-                    if usage:
-                        finish_step_dict['usage'] = usage
-                    if response_metadata:
-                        finish_step_dict['response'] = response_metadata
-                    yield finish_step_dict
+                    # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
+                    yield {'type': 'finish-step'}
 
                     # Continue loop to get next LLM response
                     continue
 
                 # If we got here with no text and no tool calls, something's wrong
-                await self.store.append_event(run_id, {'kind':'error', 'message': 'No response from LLM'})
-                await self.store.update_status(run_id, 'failed')
                 error_event = ErrorEvent(error='No response from LLM')
                 yield error_event.to_dict()
-                yield {'type': 'finish', 'finishReason': 'error'}
+                yield {'type': 'finish'}
                 return
 
             # Max steps exceeded
             msg = f'max steps ({max_steps}) exceeded'
-            await self.store.append_event(run_id, {'kind':'error','message': msg})
-            await self.store.update_status(run_id, 'failed')
             error_event = ErrorEvent(error=msg)
             yield error_event.to_dict()
-            yield {'type': 'finish', 'finishReason': 'error'}
+            yield {'type': 'finish'}
 
         except asyncio.CancelledError:
-            await self.store.update_status(run_id, 'canceled')
             raise
         except Exception as e:
-            await self.store.append_event(run_id, {'kind':'error','message': str(e)})
-            await self.store.update_status(run_id, 'failed')
             error_event = ErrorEvent(error=str(e))
             yield error_event.to_dict()
             raise

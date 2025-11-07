@@ -248,7 +248,7 @@ New features activate automatically based on provider capabilities:
 **Rationale:** Preserve provider-specific IDs for tracing
 
 **Implementation:**
-- `callProviderMetadata` in tool events
+- `providerMetadata` in tool events
 - `sourceId` in source events
 - `providerExecuted` flag for server-side tools
 
@@ -256,7 +256,7 @@ New features activate automatically based on provider capabilities:
 ```json
 {
   "type": "tool-output-available",
-  "callProviderMetadata": {
+  "providerMetadata": {
     "providerExecuted": true,
     "providerName": "openai",
     "toolType": "web_search_call"
@@ -452,7 +452,7 @@ agent = Agent(
 async for event in agent.run_stream({'message': 'Latest AI news'}):
     # Provider-executed web search
     if event['type'] == 'tool-output-available':
-        metadata = event.get('callProviderMetadata', {})
+        metadata = event.get('providerMetadata', {})
         if metadata.get('providerExecuted'):
             print(f"Web search by {metadata['providerName']}")
 

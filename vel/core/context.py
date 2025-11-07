@@ -216,8 +216,25 @@ class ContextManager:
     # ---------- existing behavior stays the same ----------
 
     def set_input(self, run_id: str, input: Dict[str, Any], session_id: Optional[str] = None):
-        """Store the initial input for a run"""
+        """
+        Store the initial input for a run.
+
+        Supports two modes:
+        1. Stateless with messages array: input={'messages': [...]}
+           Client provides full conversation history, no session management
+        2. Session-based: input={'message': '...'} with session_id
+           Vel manages conversation history across calls
+        """
         self._inputs[run_id] = input
+
+        # Stateless mode: client provides full messages array
+        if 'messages' in input and isinstance(input['messages'], list):
+            # Use provided messages array directly (copy for safety during tool calls)
+            self._by_run[run_id] = list(input['messages'])
+            # Don't link to session - client manages history
+            return
+
+        # Legacy session-based mode: Vel manages history
         message = input.get('message', '') or str(input)
 
         if session_id:

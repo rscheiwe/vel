@@ -346,7 +346,8 @@ class OpenAIAPITranslator:
                 events.append(ToolInputAvailableEvent(
                     tool_call_id=tc_data['id'],
                     tool_name=tc_data['name'],
-                    input=args
+                    input=args,
+                    provider_metadata={'openai': {'itemId': tc_data['id']}}
                 ))
                 tc_data['input_available_emitted'] = True
 
@@ -1168,7 +1169,8 @@ class OpenAIResponsesAPITranslator:
                 return ToolInputAvailableEvent(
                     tool_call_id=call_id,
                     tool_name=tc['name'],
-                    input=args
+                    input=args,
+                    provider_metadata={'openai': {'itemId': call_id}}
                 )
 
         # === Output item done (for provider-executed tools and reasoning) ===
@@ -1200,7 +1202,8 @@ class OpenAIResponsesAPITranslator:
                         self._pending_events.append(ToolInputAvailableEvent(
                             tool_call_id=item_id,
                             tool_name=tc['name'],
-                            input=args
+                            input=args,
+                            provider_metadata={'openai': {'itemId': item_id}}
                         ))
                 else:
                     # Args never streamed, but we still need tool-input-available
@@ -1210,7 +1213,8 @@ class OpenAIResponsesAPITranslator:
                         self._pending_events.append(ToolInputAvailableEvent(
                             tool_call_id=item_id,
                             tool_name=item.get('name', item_type),
-                            input=args
+                            input=args,
+                            provider_metadata={'openai': {'itemId': item_id}}
                         ))
 
                 # Extract sources from web_search results (AI SDK parity)
@@ -1243,15 +1247,10 @@ class OpenAIResponsesAPITranslator:
                 # Emit tool-output-available with result
                 output = item.get('result') or item.get('output', {})
 
-                # Include metadata to indicate provider execution (AI SDK parity)
+                # NOTE: providerMetadata removed to strictly match AI SDK v5 spec
                 return ToolOutputAvailableEvent(
                     tool_call_id=item_id,
-                    output=output,
-                    call_provider_metadata={
-                        'providerExecuted': True,
-                        'providerName': 'openai',
-                        'toolType': item_type
-                    }
+                    output=output
                 )
 
         return None
@@ -1287,7 +1286,8 @@ class OpenAIResponsesAPITranslator:
                 self._pending_events.append(ToolInputAvailableEvent(
                     tool_call_id=call_id,
                     tool_name=tc['name'],
-                    input=args
+                    input=args,
+                    provider_metadata={'openai': {'itemId': call_id}}
                 ))
 
         if self._pending_events:

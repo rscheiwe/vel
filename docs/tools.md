@@ -70,6 +70,7 @@ answer = await agent.run({'message': 'What is the weather in San Francisco?'})
 ```python
 class ToolSpec:
     name: str                    # Unique tool identifier
+    description: str             # Tool description (optional, helps LLM decide when to use)
     input_schema: Dict[str, Any] # JSON Schema for input validation
     output_schema: Dict[str, Any] # JSON Schema for output validation
     handler: Callable            # Function to execute (sync or async)
@@ -82,9 +83,16 @@ class ToolSpec:
 - Used by agent to reference tool
 - Convention: lowercase_with_underscores
 
+**description** (optional but recommended)
+- Human-readable description of what the tool does and when to use it
+- Helps the LLM decide when to invoke the tool
+- If not provided, falls back to `input_schema['description']`, or defaults to `f'Tool: {name}'`
+- **Best practice**: Be explicit and specific about the tool's purpose and use cases
+
 **input_schema** (required)
 - JSON Schema (Draft 2020-12) defining expected input
 - Must include `type`, `properties`, and `required` fields
+- Can include top-level `description` field as fallback for tool description
 - Automatically validated before calling handler
 
 **output_schema** (required)
@@ -111,11 +119,12 @@ def add_numbers_handler(input: dict, ctx: dict) -> dict:
 
 add_tool = ToolSpec(
     name='add_numbers',
+    description='Add two numbers together and return the sum',  # ← Explicit description
     input_schema={
         'type': 'object',
         'properties': {
-            'a': {'type': 'number'},
-            'b': {'type': 'number'}
+            'a': {'type': 'number', 'description': 'First number'},
+            'b': {'type': 'number', 'description': 'Second number'}
         },
         'required': ['a', 'b']
     },
@@ -130,6 +139,27 @@ add_tool = ToolSpec(
 )
 
 register_tool(add_tool)
+```
+
+**Alternative: Description in input_schema**
+
+```python
+# If you don't provide explicit description parameter,
+# Vel falls back to input_schema['description']
+add_tool = ToolSpec(
+    name='add_numbers',
+    input_schema={
+        'type': 'object',
+        'description': 'Add two numbers together and return the sum',  # ← Fallback description
+        'properties': {
+            'a': {'type': 'number'},
+            'b': {'type': 'number'}
+        },
+        'required': ['a', 'b']
+    },
+    output_schema={...},
+    handler=add_numbers_handler
+)
 ```
 
 ### Async Tool
@@ -508,12 +538,242 @@ agent = Agent(
 )
 ```
 
+## Tool Organization & Imports
+
+### How the Registry Works
+
+Vel uses a **global tool registry**. When you call `register_tool()`, the tool is added to this global registry and becomes available to **all** agents in your application.
+
+```python
+from vel import register_tool, ToolSpec
+
+# This registers the tool globally
+register_tool(my_tool)
+
+# Now ANY agent can use it by name
+agent = Agent(tools=['my_tool'])
+```
+
+### Pattern 1: Inline Registration (Simple)
+
+Register tools directly in your main file:
+
+```python
+# my_agent.py
+from vel import Agent, ToolSpec, register_tool
+
+# Define and register tool inline
+weather_tool = ToolSpec(
+    name='get_weather',
+    input_schema={...},
+    output_schema={...},
+    handler=lambda inp, ctx: {'temp_f': 72}
+)
+register_tool(weather_tool)
+
+# Create agent
+agent = Agent(
+    id='my-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['get_weather']  # Available immediately after registration
+)
+```
+
+**When to use:**
+- Simple applications
+- Few tools (1-3)
+- Quick prototyping
+
+### Pattern 2: Separate Module (Recommended)
+
+Organize tools in separate files and import them:
+
+**File: `tools/weather.py`**
+```python
+from vel import ToolSpec, register_tool
+
+def weather_handler(input: dict, ctx: dict) -> dict:
+    return {'temp_f': 72, 'condition': 'sunny'}
+
+weather_tool = ToolSpec(
+    name='get_weather',
+    input_schema={...},
+    output_schema={...},
+    handler=weather_handler
+)
+
+# Register tool when module is imported
+register_tool(weather_tool)
+```
+
+**File: `tools/__init__.py`**
+```python
+# Import all tools to register them
+from .weather import weather_tool
+from .search import search_tool
+from .email import email_tool
+
+# Re-export for convenience
+__all__ = ['weather_tool', 'search_tool', 'email_tool']
+```
+
+**File: `my_agent.py`**
+```python
+from vel import Agent
+
+# Import tools module (registers all tools automatically)
+import tools
+
+# Or import specific tools
+from tools.weather import weather_tool
+
+# Create agent - tools are already registered
+agent = Agent(
+    id='my-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['get_weather', 'search', 'send_email']
+)
+```
+
+**When to use:**
+- Production applications
+- Multiple tools (4+)
+- Team collaboration
+- Reusable tool libraries
+
+### Pattern 3: Conditional Registration
+
+Register tools only when needed:
+
+```python
+# tools/web_search.py
+from vel import ToolSpec, register_tool
+import os
+
+def create_web_search_tool():
+    """Only register if API key is available"""
+    if not os.getenv('PERPLEXITY_API_KEY'):
+        return None
+
+    tool = ToolSpec(
+        name='websearch',
+        input_schema={...},
+        output_schema={...},
+        handler=web_search_handler
+    )
+    register_tool(tool)
+    return tool
+
+# Register on import (if key exists)
+web_search_tool = create_web_search_tool()
+```
+
+### Important Rules
+
+1. **Import Before Agent Creation**: Tools must be imported/registered **before** creating the agent
+
+```python
+# ✓ Good: Import first
+from tools.weather import weather_tool
+agent = Agent(tools=['get_weather'])
+
+# ✗ Bad: Import after agent creation
+agent = Agent(tools=['get_weather'])  # KeyError: 'get_weather' not found!
+from tools.weather import weather_tool
+```
+
+2. **Registration Happens Once**: Tools are registered when the module is imported
+   - First import: Tool is registered
+   - Subsequent imports: Tool already registered (no duplicates)
+
+3. **Global Registry**: All agents share the same tool registry
+   - Registering a tool makes it available to **all** agents
+   - You cannot have agent-specific tools (by design)
+
+### Real-World Example
+
+Here's how the Perplexity web search tool is organized:
+
+```python
+# examples/multi_step_tools/web_search.py
+"""Web Search Tool - Perplexity API Integration"""
+from vel import ToolSpec, register_tool
+
+async def web_search_handler(input: dict, ctx: dict) -> dict:
+    # Implementation here
+    pass
+
+web_search_tool = ToolSpec(
+    name='websearch',
+    input_schema={...},
+    output_schema={...},
+    handler=web_search_handler
+)
+
+# Register automatically when imported
+register_tool(web_search_tool)
+```
+
+```python
+# my_research_agent.py
+from vel import Agent
+
+# Import tool (registers it)
+from examples.multi_step_tools.web_search import web_search_tool
+
+# Create agent
+agent = Agent(
+    id='research-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['websearch']  # Tool is already registered
+)
+
+# Use agent
+result = await agent.run({'message': 'Search for AI trends'})
+```
+
+### Troubleshooting Imports
+
+**Problem:** `KeyError: 'my_tool'`
+
+**Solution:**
+```python
+# Check: Did you import the tool module?
+from tools.my_tool import my_tool  # This registers it
+
+# Check: Did you import before creating agent?
+# imports must be at top of file
+
+# Check: Is tool name spelled correctly?
+agent = Agent(tools=['my_tool'])  # Must match ToolSpec.name
+```
+
+**Problem:** Tool registered twice with different implementations
+
+**Solution:**
+```python
+# Vel allows re-registration (last one wins)
+# To prevent confusion, use unique names or check before registering:
+
+from vel import get_tool_registry
+
+registry = get_tool_registry()
+if 'my_tool' not in registry:
+    register_tool(my_tool)
+```
+
 ## Examples
 
 See `examples/test_both_modes.py` for complete tool usage demonstration:
 
 ```bash
 python examples/test_both_modes.py
+```
+
+See `examples/perplexity_web_search_example.py` for real-world tool import example:
+
+```bash
+python examples/perplexity_web_search_example.py
 ```
 
 ## Troubleshooting

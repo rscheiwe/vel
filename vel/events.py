@@ -137,18 +137,22 @@ class ToolInputAvailableEvent(StreamEvent):
     tool_call_id: str = ''
     tool_name: str = ''
     input: Dict[str, Any] = None
+    provider_metadata: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if self.input is None:
             self.input = {}
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             **super().to_dict(),
             'toolCallId': self.tool_call_id,
             'toolName': self.tool_name,
             'input': self.input  # V5 UI Protocol uses 'input'
         }
+        if self.provider_metadata:
+            d['providerMetadata'] = self.provider_metadata
+        return d
 
 @dataclass
 class ToolOutputAvailableEvent(StreamEvent):
@@ -156,17 +160,16 @@ class ToolOutputAvailableEvent(StreamEvent):
 
     Matches Vercel AI SDK V5 UI Stream Protocol.
     Frontend components (useChat, useCompletion) expect this event type.
+
+    NOTE: providerMetadata removed to strictly match AI SDK v5 spec.
+    Only type, toolCallId, and output are officially supported.
     """
     type: Literal['tool-output-available'] = 'tool-output-available'
     tool_call_id: str = ''
     output: Any = None
-    call_provider_metadata: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        d = {**super().to_dict(), 'toolCallId': self.tool_call_id, 'output': self.output}
-        if self.call_provider_metadata:
-            d['callProviderMetadata'] = self.call_provider_metadata
-        return d
+        return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'output': self.output}
 
 @dataclass
 class StepStartEvent(StreamEvent):

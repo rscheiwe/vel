@@ -237,7 +237,7 @@ OpenAI Responses API supports provider-executed tools (`web_search_call`, `compu
     "results": [...],
     "sources": [...]
   },
-  "callProviderMetadata": {
+  "providerMetadata": {
     "providerExecuted": true,
     "providerName": "openai",
     "toolType": "web_search_call"
@@ -1020,7 +1020,7 @@ async def safe_stream(agent, message):
 - ✓ Aggregates multiple events into structured parts array
 - ✓ Handles provider metadata (message IDs, function call IDs)
 - ✓ Supports custom message IDs and metadata
-- ✓ Tracks tool calls with proper callProviderMetadata
+- ✓ Tracks tool calls with proper providerMetadata
 
 ### Basic Usage
 
@@ -1075,7 +1075,7 @@ Messages follow the Vercel AI SDK format:
       "toolName": "get_weather",
       "input": {"city": "SF"},
       "state": "call",
-      "callProviderMetadata": {  # OpenAI function call ID
+      "providerMetadata": {  # OpenAI function call ID
         "openai": {
           "itemId": "call_123"
         }
@@ -1121,7 +1121,7 @@ assistant_msg = messages[1]
 #     "toolName": "get_weather",
 #     "input": {"city": "San Francisco"},
 #     "state": "call",
-#     "callProviderMetadata": {"openai": {"itemId": "call_123"}}
+#     "providerMetadata": {"openai": {"itemId": "call_123"}}
 #   },
 #   {
 #     "type": "tool-result",

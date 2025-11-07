@@ -59,17 +59,9 @@ ANTHROPIC_API_KEY=sk-ant-...
 #### Optional Variables
 
 ```bash
-# Database (for persistent sessions)
-POSTGRES_DSN=postgresql+psycopg://user:pass@localhost:5432/vel
-
-# Redis (for caching)
-REDIS_URL=redis://localhost:6379/0
-
 # OpenAI Custom Endpoint
 OPENAI_API_BASE=https://api.openai.com/v1
 ```
-
-**Note:** If `POSTGRES_DSN` and `REDIS_URL` are not set, Vel will use in-memory storage (fine for development).
 
 ### API Key Configuration Methods
 
@@ -176,8 +168,7 @@ async def streaming_example():
 async def session_example():
     agent = Agent(
         id='my-agent',
-        model={'provider': 'openai', 'model': 'gpt-4o'},
-        session_storage='memory'  # or 'database'
+        model={'provider': 'openai', 'model': 'gpt-4o'}
     )
 
     session_id = 'user-123'
@@ -240,15 +231,15 @@ async def tool_example():
     print(answer)  # Agent will call the tool and respond
 ```
 
-### Storing Messages for Database
+### Message Aggregation
 
 Use **MessageReducer** to aggregate streaming events into structured messages compatible with the Vercel AI SDK format:
 
 ```python
 from vel import Agent, MessageReducer
 
-async def database_storage_example():
-    """Aggregate streaming events for database storage"""
+async def message_aggregation_example():
+    """Aggregate streaming events into structured messages"""
     # Create reducer
     reducer = MessageReducer()
 
@@ -277,9 +268,8 @@ async def database_storage_example():
     #   {assistant message with parts: [tool-call, tool-result, text]}
     # ]
 
-    # Store in database
-    for msg in messages:
-        await db.insert_message(msg)
+    # Use messages however you need (store in DB, return to client, etc.)
+    return messages
 ```
 
 **Key Features:**
@@ -287,7 +277,6 @@ async def database_storage_example():
 - ✓ Aggregates text, tool calls, and tool results into parts array
 - ✓ Includes provider metadata (OpenAI message/call IDs)
 - ✓ Supports custom message IDs and metadata
-- ✓ Ready for database storage
 
 See [Stream Protocol - Message Aggregation](stream-protocol.md#message-aggregation) for complete details.
 
@@ -328,44 +317,6 @@ async def generation_config_example():
 - `seed` - Reproducible outputs (OpenAI, Anthropic)
 
 See [Providers](providers.md#generation-configuration) for all parameters.
-
-## REST API
-
-### Start the Service
-
-```bash
-# Start with uvicorn
-uvicorn agents_service.main:app --reload
-
-# Or with custom host/port
-uvicorn agents_service.main:app --host 0.0.0.0 --port 8000
-```
-
-### Streaming Endpoint
-
-```bash
-curl -X POST http://localhost:8000/runs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "chat-general:v1",
-    "provider": "openai",
-    "model": "gpt-4o",
-    "input": {"message": "hello"}
-  }'
-```
-
-### Non-Streaming Endpoint
-
-```bash
-curl -X POST http://localhost:8000/runs/sync \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "chat-general:v1",
-    "provider": "google",
-    "model": "gemini-1.5-pro",
-    "input": {"message": "hello"}
-  }'
-```
 
 ## Architecture Overview
 
@@ -428,10 +379,6 @@ The translator layer can be reused across different orchestration strategies wit
 ### "Illegal header value b'Bearer '"
 
 Your `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or `ANTHROPIC_API_KEY` is not set. Check your `.env` file.
-
-### "Connection refused" (Postgres/Redis)
-
-If you see connection errors for Postgres or Redis, comment out `POSTGRES_DSN` and `REDIS_URL` in your `.env` file to use in-memory storage.
 
 ### Import Errors
 
