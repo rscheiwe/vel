@@ -13,6 +13,7 @@ These examples show core functionality with provider interchange and MessageRedu
 ### Tool Usage
 - **`tool_streaming.py`** - Streaming with tool calls
 - **`tool_nonstreaming.py`** - Non-streaming with tool calls
+- **`tool_context_injection.py`** - Dependency injection with tool_context parameter
 
 ### Multi-Step Reasoning
 - **`multi_step_streaming.py`** - Multi-step agent with multiple tool calls (streaming)

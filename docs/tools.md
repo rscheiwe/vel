@@ -342,11 +342,15 @@ default_tool = ToolSpec(
 
 ## Tool Context
 
-The `ctx` parameter provides runtime context to tools:
+The `ctx` parameter provides runtime context to tools. It contains both **built-in context** (automatically provided by the agent) and **custom resources** (injected via `tool_context`).
+
+### Built-in Context
+
+Every tool automatically receives runtime metadata:
 
 ```python
 def context_aware_handler(input: dict, ctx: dict) -> dict:
-    """Tool that uses context"""
+    """Tool that uses built-in context"""
     run_id = ctx.get('run_id')  # Current run ID
     session_id = ctx.get('session_id')  # Session ID (if any)
     agent_id = ctx.get('agent_id')  # Agent ID
@@ -357,11 +361,262 @@ def context_aware_handler(input: dict, ctx: dict) -> dict:
     return {'status': 'ok'}
 ```
 
-**Available Context Keys:**
+**Built-in Context Keys:**
 - `run_id`: Unique run identifier
 - `session_id`: Session ID (if using sessions)
 - `agent_id`: Agent identifier
 - `input`: Original user input
+
+### Custom Resource Injection
+
+Use the `tool_context` parameter to inject shared resources into tools (dependency injection pattern):
+
+```python
+from vel import Agent
+
+# Create shared resources
+db_connection = get_database_connection()
+storage = MessageBasedStorage(messages)
+
+# Inject resources via tool_context
+agent = Agent(
+    id='my-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['query_database', 'manage_storage'],
+    tool_context={
+        'db': db_connection,      # Database connection
+        'storage': storage,        # Storage backend
+        'user_id': 'user_123',    # User context
+        'config': app_config      # Configuration
+    }
+)
+```
+
+**Tool accesses resources:**
+
+```python
+async def query_database_handler(input: dict, ctx: dict) -> dict:
+    # Access injected database connection
+    db = ctx.get('db')
+    if not db:
+        return {'error': 'Database not available'}
+
+    results = await db.query(input['table'])
+    return {'results': results}
+```
+
+### Why Use tool_context?
+
+**✅ Flexibility**
+- Same tool works with different backends
+- Swap implementations without changing tool code
+
+```python
+# Development: Mock database
+agent = Agent(tools=['query_db'], tool_context={'db': MockDatabase()})
+
+# Production: Real database
+agent = Agent(tools=['query_db'], tool_context={'db': PostgresDatabase()})
+```
+
+**✅ Per-Request Isolation**
+- Different agent instances have different contexts
+- Perfect for multi-tenant applications
+
+```python
+# User A's agent
+agent_a = Agent(
+    tools=['get_data'],
+    tool_context={'user_id': 'user_a', 'tenant': 'acme_corp'}
+)
+
+# User B's agent (different context)
+agent_b = Agent(
+    tools=['get_data'],
+    tool_context={'user_id': 'user_b', 'tenant': 'widget_inc'}
+)
+```
+
+**✅ Testability**
+- Easy to mock resources in tests
+- No global state to manage
+
+```python
+# Test with mock
+mock_storage = MockStorage()
+agent = Agent(tools=['manage_data'], tool_context={'storage': mock_storage})
+```
+
+**✅ No Global Variables**
+- Resources passed explicitly
+- Better code organization and thread safety
+
+### Common Use Cases
+
+**1. Database Connections**
+
+```python
+db = await get_db_connection()
+agent = Agent(
+    tools=['query_users', 'update_record'],
+    tool_context={'db': db}
+)
+
+async def query_users_handler(input, ctx):
+    db = ctx.get('db')
+    return await db.query('users', input['filter'])
+```
+
+**2. Storage Backends**
+
+```python
+from server.llm.artifacts.storage import MessageBasedStorage
+
+storage = MessageBasedStorage(messages)
+agent = Agent(
+    tools=['tableEditor'],
+    tool_context={'storage': storage}
+)
+
+async def table_editor_handler(input, ctx):
+    storage = ctx.get('storage')
+    artifact = await storage.get_artifact()
+    # ... work with artifact
+```
+
+**3. API Clients**
+
+```python
+api_client = ExternalAPIClient(api_key=settings.API_KEY)
+agent = Agent(
+    tools=['fetch_external_data'],
+    tool_context={'api': api_client}
+)
+```
+
+**4. User Context & Permissions**
+
+```python
+agent = Agent(
+    tools=['delete_file', 'update_settings'],
+    tool_context={
+        'user_id': current_user.id,
+        'permissions': current_user.permissions,
+        'org_id': current_user.organization_id
+    }
+)
+
+def delete_file_handler(input, ctx):
+    if 'delete' not in ctx.get('permissions', []):
+        return {'error': 'Permission denied'}
+    # ... proceed with deletion
+```
+
+**5. Multiple Resources**
+
+```python
+agent = Agent(
+    tools=['complex_operation'],
+    tool_context={
+        'db': db_connection,
+        'cache': redis_client,
+        'storage': s3_client,
+        'config': app_config,
+        'user_id': user_id
+    }
+)
+```
+
+### Example: Artifact Storage Tool
+
+Real-world example from artifact streaming implementation:
+
+```python
+# Endpoint creates storage and injects it
+from server.llm.artifacts.storage import MessageBasedStorage
+
+async def generate_answer_endpoint():
+    messages = chat.messages if chat else []
+    storage = MessageBasedStorage(messages)
+
+    agent = Agent(
+        id='table-editor-agent:v1',
+        model={'provider': 'openai', 'model': 'gpt-4o'},
+        tools=['tableEditor'],
+        tool_context={'storage': storage}  # Inject storage
+    )
+
+    async for event in agent.run_stream({'messages': messages}):
+        yield event
+
+# Tool accesses storage
+async def table_editor_tool_handler(input, ctx):
+    storage = ctx.get('storage')
+
+    # Get existing artifact
+    current_artifact = await storage.get_artifact()
+
+    # Perform operations
+    # ...
+
+    # Return result
+    return {'artifact_id': artifact_id, 'status': 'complete'}
+```
+
+### Best Practices
+
+**1. Check for Required Resources**
+
+```python
+def my_tool_handler(input, ctx):
+    db = ctx.get('db')
+    if not db:
+        return {'error': 'Database connection required but not provided'}
+
+    # ... use db safely
+```
+
+**2. Provide Defaults**
+
+```python
+def my_tool_handler(input, ctx):
+    config = ctx.get('config', {'env': 'dev', 'debug': False})
+    # ... use config with defaults
+```
+
+**3. Document Dependencies**
+
+```python
+async def query_database_handler(input, ctx):
+    """
+    Query database tool.
+
+    Required ctx keys:
+    - db: Database connection instance with .query() method
+
+    Optional ctx keys:
+    - timeout: Query timeout in seconds (default: 30)
+    """
+    db = ctx.get('db')
+    timeout = ctx.get('timeout', 30)
+    # ...
+```
+
+**4. Keep Context Lean**
+
+Only pass what tools actually need:
+
+```python
+# ❌ Too much
+tool_context={'everything': entire_app_state}
+
+# ✅ Specific resources
+tool_context={'db': db, 'storage': storage}
+```
+
+**See Also:**
+- Full example: `examples/tool_context_injection.py`
+- Artifact storage implementation: `server/llm/artifacts/storage.py`
 
 ## JSON Schema Validation
 

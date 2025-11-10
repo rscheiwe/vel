@@ -34,8 +34,11 @@ Agent(
     tools: List[str] | None = None,
     policies: Dict[str, Any] | None = None,
     context_manager: Optional[ContextManager] = None,
-    session_storage: Literal['memory', 'database'] = 'memory',
-    generation_config: Optional[Dict[str, Any]] = None
+    session_persistence: Literal['transient', 'persistent'] = 'transient',
+    prompt_id: Optional[str] = None,
+    prompt_vars: Optional[Dict[str, Any]] = None,
+    generation_config: Optional[Dict[str, Any]] = None,
+    tool_context: Optional[Dict[str, Any]] = None
 )
 ```
 
@@ -89,13 +92,27 @@ Agent(
   - `StatelessContextManager()`: No memory
   - Custom subclass
 
-**session_storage**
-- Type: `Literal['memory', 'database']`
-- Default: `'memory'`
+**session_persistence**
+- Type: `Literal['transient', 'persistent']`
+- Default: `'transient'`
 - Where to persist session context
 - Options:
-  - `'memory'`: In-memory only (fast, not persistent)
-  - `'database'`: Postgres-backed (persistent, requires `POSTGRES_DSN`)
+  - `'transient'`: In-memory only (fast, not persistent across restarts)
+  - `'persistent'`: Postgres-backed (persistent, survives restarts, requires `POSTGRES_DSN`)
+
+**prompt_id**
+- Type: `Optional[str]`
+- Default: `None`
+- Optional prompt template ID to use (e.g., `'chat-agent:v1'`)
+- If provided, agent uses PromptContextManager with template system
+- See [Prompts documentation](prompts.md) for details
+
+**prompt_vars**
+- Type: `Optional[Dict[str, Any]]`
+- Default: `None`
+- Variables to pass to prompt template rendering
+- Only used when `prompt_id` is provided
+- Example: `{'role': 'assistant', 'domain': 'finance'}`
 
 **generation_config**
 - Type: `Optional[Dict[str, Any]]`
@@ -112,10 +129,19 @@ Agent(
   - `seed`: int - Reproducibility seed (OpenAI, Anthropic)
 - Can be overridden per-run using `generation_config` parameter in `run()` or `run_stream()`
 
+**tool_context**
+- Type: `Optional[Dict[str, Any]]`
+- Default: `None`
+- Custom context dictionary passed to all tool handlers via `ctx` parameter
+- Enables dependency injection of shared resources (databases, storage, config, user context)
+- Example: `{'db': db_connection, 'storage': storage_backend, 'user_id': 'user_123'}`
+- Tools access via `ctx.get('resource_name')`
+- See [Tools documentation - Tool Context](tools.md#tool-context) for details and examples
+
 **Example:**
 
 ```python
-from vel import Agent
+from vel import Agent, ContextManager
 
 # Basic agent
 agent = Agent(
@@ -129,8 +155,23 @@ agent = Agent(
     model={'provider': 'google', 'model': 'gemini-1.5-pro'},
     tools=['get_weather', 'search'],
     context_manager=ContextManager(max_history=20),
-    session_storage='database',
+    session_persistence='persistent',
     policies={'max_steps': 10}
+)
+
+# Agent with custom tool context (dependency injection)
+db_connection = await get_db_connection()
+storage = MessageBasedStorage(messages)
+
+agent = Agent(
+    id='data-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['query_database', 'manage_storage'],
+    tool_context={
+        'db': db_connection,
+        'storage': storage,
+        'user_id': 'user_123'
+    }
 )
 ```
 
