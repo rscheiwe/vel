@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
-from typing import Any, Dict, Callable, Optional
+import inspect
+from typing import Any, Dict, Callable, Optional, AsyncGenerator
 from jsonschema import validate, Draft202012Validator
 
 class ToolSpec:
@@ -11,11 +12,35 @@ class ToolSpec:
         self._handler = handler
         # Use explicit description, or fall back to input_schema description, or generate from name
         self.description = description or input_schema.get('description', f'Tool: {name}')
+        # Detect if handler is an async generator function
+        self._is_async_generator = inspect.isasyncgenfunction(handler)
+
+    def is_streaming(self) -> bool:
+        """Returns True if this tool yields events during execution (async generator handler)"""
+        return self._is_async_generator
 
     async def run(self, input: Dict[str,Any], ctx: Dict[str,Any]) -> Dict[str,Any]:
+        """Execute non-streaming tool (returns single result)"""
         if asyncio.iscoroutinefunction(self._handler):
             return await self._handler(input, ctx)
         return self._handler(input, ctx)
+
+    async def run_stream(self, input: Dict[str,Any], ctx: Dict[str,Any]) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Execute streaming tool (yields events during execution).
+
+        Yields:
+            - Custom artifact events (e.g., {"type": "data-artifact-table-editor", "data": {...}})
+            - Final event: {"type": "tool-output", "output": {...}}
+        """
+        if not self._is_async_generator:
+            # Non-streaming tool: wrap result in single yield
+            result = await self.run(input, ctx)
+            yield {"type": "tool-output", "output": result}
+        else:
+            # Streaming tool: yield all events from async generator
+            async for event in self._handler(input, ctx):
+                yield event
 
 class ToolRegistry:
     _global_instance: Optional['ToolRegistry'] = None

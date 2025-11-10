@@ -29,7 +29,8 @@
       "Bash(env)",
       "Bash(cat:*)",
       "Read(//Users/richard.s/mesh/**)",
-      "Read(//Users/richard.s/mesh-app/**)"
+      "Read(//Users/richard.s/mesh-app/**)",
+      "Read(//Users/richard.s/Downloads/ai-artifact-table/hooks/**)"
     ],
     "deny": [],
     "ask": []

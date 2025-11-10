@@ -25,6 +25,7 @@ class Agent:
                  prompt_vars: Optional[Dict[str, Any]]=None,
                  generation_config: Optional[Dict[str, Any]]=None,
                  rlm: Optional[Dict[str, Any]]=None,
+                 tool_context: Optional[Dict[str, Any]]=None,
                  # Deprecated (backwards compatibility)
                  session_storage: Optional[Literal['memory', 'database']]=None):
         """
@@ -82,6 +83,10 @@ class Agent:
                 Dictionary that will be converted to RlmConfig. Set 'enabled': True to activate.
                 See RlmConfig for full options.
 
+            tool_context: Optional context dict to pass to all tool handlers via ctx parameter.
+                Useful for passing shared resources like storage backends, database connections, etc.
+                Example: {'storage': MessageBasedStorage(messages)}
+
             session_storage: [DEPRECATED] Use session_persistence instead
                 - 'memory' → use 'transient'
                 - 'database' → use 'persistent'
@@ -92,6 +97,7 @@ class Agent:
         self.tools = tools or []
         self.policies = policies or {'max_steps': 24, 'retry': {'attempts': 2}}
         self.generation_config = generation_config or {}
+        self.tool_context = tool_context or {}
 
         # RLM configuration
         self.rlm_config = None
@@ -179,7 +185,7 @@ class Agent:
         """Execute a tool"""
         tool = self.toolreg.get(tool_name)
         validate_io(tool.input_schema, args)
-        result = await tool.run(args, ctx={})
+        result = await tool.run(args, ctx=self.tool_context)
         validate_io(tool.output_schema, result)
         return result
 
@@ -451,15 +457,28 @@ class Agent:
                 if tool_calls:
                     for tc in tool_calls:
                         try:
-                            # Execute tool
-                            result = await self._call_tool(tc['tool_name'], tc['input'])
+                            # Get tool to check if it's streaming
+                            tool = self.toolreg.get(tc['tool_name'])
+                            result = None
 
-                            # Emit tool output event (V5 UI Stream Protocol)
-                            output_event = ToolOutputAvailableEvent(
-                                tool_call_id=tc['tool_call_id'],
-                                output=result
-                            )
-                            yield output_event.to_dict()
+                            # Execute tool (streaming or non-streaming)
+                            async for event in tool.run_stream(tc['input'], ctx=self.tool_context):
+                                if event.get('type') == 'tool-output':
+                                    # Final output from tool
+                                    result = event['output']
+                                    # Emit tool output event (V5 UI Stream Protocol)
+                                    output_event = ToolOutputAvailableEvent(
+                                        tool_call_id=tc['tool_call_id'],
+                                        output=result
+                                    )
+                                    yield output_event.to_dict()
+                                else:
+                                    # Custom artifact event (e.g., data-artifact-table-editor)
+                                    yield event
+
+                            # Validate final output
+                            if result is not None:
+                                validate_io(tool.output_schema, result)
 
                             # Check if we should stop after this tool
                             if self.should_stop_after_tool(tc['tool_name']):
