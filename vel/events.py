@@ -232,7 +232,7 @@ class ErrorEvent(StreamEvent):
     details: Optional[Dict[str, Any]] = None  # Additional error details from provider
 
     def to_dict(self) -> Dict[str, Any]:
-        d = {**super().to_dict(), 'error': self.error}
+        d = {**super().to_dict(), 'errorText': self.error}
         if self.error_code:
             d['errorCode'] = self.error_code
         if self.error_type:

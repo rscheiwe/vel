@@ -3,7 +3,7 @@ import asyncio
 import warnings
 import logging
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional, Literal
+from typing import Any, AsyncGenerator, Dict, List, Optional, Literal, Union
 
 # Configure logger for error surfacing
 logger = logging.getLogger('vel.agent')
@@ -44,7 +44,14 @@ class Agent:
                    - {'provider': 'openai', 'model': 'gpt-4o', 'api_key': 'sk-...'}  # Uses provided key
             prompt_env: Environment for prompts (default: 'prod')
             tools: List of tool names to enable
-            policies: Execution policies (max_steps, retry, etc.)
+            policies: Execution policies dictionary. Options:
+                - max_steps: int (default: 24) - Maximum execution steps
+                - retry: dict - Retry configuration
+                - stop_on_first_tool: bool (default: False) - Halt after any tool execution
+                - tool_behavior: dict - Per-tool configuration
+                    Example: {'tool-a': {'stop_on_first_use': True}}
+                    When a tool has 'stop_on_first_use': True, execution halts after that
+                    specific tool runs, returning raw tool output instead of LLM response.
 
             context_manager: Custom context manager instance. Pass:
                 - None or ContextManager() for default (full message history)
@@ -176,6 +183,25 @@ class Agent:
         validate_io(tool.output_schema, result)
         return result
 
+    def should_stop_after_tool(self, tool_name: str) -> bool:
+        """
+        Check if execution should halt after this specific tool executes.
+
+        Args:
+            tool_name: Name of the tool that was executed
+
+        Returns:
+            True if execution should stop and return raw tool output,
+            False if execution should continue normally
+        """
+        # Check per-tool behavior first
+        tool_behaviors = self.policies.get('tool_behavior', {})
+        if tool_name in tool_behaviors:
+            return tool_behaviors[tool_name].get('stop_on_first_use', False)
+
+        # Fall back to global setting (defaults to False)
+        return self.policies.get('stop_on_first_tool', False)
+
     async def run(
         self,
         input: Dict[str, Any],
@@ -183,9 +209,13 @@ class Agent:
         generation_config: Optional[Dict[str, Any]] = None,
         context_refs: Optional[Any] = None,
         rlm: Optional[Dict[str, Any]] = None
-    ) -> str:
+    ) -> Union[str, Dict[str, Any]]:
         """
-        Non-streaming run - returns final answer only.
+        Non-streaming run - returns final answer or raw tool output.
+
+        Returns:
+            - str: Final answer from LLM (default behavior)
+            - Dict[str, Any]: Raw tool output if stop_on_first_tool policy is enabled
 
         Args:
             input: Input dict with either:
@@ -241,7 +271,12 @@ class Agent:
                         break
                     elif eff.kind == 'call_tool':
                         result = await self._call_tool(eff.payload['tool'], eff.payload.get('args', {}))
-                        # Add tool result to context
+
+                        # Check if we should stop after this tool
+                        if self.should_stop_after_tool(eff.payload['tool']):
+                            return result  # Return raw tool output
+
+                        # Normal behavior: add to context and continue
                         self.ctxmgr.append_tool_result(run_id, eff.payload['tool'], result, session_id)
                         event = {'kind':'tool_result', 'result': result}
                         break
@@ -272,6 +307,10 @@ class Agent:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streaming run - yields stream protocol events as they occur.
+
+        Note: If stop_on_first_tool policy is enabled (globally or per-tool), execution
+        halts after tool execution. The tool-output-available event is still emitted,
+        followed by finish-step and finish events.
 
         Args:
             input: Input dict with either:
@@ -421,6 +460,12 @@ class Agent:
                                 output=result
                             )
                             yield output_event.to_dict()
+
+                            # Check if we should stop after this tool
+                            if self.should_stop_after_tool(tc['tool_name']):
+                                yield {'type': 'finish-step'}
+                                yield {'type': 'finish'}
+                                return  # Don't add to context or continue loop
 
                             # Add to context for next iteration
                             self.ctxmgr.append_tool_result(run_id, tc['tool_name'], result, session_id)
