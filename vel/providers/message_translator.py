@@ -159,12 +159,41 @@ def translate_to_openai(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                                     }
                                 })
                         elif part_type == 'file':
-                            # OpenAI doesn't have generic file support in chat
-                            # Log warning and skip
-                            logger.warning(
-                                f"OpenAI provider does not support file type '{part.get('mimeType')}' "
-                                f"in chat messages. Skipping file part."
-                            )
+                            # AI SDK v5: FilePart can contain images (type: 'file', mediaType: 'image/*')
+                            # Check mediaType to determine if this is an image file
+                            mime_type = part.get('mediaType') or part.get('mimeType', '')
+
+                            if mime_type.startswith('image/'):
+                                # Image file - treat as image for OpenAI
+                                file_data = part.get('data', '')
+
+                                # Handle different data formats
+                                if file_data.startswith('data:'):
+                                    # Already a data URL
+                                    openai_content.append({
+                                        'type': 'image_url',
+                                        'image_url': {'url': file_data}
+                                    })
+                                elif file_data.startswith('http'):
+                                    # HTTP(S) URL
+                                    openai_content.append({
+                                        'type': 'image_url',
+                                        'image_url': {'url': file_data}
+                                    })
+                                else:
+                                    # Raw base64 - construct data URL
+                                    openai_content.append({
+                                        'type': 'image_url',
+                                        'image_url': {
+                                            'url': f"data:{mime_type};base64,{file_data}"
+                                        }
+                                    })
+                            else:
+                                # Non-image file - OpenAI doesn't support generic files
+                                logger.warning(
+                                    f"OpenAI provider does not support file type '{mime_type}' "
+                                    f"in chat messages. Skipping file part."
+                                )
                         else:
                             logger.warning(
                                 f"Unknown user content part type '{part_type}' at message index {idx}. "
@@ -371,10 +400,33 @@ def translate_to_anthropic(messages: List[Dict[str, Any]]) -> Tuple[Optional[str
                                 }
                             })
                     elif part_type == 'file':
-                        # Anthropic supports document (PDF) uploads
-                        mime_type = part.get('mimeType', '')
-                        if mime_type == 'application/pdf':
-                            file_data = part.get('data', '')
+                        # AI SDK v5: FilePart can contain images or documents
+                        mime_type = part.get('mediaType') or part.get('mimeType', '')
+                        file_data = part.get('data', '')
+
+                        if mime_type.startswith('image/'):
+                            # Image file - treat as image
+                            # Remove data URL prefix if present
+                            if file_data.startswith('data:'):
+                                file_data = file_data.split(',', 1)[1] if ',' in file_data else file_data
+
+                            # Anthropic doesn't support URLs
+                            if file_data.startswith('http'):
+                                logger.warning(
+                                    f"Anthropic does not support image URLs. "
+                                    f"Please convert to base64. Skipping image at message index {idx}."
+                                )
+                            else:
+                                anthropic_content.append({
+                                    'type': 'image',
+                                    'source': {
+                                        'type': 'base64',
+                                        'media_type': mime_type,
+                                        'data': file_data
+                                    }
+                                })
+                        elif mime_type == 'application/pdf':
+                            # PDF document
                             anthropic_content.append({
                                 'type': 'document',
                                 'source': {
@@ -385,7 +437,7 @@ def translate_to_anthropic(messages: List[Dict[str, Any]]) -> Tuple[Optional[str
                             })
                         else:
                             logger.warning(
-                                f"Anthropic only supports PDF documents. "
+                                f"Anthropic only supports images and PDF documents. "
                                 f"Received '{mime_type}'. Skipping file at message index {idx}."
                             )
                     else:
@@ -595,22 +647,43 @@ def translate_to_gemini(messages: List[Dict[str, Any]]) -> Tuple[Optional[Dict],
                                 }
                             })
                     elif part_type == 'file':
-                        # Gemini supports file uploads via File API
-                        file_uri = part.get('fileUri', part.get('url'))
-                        mime_type = part.get('mimeType', '')
+                        # AI SDK v5: FilePart can contain images or other files
+                        mime_type = part.get('mediaType') or part.get('mimeType', '')
+                        file_data = part.get('data', '')
 
-                        if file_uri:
-                            gemini_parts.append({
-                                'file_data': {
-                                    'mime_type': mime_type,
-                                    'file_uri': file_uri
-                                }
-                            })
+                        if mime_type.startswith('image/'):
+                            # Image file - treat as inline image
+                            # Remove data URL prefix if present
+                            if file_data.startswith('data:'):
+                                file_data = file_data.split(',', 1)[1] if ',' in file_data else file_data
+
+                            if file_data.startswith('http'):
+                                logger.warning(
+                                    f"Gemini inline images require base64 encoding. "
+                                    f"Use File API for URL-based images. Skipping image at message index {idx}."
+                                )
+                            else:
+                                gemini_parts.append({
+                                    'inline_data': {
+                                        'mime_type': mime_type,
+                                        'data': file_data
+                                    }
+                                })
                         else:
-                            logger.warning(
-                                f"Gemini file upload requires fileUri. "
-                                f"Skipping file at message index {idx}."
-                            )
+                            # Non-image file - requires File API with fileUri
+                            file_uri = part.get('fileUri', part.get('url'))
+                            if file_uri:
+                                gemini_parts.append({
+                                    'file_data': {
+                                        'mime_type': mime_type,
+                                        'file_uri': file_uri
+                                    }
+                                })
+                            else:
+                                logger.warning(
+                                    f"Gemini non-image file upload requires fileUri. "
+                                    f"Skipping file at message index {idx}."
+                                )
                     else:
                         logger.warning(
                             f"Unknown user content part type '{part_type}' at message index {idx}"
