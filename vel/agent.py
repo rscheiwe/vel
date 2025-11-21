@@ -495,12 +495,12 @@ class Agent:
                 instruction_text = self.instruction(self.tool_context)
             else:
                 instruction_text = self.instruction
-            self.ctxmgr._runs[run_id].insert(0, {'role': 'system', 'content': instruction_text})
+            self.ctxmgr._by_run[run_id].insert(0, {'role': 'system', 'content': instruction_text})
 
         # Add structured output schema prompt if output_type is set
         if self.output_type:
             schema_prompt = get_json_mode_system_prompt(self.output_type)
-            self.ctxmgr._runs[run_id].insert(0, {'role': 'system', 'content': schema_prompt})
+            self.ctxmgr._by_run[run_id].insert(0, {'role': 'system', 'content': schema_prompt})
 
         # Run input guardrails
         if self.guardrails.has_input_guardrails:
@@ -561,14 +561,14 @@ class Agent:
                         # Handle message modifications from directive
                         if directive.replace_messages is not None:
                             # Replace context messages (advanced use case)
-                            self.ctxmgr._runs[run_id] = directive.replace_messages
+                            self.ctxmgr._by_run[run_id] = directive.replace_messages
                         elif directive.add_messages:
                             # Add extra messages before next LLM call
                             for msg in directive.add_messages:
                                 if msg['role'] == 'system':
-                                    self.ctxmgr._runs[run_id].insert(0, msg)
+                                    self.ctxmgr._by_run[run_id].insert(0, msg)
                                 else:
-                                    self.ctxmgr._runs[run_id].append(msg)
+                                    self.ctxmgr._by_run[run_id].append(msg)
 
                         # Handle handoff (Phase 4)
                         if directive.handoff_agent:
@@ -581,7 +581,7 @@ class Agent:
                         # Add reset tool choice message if enabled
                         reset_msg = self._get_reset_tool_choice_message()
                         if reset_msg:
-                            self.ctxmgr._runs[run_id].append(reset_msg)
+                            self.ctxmgr._by_run[run_id].append(reset_msg)
 
                         event = {'kind':'tool_result', 'result': result}
                         break
@@ -622,7 +622,7 @@ class Agent:
 
                                 # Retry: add error message and continue
                                 retry_prompt = get_retry_prompt(self.output_type, e)
-                                self.ctxmgr._runs[run_id].append({'role': 'system', 'content': retry_prompt})
+                                self.ctxmgr._by_run[run_id].append({'role': 'system', 'content': retry_prompt})
                                 event = {'kind': 'start'}  # Restart to call LLM again
                                 break
 
@@ -703,12 +703,12 @@ class Agent:
                 instruction_text = self.instruction(self.tool_context)
             else:
                 instruction_text = self.instruction
-            self.ctxmgr._runs[run_id].insert(0, {'role': 'system', 'content': instruction_text})
+            self.ctxmgr._by_run[run_id].insert(0, {'role': 'system', 'content': instruction_text})
 
         # Add structured output schema prompt if output_type is set
         if self.output_type:
             schema_prompt = get_json_mode_system_prompt(self.output_type)
-            self.ctxmgr._runs[run_id].insert(0, {'role': 'system', 'content': schema_prompt})
+            self.ctxmgr._by_run[run_id].insert(0, {'role': 'system', 'content': schema_prompt})
 
         # Run input guardrails
         if self.guardrails.has_input_guardrails:
@@ -846,7 +846,7 @@ class Agent:
                             else:
                                 # Retry: add error message and continue loop
                                 retry_prompt = get_retry_prompt(self.output_type, e)
-                                self.ctxmgr._runs[run_id].append({'role': 'system', 'content': retry_prompt})
+                                self.ctxmgr._by_run[run_id].append({'role': 'system', 'content': retry_prompt})
                                 continue  # Go back to LLM
 
                     self.ctxmgr.append_assistant_message(run_id, answer, session_id)
@@ -921,13 +921,13 @@ class Agent:
 
                             # Handle message modifications from directive
                             if directive.replace_messages is not None:
-                                self.ctxmgr._runs[run_id] = directive.replace_messages
+                                self.ctxmgr._by_run[run_id] = directive.replace_messages
                             elif directive.add_messages:
                                 for msg in directive.add_messages:
                                     if msg['role'] == 'system':
-                                        self.ctxmgr._runs[run_id].insert(0, msg)
+                                        self.ctxmgr._by_run[run_id].insert(0, msg)
                                     else:
-                                        self.ctxmgr._runs[run_id].append(msg)
+                                        self.ctxmgr._by_run[run_id].append(msg)
 
                             # Add to context for next iteration
                             self.ctxmgr.append_tool_result(run_id, tc['tool_name'], result, session_id)
@@ -935,7 +935,7 @@ class Agent:
                             # Add reset tool choice message if enabled
                             reset_msg = self._get_reset_tool_choice_message()
                             if reset_msg:
-                                self.ctxmgr._runs[run_id].append(reset_msg)
+                                self.ctxmgr._by_run[run_id].append(reset_msg)
 
                         except Exception as e:
                             error_event = ErrorEvent(error=f"Tool execution failed: {str(e)}")
