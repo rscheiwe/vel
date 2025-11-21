@@ -6,6 +6,41 @@ from .context import (
     load_memory_config_from_env,
     build_memory_adapters,
 )
+from .tool_behavior import (
+    ToolUseBehavior,
+    ToolUseDecision,
+    ToolEvent,
+    ToolUseDirective,
+    HandoffConfig,
+    ToolHandlerResult,
+)
+from .guardrails import (
+    GuardrailResult,
+    GuardrailError,
+    GuardrailEngine,
+    run_guardrail,
+    run_guardrails,
+)
+from .structured_output import (
+    StructuredOutputPolicy,
+    StructuredOutputValidationError,
+    parse_structured_output,
+    get_retry_prompt,
+    get_json_mode_system_prompt,
+)
+from .hooks import (
+    HookEvent,
+    StepStartHookEvent,
+    StepEndHookEvent,
+    ToolCallHookEvent,
+    ToolResultHookEvent,
+    LLMRequestHookEvent,
+    LLMResponseHookEvent,
+    FinishHookEvent,
+    ErrorHookEvent,
+    HookRegistry,
+)
+from .file_output import FileOutput
 
 __all__ = [
     'State',
@@ -16,4 +51,36 @@ __all__ = [
     'MemoryConfig',
     'load_memory_config_from_env',
     'build_memory_adapters',
+    # Tool behavior types
+    'ToolUseBehavior',
+    'ToolUseDecision',
+    'ToolEvent',
+    'ToolUseDirective',
+    'HandoffConfig',
+    'ToolHandlerResult',
+    # Guardrails
+    'GuardrailResult',
+    'GuardrailError',
+    'GuardrailEngine',
+    'run_guardrail',
+    'run_guardrails',
+    # Structured output
+    'StructuredOutputPolicy',
+    'StructuredOutputValidationError',
+    'parse_structured_output',
+    'get_retry_prompt',
+    'get_json_mode_system_prompt',
+    # Hooks
+    'HookEvent',
+    'StepStartHookEvent',
+    'StepEndHookEvent',
+    'ToolCallHookEvent',
+    'ToolResultHookEvent',
+    'LLMRequestHookEvent',
+    'LLMResponseHookEvent',
+    'FinishHookEvent',
+    'ErrorHookEvent',
+    'HookRegistry',
+    # File output
+    'FileOutput',
 ]
