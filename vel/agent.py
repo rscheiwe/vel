@@ -8,6 +8,15 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Literal, Union
 # Configure logger for error surfacing
 logger = logging.getLogger('vel.agent')
 from .core import State, reduce, ContextManager
+from .core.tool_behavior import (
+    ToolUseBehavior, ToolUseDecision, ToolEvent, ToolUseDirective, HandoffConfig
+)
+from .core.guardrails import GuardrailEngine, GuardrailError
+from .core.structured_output import (
+    StructuredOutputPolicy, StructuredOutputValidationError,
+    parse_structured_output, get_retry_prompt, get_json_mode_system_prompt
+)
+from .core.hooks import HookRegistry
 from .providers import ProviderRegistry
 from .tools import ToolRegistry, validate_io
 from .events import (
@@ -26,6 +35,17 @@ class Agent:
                  generation_config: Optional[Dict[str, Any]]=None,
                  rlm: Optional[Dict[str, Any]]=None,
                  tool_context: Optional[Dict[str, Any]]=None,
+                 # Guardrails
+                 input_guardrails: Optional[List]=None,
+                 output_guardrails: Optional[List]=None,
+                 tool_guardrails: Optional[Dict[str, List]]=None,
+                 # Structured output
+                 output_type: Optional[type]=None,
+                 structured_output_policy: Optional[StructuredOutputPolicy]=None,
+                 # Lifecycle hooks
+                 hooks: Optional[Dict[str, Any]]=None,
+                 # Dynamic instructions
+                 instruction: Optional[Any]=None,  # str or Callable[[dict], str]
                  # Deprecated (backwards compatibility)
                  session_storage: Optional[Literal['memory', 'database']]=None):
         """
@@ -53,6 +73,14 @@ class Agent:
                     Example: {'tool-a': {'stop_on_first_use': True}}
                     When a tool has 'stop_on_first_use': True, execution halts after that
                     specific tool runs, returning raw tool output instead of LLM response.
+                - tool_use_behavior: ToolUseBehavior enum - Control flow after tool execution
+                    - RUN_LLM_AGAIN (default): Continue to next LLM call
+                    - STOP_AFTER_TOOL: Stop after any tool executes
+                    - STOP_AT_TOOLS: Stop when tools in stop_at_tools list execute
+                    - CUSTOM_HANDLER: Use custom_tool_handler callback
+                - stop_at_tools: List[str] - Tool names that halt execution (with STOP_AT_TOOLS)
+                - custom_tool_handler: Callable[[ToolEvent], ToolUseDecision|ToolUseDirective]
+                - reset_tool_choice: bool (default: False) - Add prompt to prevent tool loops
 
             context_manager: Custom context manager instance. Pass:
                 - None or ContextManager() for default (full message history)
@@ -87,6 +115,34 @@ class Agent:
                 Useful for passing shared resources like storage backends, database connections, etc.
                 Example: {'storage': MessageBasedStorage(messages)}
 
+            input_guardrails: List of async guardrail functions to validate user input.
+                Signature: async def guardrail(content, ctx) -> GuardrailResult | bool
+                Example: [validate_no_pii, require_min_length]
+
+            output_guardrails: List of async guardrail functions to validate LLM output.
+                Signature: async def guardrail(content, ctx) -> GuardrailResult | bool
+                Example: [must_be_json, no_harmful_content]
+
+            tool_guardrails: Dict mapping tool names to their guardrail functions.
+                Example: {'get_weather': [validate_location]}
+
+            output_type: Pydantic model class for structured output validation.
+                When set, agent will force JSON mode and validate/retry output.
+                Example: output_type=WeatherResponse
+
+            structured_output_policy: Policy for handling validation failures.
+                Default: StructuredOutputPolicy(max_retries=1, on_failure="raise")
+                Example: StructuredOutputPolicy(max_retries=2, on_failure="return_raw")
+
+            hooks: Dict of lifecycle hook handlers for observability and tracing.
+                Supported hooks: on_step_start, on_step_end, on_tool_call, on_tool_result,
+                on_llm_request, on_llm_response, on_finish, on_error
+                Example: {'on_tool_call': my_tool_logger, 'on_error': my_error_handler}
+
+            instruction: Dynamic system instruction, can be string or callable.
+                If callable, evaluated per-run with context dict: (ctx) -> str
+                Example: lambda ctx: f"User tier: {ctx.get('user_tier', 'free')}"
+
             session_storage: [DEPRECATED] Use session_persistence instead
                 - 'memory' → use 'transient'
                 - 'database' → use 'persistent'
@@ -98,6 +154,23 @@ class Agent:
         self.policies = policies or {'max_steps': 24, 'retry': {'attempts': 2}}
         self.generation_config = generation_config or {}
         self.tool_context = tool_context or {}
+
+        # Guardrails engine
+        self.guardrails = GuardrailEngine(
+            input_guardrails=input_guardrails,
+            output_guardrails=output_guardrails,
+            tool_guardrails=tool_guardrails
+        )
+
+        # Structured output
+        self.output_type = output_type
+        self.structured_output_policy = structured_output_policy or StructuredOutputPolicy()
+
+        # Lifecycle hooks
+        self.hooks = HookRegistry(hooks)
+
+        # Dynamic instructions
+        self.instruction = instruction
 
         # RLM configuration
         self.rlm_config = None
@@ -172,13 +245,93 @@ class Agent:
             return self._custom_provider
         return self.providers.get(self.model_cfg['provider'])
 
+    def as_tool(
+        self,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        system_prompt_override: Optional[str] = None
+    ) -> 'ToolSpec':
+        """
+        Expose this agent as a tool that can be used by other agents.
+
+        Args:
+            name: Tool name (defaults to agent ID)
+            description: Tool description
+            system_prompt_override: Optional system prompt to override agent's default
+
+        Returns:
+            ToolSpec that wraps this agent
+        """
+        from .tools import ToolSpec
+
+        tool_name = name or self.id
+        tool_desc = description or f"Run the {self.id} agent"
+
+        # Create handler that calls this agent
+        async def agent_tool_handler(input: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+            # Get message from input
+            message = input.get('message', input.get('query', str(input)))
+
+            # Apply system prompt override if provided
+            original_ctxmgr = None
+            if system_prompt_override:
+                # Store original and create modified context
+                original_ctxmgr = self.ctxmgr
+                # This is a simplified approach - a full implementation would
+                # properly inject the system prompt override
+                pass
+
+            try:
+                # Run the agent
+                result = await self.run({'message': message})
+
+                # Return result in structured format
+                if isinstance(result, str):
+                    return {'response': result}
+                elif isinstance(result, dict):
+                    return result
+                else:
+                    # Pydantic model or other object
+                    if hasattr(result, 'model_dump'):
+                        return result.model_dump()
+                    elif hasattr(result, 'dict'):
+                        return result.dict()
+                    else:
+                        return {'response': str(result)}
+            finally:
+                if original_ctxmgr:
+                    self.ctxmgr = original_ctxmgr
+
+        return ToolSpec(
+            name=tool_name,
+            input_schema={
+                'type': 'object',
+                'properties': {
+                    'message': {
+                        'type': 'string',
+                        'description': f'Message to send to the {tool_name} agent'
+                    }
+                },
+                'required': ['message']
+            },
+            output_schema={
+                'type': 'object',
+                'properties': {
+                    'response': {'type': 'string'}
+                }
+            },
+            handler=agent_tool_handler,
+            description=tool_desc
+        )
+
     async def _call_llm_generate(self, run_id: str, session_id: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Non-streaming LLM call"""
         messages = self.ctxmgr.messages_for_llm(run_id, session_id)
         provider = self._get_provider()
         # Merge agent-level and call-level generation configs
         config = {**self.generation_config, **(generation_config or {})}
-        step = await provider.generate(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas(), generation_config=config)
+        # Filter tools by self.tools list (empty list = no tools)
+        step = await provider.generate(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas(self.tool_context, filter_tools=self.tools), generation_config=config)
         return step
 
     async def _call_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -200,13 +353,86 @@ class Agent:
             True if execution should stop and return raw tool output,
             False if execution should continue normally
         """
-        # Check per-tool behavior first
+        # Check new enum-based tool_use_behavior first
+        behavior = self.policies.get('tool_use_behavior')
+        if behavior:
+            if behavior == ToolUseBehavior.STOP_AFTER_TOOL:
+                return True
+            elif behavior == ToolUseBehavior.STOP_AT_TOOLS:
+                stop_at = self.policies.get('stop_at_tools', [])
+                return tool_name in stop_at
+            elif behavior == ToolUseBehavior.CUSTOM_HANDLER:
+                return False  # Custom handler decides in process_tool_result
+            elif behavior == ToolUseBehavior.RUN_LLM_AGAIN:
+                return False
+
+        # Check per-tool behavior (backwards compatible)
         tool_behaviors = self.policies.get('tool_behavior', {})
         if tool_name in tool_behaviors:
             return tool_behaviors[tool_name].get('stop_on_first_use', False)
 
         # Fall back to global setting (defaults to False)
         return self.policies.get('stop_on_first_tool', False)
+
+    def _process_tool_result(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        run_id: str,
+        step: int,
+        session_id: Optional[str] = None
+    ) -> ToolUseDirective:
+        """
+        Process tool result through custom handler if configured.
+
+        Returns ToolUseDirective with decision and any modifications.
+        """
+        behavior = self.policies.get('tool_use_behavior')
+
+        # If custom handler is configured, call it
+        if behavior == ToolUseBehavior.CUSTOM_HANDLER:
+            handler = self.policies.get('custom_tool_handler')
+            if handler:
+                # Build ToolEvent
+                messages = self.ctxmgr.messages_for_llm(run_id, session_id)
+                event = ToolEvent(
+                    tool_name=tool_name,
+                    args=args,
+                    output=result,
+                    step=step,
+                    messages=messages,
+                    run_id=run_id,
+                    session_id=session_id
+                )
+
+                # Call handler
+                handler_result = handler(event)
+
+                # Normalize to ToolUseDirective
+                if isinstance(handler_result, ToolUseDecision):
+                    return ToolUseDirective(decision=handler_result)
+                elif isinstance(handler_result, ToolUseDirective):
+                    return handler_result
+                else:
+                    # Assume it's a string decision
+                    return ToolUseDirective(decision=ToolUseDecision(handler_result))
+
+        # Default: continue
+        return ToolUseDirective(decision=ToolUseDecision.CONTINUE)
+
+    def _get_reset_tool_choice_message(self) -> Optional[Dict[str, Any]]:
+        """
+        Get system message to reset tool choice if enabled.
+
+        Returns None if reset_tool_choice is not enabled.
+        """
+        if self.policies.get('reset_tool_choice', False):
+            return {
+                'role': 'system',
+                'content': 'The previous tool did not resolve the request; reconsider tool selection.'
+            }
+        return None
 
     async def run(
         self,
@@ -262,10 +488,38 @@ class Agent:
 
         run_id = str(uuid.uuid4())
         self.ctxmgr.set_input(run_id, input, session_id)
+
+        # Add dynamic instruction if set
+        if self.instruction:
+            if callable(self.instruction):
+                instruction_text = self.instruction(self.tool_context)
+            else:
+                instruction_text = self.instruction
+            self.ctxmgr._runs[run_id].insert(0, {'role': 'system', 'content': instruction_text})
+
+        # Add structured output schema prompt if output_type is set
+        if self.output_type:
+            schema_prompt = get_json_mode_system_prompt(self.output_type)
+            self.ctxmgr._runs[run_id].insert(0, {'role': 'system', 'content': schema_prompt})
+
+        # Run input guardrails
+        if self.guardrails.has_input_guardrails:
+            ctx = {'run_id': run_id, 'session_id': session_id}
+            content = input.get('message', input)
+            passed, modified, error = await self.guardrails.check_input(content, ctx)
+            if not passed:
+                raise GuardrailError('input', error, content)
+            # If content was modified, update the input
+            if modified != content and 'message' in input:
+                input['message'] = modified
+                self.ctxmgr.set_input(run_id, input, session_id)
+
         state = State(run_id=run_id)
         event: Dict[str, Any] = {'kind':'start'}
         steps = 0
         final_answer = ''
+        structured_output_attempts = 0
+        last_valid_output = None
 
         try:
             while True:
@@ -276,18 +530,102 @@ class Agent:
                         event = {'kind':'llm_step', 'step': step}
                         break
                     elif eff.kind == 'call_tool':
-                        result = await self._call_tool(eff.payload['tool'], eff.payload.get('args', {}))
+                        tool_name = eff.payload['tool']
+                        tool_args = eff.payload.get('args', {})
 
-                        # Check if we should stop after this tool
-                        if self.should_stop_after_tool(eff.payload['tool']):
+                        # Run tool guardrails
+                        if self.guardrails.has_tool_guardrails(tool_name):
+                            ctx = {'run_id': run_id, 'session_id': session_id, 'tool_name': tool_name}
+                            passed, modified_args, error = await self.guardrails.check_tool(tool_name, tool_args, ctx)
+                            if not passed:
+                                raise GuardrailError(f'tool:{tool_name}', error, tool_args)
+                            tool_args = modified_args
+
+                        result = await self._call_tool(tool_name, tool_args)
+
+                        # Process through custom handler if configured
+                        directive = self._process_tool_result(
+                            tool_name, tool_args, result, run_id, steps, session_id
+                        )
+
+                        # Handle directive decision
+                        if directive.decision == ToolUseDecision.STOP:
+                            return directive.final_output if directive.final_output is not None else result
+                        elif directive.decision == ToolUseDecision.ERROR:
+                            raise RuntimeError(f"Tool handler returned ERROR for {tool_name}")
+
+                        # Check if we should stop after this tool (non-custom behavior)
+                        if self.should_stop_after_tool(tool_name):
                             return result  # Return raw tool output
 
+                        # Handle message modifications from directive
+                        if directive.replace_messages is not None:
+                            # Replace context messages (advanced use case)
+                            self.ctxmgr._runs[run_id] = directive.replace_messages
+                        elif directive.add_messages:
+                            # Add extra messages before next LLM call
+                            for msg in directive.add_messages:
+                                if msg['role'] == 'system':
+                                    self.ctxmgr._runs[run_id].insert(0, msg)
+                                else:
+                                    self.ctxmgr._runs[run_id].append(msg)
+
+                        # Handle handoff (Phase 4)
+                        if directive.handoff_agent:
+                            # TODO: Implement handoff in Phase 4
+                            pass
+
                         # Normal behavior: add to context and continue
-                        self.ctxmgr.append_tool_result(run_id, eff.payload['tool'], result, session_id)
+                        self.ctxmgr.append_tool_result(run_id, tool_name, result, session_id)
+
+                        # Add reset tool choice message if enabled
+                        reset_msg = self._get_reset_tool_choice_message()
+                        if reset_msg:
+                            self.ctxmgr._runs[run_id].append(reset_msg)
+
                         event = {'kind':'tool_result', 'result': result}
                         break
                     elif eff.kind == 'halt':
                         final_answer = eff.payload.get('final','')
+
+                        # Run output guardrails
+                        if self.guardrails.has_output_guardrails:
+                            ctx = {'run_id': run_id, 'session_id': session_id}
+                            passed, modified, error = await self.guardrails.check_output(final_answer, ctx)
+                            if not passed:
+                                raise GuardrailError('output', error, final_answer)
+                            final_answer = modified
+
+                        # Validate structured output if output_type is set
+                        if self.output_type:
+                            try:
+                                parsed = parse_structured_output(final_answer, self.output_type)
+                                last_valid_output = parsed
+                                # Add assistant response to context
+                                self.ctxmgr.append_assistant_message(run_id, final_answer, session_id)
+                                return parsed
+                            except Exception as e:
+                                structured_output_attempts += 1
+                                policy = self.structured_output_policy
+
+                                if structured_output_attempts > policy.max_retries:
+                                    # Handle failure based on policy
+                                    if policy.on_failure == "raise":
+                                        raise StructuredOutputValidationError(e, final_answer, self.output_type)
+                                    elif policy.on_failure == "return_raw":
+                                        self.ctxmgr.append_assistant_message(run_id, final_answer, session_id)
+                                        return final_answer
+                                    elif policy.on_failure == "return_last_valid":
+                                        if last_valid_output is not None:
+                                            return last_valid_output
+                                        raise StructuredOutputValidationError(e, final_answer, self.output_type)
+
+                                # Retry: add error message and continue
+                                retry_prompt = get_retry_prompt(self.output_type, e)
+                                self.ctxmgr._runs[run_id].append({'role': 'system', 'content': retry_prompt})
+                                event = {'kind': 'start'}  # Restart to call LLM again
+                                break
+
                         # Add assistant response to context
                         self.ctxmgr.append_assistant_message(run_id, final_answer, session_id)
                         return final_answer
@@ -359,11 +697,40 @@ class Agent:
         run_id = str(uuid.uuid4())
         self.ctxmgr.set_input(run_id, input, session_id)
 
+        # Add dynamic instruction if set
+        if self.instruction:
+            if callable(self.instruction):
+                instruction_text = self.instruction(self.tool_context)
+            else:
+                instruction_text = self.instruction
+            self.ctxmgr._runs[run_id].insert(0, {'role': 'system', 'content': instruction_text})
+
+        # Add structured output schema prompt if output_type is set
+        if self.output_type:
+            schema_prompt = get_json_mode_system_prompt(self.output_type)
+            self.ctxmgr._runs[run_id].insert(0, {'role': 'system', 'content': schema_prompt})
+
+        # Run input guardrails
+        if self.guardrails.has_input_guardrails:
+            ctx = {'run_id': run_id, 'session_id': session_id}
+            content = input.get('message', input)
+            passed, modified, error = await self.guardrails.check_input(content, ctx)
+            if not passed:
+                error_event = ErrorEvent(error=f"Input guardrail failed: {error}")
+                yield error_event.to_dict()
+                yield {'type': 'finish'}
+                return
+            # If content was modified, update the input
+            if modified != content and 'message' in input:
+                input['message'] = modified
+                self.ctxmgr.set_input(run_id, input, session_id)
+
         # Emit start event (V5 UI Stream Protocol)
         yield StartEvent().to_dict()
 
         steps = 0
         max_steps = self.policies.get('max_steps', 24)
+        structured_output_attempts = 0
 
         try:
             while steps < max_steps:
@@ -387,7 +754,8 @@ class Agent:
                 response_metadata = None
 
                 # Stream from provider and forward events
-                async for event in provider.stream(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas(), generation_config=config):
+                # Filter tools by self.tools list (empty list = no tools)
+                async for event in provider.stream(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas(self.tool_context, filter_tools=self.tools), generation_config=config):
                     # Track metadata for finish events (don't forward finish-message)
                     if event.type == 'finish-message':
                         finish_reason = event.finish_reason
@@ -444,6 +812,43 @@ class Agent:
                 # If we got text and no tool calls, we're done
                 if full_text and not tool_calls:
                     answer = ''.join(full_text)
+
+                    # Run output guardrails
+                    if self.guardrails.has_output_guardrails:
+                        ctx = {'run_id': run_id, 'session_id': session_id}
+                        passed, modified, error = await self.guardrails.check_output(answer, ctx)
+                        if not passed:
+                            error_event = ErrorEvent(error=f"Output guardrail failed: {error}")
+                            yield error_event.to_dict()
+                            yield {'type': 'finish'}
+                            return
+                        answer = modified
+
+                    # Validate structured output if output_type is set
+                    if self.output_type:
+                        try:
+                            parse_structured_output(answer, self.output_type)
+                            # Validation passed
+                        except Exception as e:
+                            structured_output_attempts += 1
+                            policy = self.structured_output_policy
+
+                            if structured_output_attempts > policy.max_retries:
+                                # Handle failure based on policy
+                                if policy.on_failure == "raise":
+                                    error_event = ErrorEvent(
+                                        error=f"Structured output validation failed: {e}"
+                                    )
+                                    yield error_event.to_dict()
+                                    yield {'type': 'finish'}
+                                    return
+                                # For return_raw or return_last_valid, continue with answer
+                            else:
+                                # Retry: add error message and continue loop
+                                retry_prompt = get_retry_prompt(self.output_type, e)
+                                self.ctxmgr._runs[run_id].append({'role': 'system', 'content': retry_prompt})
+                                continue  # Go back to LLM
+
                     self.ctxmgr.append_assistant_message(run_id, answer, session_id)
 
                     # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
@@ -459,10 +864,22 @@ class Agent:
                         try:
                             # Get tool to check if it's streaming
                             tool = self.toolreg.get(tc['tool_name'])
+                            tool_args = tc['input']
                             result = None
 
+                            # Run tool guardrails
+                            if self.guardrails.has_tool_guardrails(tc['tool_name']):
+                                ctx = {'run_id': run_id, 'session_id': session_id, 'tool_name': tc['tool_name']}
+                                passed, modified_args, error = await self.guardrails.check_tool(tc['tool_name'], tool_args, ctx)
+                                if not passed:
+                                    error_event = ErrorEvent(error=f"Tool guardrail failed: {error}")
+                                    yield error_event.to_dict()
+                                    yield {'type': 'finish'}
+                                    return
+                                tool_args = modified_args
+
                             # Execute tool (streaming or non-streaming)
-                            async for event in tool.run_stream(tc['input'], ctx=self.tool_context):
+                            async for event in tool.run_stream(tool_args, ctx=self.tool_context):
                                 if event.get('type') == 'tool-output':
                                     # Final output from tool
                                     result = event['output']
@@ -480,14 +897,45 @@ class Agent:
                             if result is not None:
                                 validate_io(tool.output_schema, result)
 
-                            # Check if we should stop after this tool
+                            # Process through custom handler if configured
+                            directive = self._process_tool_result(
+                                tc['tool_name'], tool_args, result, run_id, steps, session_id
+                            )
+
+                            # Handle directive decision
+                            if directive.decision == ToolUseDecision.STOP:
+                                yield {'type': 'finish-step'}
+                                yield {'type': 'finish'}
+                                return
+                            elif directive.decision == ToolUseDecision.ERROR:
+                                error_event = ErrorEvent(error=f"Tool handler returned ERROR for {tc['tool_name']}")
+                                yield error_event.to_dict()
+                                yield {'type': 'finish'}
+                                return
+
+                            # Check if we should stop after this tool (non-custom behavior)
                             if self.should_stop_after_tool(tc['tool_name']):
                                 yield {'type': 'finish-step'}
                                 yield {'type': 'finish'}
                                 return  # Don't add to context or continue loop
 
+                            # Handle message modifications from directive
+                            if directive.replace_messages is not None:
+                                self.ctxmgr._runs[run_id] = directive.replace_messages
+                            elif directive.add_messages:
+                                for msg in directive.add_messages:
+                                    if msg['role'] == 'system':
+                                        self.ctxmgr._runs[run_id].insert(0, msg)
+                                    else:
+                                        self.ctxmgr._runs[run_id].append(msg)
+
                             # Add to context for next iteration
                             self.ctxmgr.append_tool_result(run_id, tc['tool_name'], result, session_id)
+
+                            # Add reset tool choice message if enabled
+                            reset_msg = self._get_reset_tool_choice_message()
+                            if reset_msg:
+                                self.ctxmgr._runs[run_id].append(reset_msg)
 
                         except Exception as e:
                             error_event = ErrorEvent(error=f"Tool execution failed: {str(e)}")

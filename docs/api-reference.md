@@ -18,6 +18,12 @@ Complete API documentation for all Vel classes and functions.
 - [Stream Events](#stream-events)
 - [Helper Functions](#helper-functions)
 
+**Related Documentation:**
+- [Guardrails](guardrails.md) - Input/output/tool validation
+- [Structured Output](structured-output.md) - Pydantic-validated responses
+- [Agent Composition](agent-composition.md) - Multi-agent patterns
+- [Lifecycle Hooks](hooks.md) - Event callbacks
+
 ---
 
 ## Agent
@@ -38,7 +44,18 @@ Agent(
     prompt_id: Optional[str] = None,
     prompt_vars: Optional[Dict[str, Any]] = None,
     generation_config: Optional[Dict[str, Any]] = None,
-    tool_context: Optional[Dict[str, Any]] = None
+    tool_context: Optional[Dict[str, Any]] = None,
+    # Guardrails
+    input_guardrails: Optional[List] = None,
+    output_guardrails: Optional[List] = None,
+    tool_guardrails: Optional[Dict[str, List]] = None,
+    # Structured output
+    output_type: Optional[type] = None,
+    structured_output_policy: Optional[StructuredOutputPolicy] = None,
+    # Lifecycle hooks
+    hooks: Optional[Dict[str, Any]] = None,
+    # Dynamic instructions
+    instruction: Optional[Any] = None
 )
 ```
 
@@ -137,6 +154,73 @@ Agent(
 - Example: `{'db': db_connection, 'storage': storage_backend, 'user_id': 'user_123'}`
 - Tools access via `ctx.get('resource_name')`
 - See [Tools documentation - Tool Context](tools.md#tool-context) for details and examples
+
+**input_guardrails**
+- Type: `Optional[List[Callable]]`
+- Default: `None`
+- Async functions that validate user input before LLM call
+- Signature: `async def guardrail(content, ctx) -> GuardrailResult`
+- If any guardrail fails, raises `GuardrailError`
+- Can modify content by returning `GuardrailResult(passed=True, modified_content=...)`
+- See [Guardrails documentation](guardrails.md) for details
+
+**output_guardrails**
+- Type: `Optional[List[Callable]]`
+- Default: `None`
+- Async functions that validate LLM output before returning to user
+- Same signature as input guardrails
+- Run sequentially; modified content passes to next guardrail
+- See [Guardrails documentation](guardrails.md) for details
+
+**tool_guardrails**
+- Type: `Optional[Dict[str, List[Callable]]]`
+- Default: `None`
+- Per-tool validation functions that run before tool execution
+- Key: tool name, Value: list of guardrail functions
+- Signature: `async def guardrail(args, ctx) -> GuardrailResult`
+- Example: `{'send_email': [validate_recipient], 'query_db': [sanitize_query]}`
+- See [Guardrails documentation](guardrails.md#tool-guardrails) for details
+
+**output_type**
+- Type: `Optional[Type[BaseModel]]`
+- Default: `None`
+- Pydantic model for structured output validation
+- Forces LLM to return JSON matching the schema
+- Result is parsed and validated Pydantic instance
+- Example: `output_type=WeatherResponse`
+- See [Structured Output documentation](structured-output.md) for details
+
+**structured_output_policy**
+- Type: `Optional[StructuredOutputPolicy]`
+- Default: `StructuredOutputPolicy(max_retries=1, on_failure="raise")`
+- Controls retry and failure behavior for structured output
+- Options:
+  - `max_retries`: Number of retries on validation failure (default: 1)
+  - `on_failure`: `"raise"`, `"return_raw"`, or `"return_last_valid"`
+- Example: `StructuredOutputPolicy(max_retries=3, on_failure="return_raw")`
+- See [Structured Output documentation](structured-output.md#validation--retry-policy) for details
+
+**hooks**
+- Type: `Optional[Dict[str, Callable]]`
+- Default: `None`
+- Lifecycle event callbacks for observability and custom logic
+- Available hooks:
+  - `on_step_start`, `on_step_end`: Step lifecycle
+  - `on_tool_call`, `on_tool_result`: Tool execution
+  - `on_llm_request`, `on_llm_response`: LLM calls
+  - `on_finish`, `on_error`: Completion events
+- Hooks can be sync or async
+- Example: `{'on_tool_call': log_tool, 'on_error': alert_error}`
+- See [Lifecycle Hooks documentation](hooks.md) for details
+
+**instruction**
+- Type: `Optional[Union[str, Callable]]`
+- Default: `None`
+- Dynamic system instructions prepended to conversation
+- Can be static string or callable that returns string
+- Callable signature: `def get_instruction(ctx) -> str`
+- Useful for context-dependent instructions (time-based, user-based)
+- Example: `instruction=lambda ctx: f"Current time: {datetime.now()}"`
 
 **Example:**
 
@@ -906,3 +990,7 @@ if __name__ == '__main__':
 - [Stream Protocol](stream-protocol.md) - Streaming event details
 - [Tools](tools.md) - Tool system in depth
 - [Providers](providers.md) - Provider configuration
+- [Guardrails](guardrails.md) - Input/output/tool validation
+- [Structured Output](structured-output.md) - Pydantic-validated responses
+- [Agent Composition](agent-composition.md) - Multi-agent patterns
+- [Lifecycle Hooks](hooks.md) - Event callbacks

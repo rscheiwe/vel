@@ -793,6 +793,277 @@ agent = Agent(
 )
 ```
 
+## Tool Use Behavior
+
+Control what happens after tool execution - whether to continue to LLM for a natural language response or halt and return raw tool output.
+
+### Overview
+
+By default, after a tool executes, Vel calls the LLM again to generate a natural language response. You can change this behavior to:
+
+- **Return raw tool output** (skip final LLM call)
+- **Halt on specific tools** (useful for routing/intent detection)
+- **Custom logic per tool call**
+
+### Per-Tool Behavior (Dict Approach)
+
+Specify behavior for individual tools:
+
+```python
+agent = Agent(
+    id='assistant-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['get_weather', 'send_email', 'finalize_report', 'search_docs'],
+    policies={
+        'tool_behavior': {
+            'get_weather': {'stop_on_first_use': True},      # Halt, return raw JSON
+            'send_email': {'stop_on_first_use': False},      # Continue to LLM
+            'finalize_report': {'stop_on_first_use': True},  # Halt, return raw JSON
+            # search_docs defaults to False (continue to LLM)
+        }
+    }
+)
+
+# If LLM calls get_weather → halts, returns {'temp_f': 72, 'condition': 'sunny'}
+# If LLM calls send_email → continues, LLM says "Email sent successfully!"
+# If LLM calls finalize_report → halts, returns raw report data
+# If LLM calls search_docs → continues, LLM summarizes results
+```
+
+### Enum-Based Behavior
+
+Use the `ToolUseBehavior` enum for cleaner global control:
+
+```python
+from vel.core import ToolUseBehavior
+
+agent = Agent(
+    id='assistant-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['get_weather', 'send_email', 'finalize_report', 'search_docs'],
+    policies={
+        'tool_use_behavior': ToolUseBehavior.STOP_AT_TOOLS,
+        'stop_at_tools': ['get_weather', 'finalize_report']
+        # These two halt; others continue to LLM
+    }
+)
+```
+
+**Available Behaviors:**
+
+| Enum | Description |
+|------|-------------|
+| `RUN_LLM_AGAIN` | Default. Call LLM after tool for natural language response |
+| `STOP_AFTER_TOOL` | Halt after ANY tool, return raw output |
+| `STOP_AT_TOOLS` | Halt only for tools in `stop_at_tools` list |
+| `CUSTOM_HANDLER` | Use `custom_tool_handler` callback |
+
+### Global Stop After First Tool
+
+Halt after any tool executes:
+
+```python
+agent = Agent(
+    id='routing-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['classify_intent', 'extract_entities'],
+    policies={
+        'stop_on_first_tool': True  # Halt after ANY tool
+    }
+)
+
+# Returns raw tool output, skips final LLM call
+result = await agent.run({'message': 'Book a flight to NYC'})
+# result = {'intent': 'booking', 'confidence': 0.95}
+```
+
+### Custom Tool Handler
+
+Full control over post-tool behavior:
+
+```python
+from vel.core import ToolUseBehavior, ToolUseDecision, ToolUseDirective
+
+def my_tool_handler(event):
+    """Custom logic based on tool name and output"""
+
+    if event.tool_name == 'get_weather':
+        # Always return raw weather data
+        return ToolUseDecision.STOP
+
+    elif event.tool_name == 'finalize_report':
+        # Stop and customize the return value
+        return ToolUseDirective(
+            decision=ToolUseDecision.STOP,
+            final_output={'status': 'complete', 'report': event.output}
+        )
+
+    elif event.tool_name == 'send_email':
+        # Continue but inject a system message
+        return ToolUseDirective(
+            decision=ToolUseDecision.CONTINUE,
+            add_messages=[{
+                'role': 'system',
+                'content': 'Email was sent successfully. Confirm to the user.'
+            }]
+        )
+
+    elif event.tool_name == 'validate_input' and event.output.get('error'):
+        # Abort on validation error
+        return ToolUseDecision.ERROR
+
+    # Default: continue to LLM
+    return ToolUseDecision.CONTINUE
+
+agent = Agent(
+    id='assistant-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['get_weather', 'send_email', 'finalize_report', 'validate_input'],
+    policies={
+        'tool_use_behavior': ToolUseBehavior.CUSTOM_HANDLER,
+        'custom_tool_handler': my_tool_handler
+    }
+)
+```
+
+**ToolEvent Properties:**
+
+| Property | Description |
+|----------|-------------|
+| `tool_name` | Name of the tool that was called |
+| `args` | Arguments passed to the tool |
+| `output` | Tool's return value |
+| `step` | Current execution step number |
+| `messages` | Current message history |
+| `run_id` | Unique run identifier |
+| `session_id` | Session ID (if using sessions) |
+
+**Return Types:**
+
+- `ToolUseDecision.CONTINUE` - Call LLM again
+- `ToolUseDecision.STOP` - Return tool output
+- `ToolUseDecision.ERROR` - Abort with error
+- `ToolUseDirective(...)` - Advanced control with message injection
+
+### Reset Tool Choice
+
+Prevent tools from being called repeatedly in loops:
+
+```python
+agent = Agent(
+    id='my-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    tools=['search_docs'],
+    policies={
+        'reset_tool_choice': True  # Inject prompt to reconsider tool selection
+    }
+)
+```
+
+When enabled, after each tool call Vel adds a system message:
+> "The previous tool did not resolve the request; reconsider tool selection."
+
+### Use Cases
+
+**1. Intent Detection / Routing**
+```python
+# Return raw classification, skip prose
+policies={'stop_on_first_tool': True}
+```
+
+**2. Structured Data Retrieval**
+```python
+# Return raw JSON for specific tools
+policies={
+    'tool_behavior': {
+        'get_user_data': {'stop_on_first_use': True},
+        'get_metrics': {'stop_on_first_use': True}
+    }
+}
+```
+
+**3. Multi-Step with Final Summary**
+```python
+# Only finalize halts; others continue
+policies={
+    'tool_use_behavior': ToolUseBehavior.STOP_AT_TOOLS,
+    'stop_at_tools': ['finalize_report']
+}
+```
+
+**4. Conditional Logic**
+```python
+# Custom handler for complex decisions
+def handler(event):
+    if event.output.get('requires_approval'):
+        return ToolUseDecision.STOP
+    return ToolUseDecision.CONTINUE
+
+policies={
+    'tool_use_behavior': ToolUseBehavior.CUSTOM_HANDLER,
+    'custom_tool_handler': handler
+}
+```
+
+### Streaming Behavior
+
+Tool use behavior works the same with streaming. When a tool halts:
+
+```python
+async for event in agent.run_stream({'message': 'Get weather'}):
+    if event['type'] == 'tool-output-available':
+        print(f"Tool result: {event['output']}")
+    elif event['type'] == 'finish':
+        break  # Execution halted after tool
+```
+
+### Conditional Tool Enablement
+
+Dynamically enable/disable tools based on context:
+
+```python
+from vel import ToolSpec, register_tool
+
+tool = ToolSpec(
+    name='premium_feature',
+    input_schema={...},
+    output_schema={...},
+    handler=premium_handler,
+    enabled=lambda ctx: ctx.get('user', {}).get('is_premium', False)
+)
+
+register_tool(tool)
+
+# Tool only appears in schema for premium users
+agent = Agent(
+    tools=['basic_feature', 'premium_feature'],
+    tool_context={'user': {'is_premium': True}}  # Premium user sees both
+)
+```
+
+When `enabled` returns `False`, the tool is omitted from the schema sent to the LLM.
+
+### Per-Tool Policies
+
+Configure timeout, retries, and fallback per tool:
+
+```python
+tool = ToolSpec(
+    name='slow_api_call',
+    input_schema={...},
+    output_schema={...},
+    handler=slow_handler,
+    timeout=5.0,           # Cancel after 5 seconds
+    retries=2,             # Retry up to 2 times
+    fallback='return_error'  # What to do when all retries fail
+)
+```
+
+**Fallback Options:**
+- `'return_error'` - Return error to LLM
+- `'call_other_tool'` - Try alternative tool (future)
+- Custom handler (future)
+
 ## Tool Organization & Imports
 
 ### How the Registry Works
