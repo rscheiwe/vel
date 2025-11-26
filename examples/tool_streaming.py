@@ -12,35 +12,21 @@ import asyncio
 import json
 import os
 from dotenv import load_dotenv
-from vel import Agent, MessageReducer, ToolSpec, register_tool
+from vel import Agent, MessageReducer, ToolSpec
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Register a simple weather tool
-register_tool(ToolSpec(
-    name='get_weather',
-    input_schema={
-        'type': 'object',
-        'properties': {
-            'city': {'type': 'string', 'description': 'City name'}
-        },
-        'required': ['city']
-    },
-    output_schema={
-        'type': 'object',
-        'properties': {
-            'temp_f': {'type': 'number'},
-            'condition': {'type': 'string'}
-        },
-        'required': ['temp_f', 'condition']
-    },
-    handler=lambda inp, ctx: {
+# Create a simple weather tool (no registration needed!)
+def get_weather(city: str, ctx: dict = None) -> dict:
+    """Get weather for a city."""
+    return {
         'temp_f': 72.0,
         'condition': 'sunny',
-        'city': inp.get('city', 'Unknown')
+        'city': city
     }
-))
+
+weather_tool = ToolSpec.from_function(get_weather)
 
 # ====== CONFIGURATION ======
 # Change this to test different providers
@@ -75,7 +61,7 @@ async def main():
     agent = Agent(
         id='tool-agent:v1',
         model=PROVIDER_CONFIG[PROVIDER],
-        tools=['get_weather'],
+        tools=[weather_tool],  # Pass ToolSpec directly
         policies={'max_steps': 5}
     )
 

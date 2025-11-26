@@ -18,7 +18,7 @@ from .core.structured_output import (
 )
 from .core.hooks import HookRegistry
 from .providers import ProviderRegistry
-from .tools import ToolRegistry, validate_io
+from .tools import ToolRegistry, ToolSpec, validate_io
 from .events import (
     StreamEvent, StartEvent, FinishEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
     ErrorEvent, FinishMessageEvent, StepStartEvent, StepFinishEvent
@@ -27,7 +27,7 @@ from .prompts import PromptContextManager
 
 class Agent:
     def __init__(self, id: str, model: Dict[str, Any], prompt_env: str='prod',
-                 tools: List[str]|None=None, policies: Dict[str, Any]|None=None,
+                 tools: List[Union[str, 'ToolSpec']]|None=None, policies: Dict[str, Any]|None=None,
                  context_manager: Optional[ContextManager]=None,
                  session_persistence: Optional[Literal['transient', 'persistent']]=None,
                  prompt_id: Optional[str]=None,
@@ -64,7 +64,10 @@ class Agent:
                    - {'provider': 'openai', 'model': 'gpt-4o'}  # Uses OPENAI_API_KEY env var
                    - {'provider': 'openai', 'model': 'gpt-4o', 'api_key': 'sk-...'}  # Uses provided key
             prompt_env: Environment for prompts (default: 'prod')
-            tools: List of tool names to enable
+            tools: List of tools to enable. Can be:
+                - str: Tool name (looked up in global registry)
+                - ToolSpec: Tool instance (used directly, no registration required)
+                Example: tools=['websearch', ToolSpec.from_function(my_func)]
             policies: Execution policies dictionary. Options:
                 - max_steps: int (default: 24) - Maximum execution steps
                 - retry: dict - Retry configuration
@@ -150,10 +153,37 @@ class Agent:
         self.id = id
         self.model_cfg = model
         self.prompt_env = prompt_env
-        self.tools = tools or []
         self.policies = policies or {'max_steps': 24, 'retry': {'attempts': 2}}
         self.generation_config = generation_config or {}
         self.tool_context = tool_context or {}
+
+        # Normalize tools: support both strings (global registry) and ToolSpec instances
+        self._instance_tools: Dict[str, ToolSpec] = {}  # Instance-level tools
+        self._tool_names: List[str] = []  # All tool names (for schema filtering)
+
+        for tool in (tools or []):
+            if isinstance(tool, str):
+                # String: reference to global registry (DEPRECATED)
+                warnings.warn(
+                    f"Passing tool names as strings is deprecated and will be removed in Vel v2.0. "
+                    f"Pass ToolSpec instances directly instead:\n"
+                    f"  tool = ToolSpec.from_function(your_function)\n"
+                    f"  agent = Agent(tools=[tool])\n"
+                    f"See examples/dynamic_tools.py for migration examples.",
+                    DeprecationWarning,
+                    stacklevel=2
+                )
+                self._tool_names.append(tool)
+            elif isinstance(tool, ToolSpec):
+                # ToolSpec instance: store directly (no registration needed!)
+                self._instance_tools[tool.name] = tool
+                self._tool_names.append(tool.name)
+            else:
+                raise TypeError(
+                    f"Invalid tool type: {type(tool).__name__}. "
+                    f"Expected str or ToolSpec. "
+                    f"Use ToolSpec.from_function(fn) to wrap functions."
+                )
 
         # Guardrails engine
         self.guardrails = GuardrailEngine(
@@ -245,6 +275,52 @@ class Agent:
             return self._custom_provider
         return self.providers.get(self.model_cfg['provider'])
 
+    def _get_tool(self, name: str) -> ToolSpec:
+        """
+        Get tool by name from instance registry or global registry.
+
+        Args:
+            name: Tool name
+
+        Returns:
+            ToolSpec instance
+
+        Raises:
+            KeyError: If tool not found in either registry
+        """
+        # Check instance tools first (takes precedence)
+        if name in self._instance_tools:
+            return self._instance_tools[name]
+
+        # Fall back to global registry
+        return self.toolreg.get(name)
+
+    def _get_tool_schemas(self) -> Dict[str, Any]:
+        """
+        Get schemas for all tools (instance + global registry).
+
+        Returns:
+            Dict mapping tool names to their schemas
+        """
+        schemas = {}
+
+        for tool_name in self._tool_names:
+            if tool_name in self._instance_tools:
+                # Instance tool
+                tool = self._instance_tools[tool_name]
+                schemas[tool_name] = {
+                    'input': tool.input_schema,
+                    'output': tool.output_schema,
+                    'description': tool.description
+                }
+            else:
+                # Global registry tool
+                schemas.update(
+                    self.toolreg.schemas(self.tool_context, filter_tools=[tool_name])
+                )
+
+        return schemas
+
     def as_tool(
         self,
         name: Optional[str] = None,
@@ -330,16 +406,26 @@ class Agent:
         provider = self._get_provider()
         # Merge agent-level and call-level generation configs
         config = {**self.generation_config, **(generation_config or {})}
-        # Filter tools by self.tools list (empty list = no tools)
-        step = await provider.generate(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas(self.tool_context, filter_tools=self.tools), generation_config=config)
+        # Get schemas from instance tools + global registry
+        tool_schemas = self._get_tool_schemas()
+        step = await provider.generate(messages, model=self.model_cfg['model'], tools=tool_schemas, generation_config=config)
         return step
 
     async def _call_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a tool"""
-        tool = self.toolreg.get(tool_name)
+        """Execute a tool (instance or global registry)"""
+        # Get tool from instance registry or global registry
+        tool = self._get_tool(tool_name)
+
+        # Always validate input
         validate_io(tool.input_schema, args)
+
+        # Execute tool
         result = await tool.run(args, ctx=self.tool_context)
-        validate_io(tool.output_schema, result)
+
+        # Only validate output if schema is non-empty (flexible by default)
+        if tool.output_schema:
+            validate_io(tool.output_schema, result)
+
         return result
 
     def should_stop_after_tool(self, tool_name: str) -> bool:
@@ -754,8 +840,9 @@ class Agent:
                 response_metadata = None
 
                 # Stream from provider and forward events
-                # Filter tools by self.tools list (empty list = no tools)
-                async for event in provider.stream(messages, model=self.model_cfg['model'], tools=self.toolreg.schemas(self.tool_context, filter_tools=self.tools), generation_config=config):
+                # Get schemas from instance tools + global registry
+                tool_schemas = self._get_tool_schemas()
+                async for event in provider.stream(messages, model=self.model_cfg['model'], tools=tool_schemas, generation_config=config):
                     # Track metadata for finish events (don't forward finish-message)
                     if event.type == 'finish-message':
                         finish_reason = event.finish_reason
@@ -862,8 +949,8 @@ class Agent:
                 if tool_calls:
                     for tc in tool_calls:
                         try:
-                            # Get tool to check if it's streaming
-                            tool = self.toolreg.get(tc['tool_name'])
+                            # Get tool to check if it's streaming (instance or global)
+                            tool = self._get_tool(tc['tool_name'])
                             tool_args = tc['input']
                             result = None
 
@@ -893,8 +980,8 @@ class Agent:
                                     # Custom artifact event (e.g., data-artifact-table-editor)
                                     yield event
 
-                            # Validate final output
-                            if result is not None:
+                            # Validate final output (only if schema is non-empty)
+                            if result is not None and tool.output_schema:
                                 validate_io(tool.output_schema, result)
 
                             # Process through custom handler if configured

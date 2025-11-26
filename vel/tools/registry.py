@@ -3,6 +3,10 @@ import asyncio
 import inspect
 from typing import Any, Dict, Callable, Optional, AsyncGenerator, List
 from jsonschema import validate, Draft202012Validator
+from .schema_generator import (
+    generate_input_schema_from_function,
+    generate_output_schema_from_function
+)
 
 class ToolSpec:
     def __init__(
@@ -50,6 +54,89 @@ class ToolSpec:
     def is_streaming(self) -> bool:
         """Returns True if this tool yields events during execution (async generator handler)"""
         return self._is_async_generator
+
+    @classmethod
+    def from_function(
+        cls,
+        fn: Callable,
+        name: Optional[str] = None,
+        input_schema: Optional[Dict[str, Any]] = None,
+        output_schema: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+        validate_output: bool = False,
+        **kwargs
+    ) -> 'ToolSpec':
+        """
+        Create ToolSpec from a Python function with auto-generated schemas.
+
+        By default, output validation is disabled (permissive). Set validate_output=True
+        to enable strict output validation based on return type hints.
+
+        Args:
+            fn: The function to wrap as a tool
+            name: Tool name (defaults to function name)
+            input_schema: Override auto-generated input schema
+            output_schema: Override auto-generated output schema
+            description: Tool description (defaults to function docstring)
+            validate_output: If False (default), accept any output. If True, validate against schema.
+            **kwargs: Additional ToolSpec parameters (enabled, timeout, retries, fallback)
+
+        Returns:
+            ToolSpec instance ready to be passed to Agent
+
+        Examples:
+            # Simple tool (no output validation)
+            def get_weather(city: str) -> dict:
+                '''Get weather for a city.'''
+                return {'temp': 72, 'condition': 'sunny'}
+
+            tool = ToolSpec.from_function(get_weather)
+
+            # Tool with strict output validation
+            tool = ToolSpec.from_function(
+                get_weather,
+                validate_output=True,
+                output_schema={
+                    'type': 'object',
+                    'properties': {
+                        'temp': {'type': 'number'},
+                        'condition': {'type': 'string'}
+                    },
+                    'required': ['temp', 'condition']
+                }
+            )
+
+            # Pass directly to agent (no registration!)
+            agent = Agent(
+                id='my-agent',
+                model={'provider': 'openai', 'model': 'gpt-4o'},
+                tools=[tool]
+            )
+        """
+        tool_name = name or fn.__name__
+        tool_desc = description or (fn.__doc__.strip() if fn.__doc__ else f'Tool: {tool_name}')
+
+        # Auto-generate input schema from function signature
+        if input_schema is None:
+            input_schema = generate_input_schema_from_function(fn)
+
+        # Output schema defaults to permissive (no validation)
+        if output_schema is None:
+            if validate_output:
+                # Try to infer from return type hint
+                output_schema = generate_output_schema_from_function(fn, permissive=False)
+            else:
+                # Default: accept anything (empty schema = no validation)
+                output_schema = {}
+
+        return cls(
+            name=tool_name,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            handler=fn,
+            description=tool_desc,
+            **kwargs
+        )
 
     async def run(self, input: Dict[str,Any], ctx: Dict[str,Any]) -> Dict[str,Any]:
         """Execute non-streaming tool (returns single result)"""
@@ -124,6 +211,31 @@ class ToolRegistry:
 _registry = ToolRegistry.default()
 
 def register_tool(tool: ToolSpec):
+    """
+    Register a tool in the global registry.
+
+    .. deprecated:: 0.3.0
+        Global tool registration is deprecated and will be removed in v2.0.
+        Pass ToolSpec instances directly to Agent instead:
+
+        Old (deprecated):
+            register_tool(tool)
+            agent = Agent(tools=['tool_name'])
+
+        New (recommended):
+            tool = ToolSpec.from_function(my_function)
+            agent = Agent(tools=[tool])
+    """
+    import warnings
+    warnings.warn(
+        f"register_tool() is deprecated and will be removed in Vel v2.0. "
+        f"Pass ToolSpec instances directly to Agent instead:\n"
+        f"  tool = ToolSpec.from_function({tool.name})\n"
+        f"  agent = Agent(tools=[tool])\n"
+        f"See examples/dynamic_tools.py for migration examples.",
+        DeprecationWarning,
+        stacklevel=2
+    )
     _registry.register(tool)
 
 def validate_io(schema: Dict[str,Any], value: Dict[str,Any]):

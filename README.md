@@ -148,6 +148,30 @@ cp .env.example .env
 # Edit .env with your API keys
 ```
 
+## ⚠️ Deprecation Notice
+
+**Global tool registration is deprecated in v0.3.0 and will be removed in v2.0.**
+
+**Old (deprecated):**
+```python
+from vel import ToolSpec, register_tool
+
+register_tool(ToolSpec(...))  # ⚠️ DEPRECATED
+agent = Agent(tools=['tool_name'])  # ⚠️ DEPRECATED
+```
+
+**New (recommended):**
+```python
+from vel import ToolSpec
+
+tool = ToolSpec.from_function(your_function)
+agent = Agent(tools=[tool])  # ✅ No registration needed!
+```
+
+See [Migration Guide](#migration-guide-global-registry--instance-tools-v20) below for details.
+
+---
+
 ## Quick Start
 
 ### API Key Configuration
@@ -182,14 +206,21 @@ This makes Vel suitable for:
 
 ```python
 import asyncio
-from vel import Agent
+from vel import Agent, ToolSpec
+
+# Define a tool
+def get_weather(city: str) -> dict:
+    """Get weather for a city."""
+    return {'temp': 72, 'condition': 'sunny'}
+
+weather_tool = ToolSpec.from_function(get_weather)
 
 async def main():
     # Option 1: Use environment variable (OPENAI_API_KEY)
     agent = Agent(
         id='chat-general:v1',
         model={'provider': 'openai', 'model': 'gpt-4o'},
-        tools=['get_weather'],
+        tools=[weather_tool],  # Pass ToolSpec directly
         policies={'max_steps': 8}
     )
 
@@ -197,7 +228,7 @@ async def main():
     agent = Agent(
         id='chat-general:v1',
         model={'provider': 'openai', 'model': 'gpt-4o', 'api_key': 'sk-...'},
-        tools=['get_weather'],
+        tools=[weather_tool],  # Pass ToolSpec directly
         policies={'max_steps': 8}
     )
 
@@ -738,6 +769,87 @@ Vel is designed following the [12-Factor Agent principles](https://github.com/hu
 - [ ] Stress test RLM with real-world large documents
 - [x] ~~Update ReasoningBank to include e2e implementation as described in Google's paper~~ (Phase 1 complete, see `docs/Memory/reasoningbank-phase2-roadmap.md` for Phase 2)
 - [x] ~~Add RLM (Recursive Language Model) support for long contexts~~ (Complete - see `docs/rlm.md`)
+
+## Migration Guide: Global Registry → Instance Tools (v2.0)
+
+**Status:** Global tool registration is deprecated in v0.3.0 and will be removed in v2.0.
+
+### What's Changing
+
+**Before (v0.x - Deprecated):**
+```python
+from vel import ToolSpec, register_tool, Agent
+
+# Register globally
+tool = ToolSpec(name='get_weather', input_schema={...}, output_schema={...}, handler=my_handler)
+register_tool(tool)  # ⚠️ DEPRECATED
+
+# Use by string
+agent = Agent(tools=['get_weather'])  # ⚠️ DEPRECATED
+```
+
+**After (v2.0 - Recommended):**
+```python
+from vel import ToolSpec, Agent
+
+# Define function
+def get_weather(city: str) -> dict:
+    """Get weather for a city."""
+    return {'temp': 72, 'condition': 'sunny'}
+
+# Wrap in ToolSpec (auto-generates schemas)
+tool = ToolSpec.from_function(get_weather)
+
+# Pass directly to agent
+agent = Agent(tools=[tool])  # ✅ No registration needed!
+```
+
+### Why?
+
+1. **No Global State** - Tools scoped to agent instances
+2. **Type Safety** - No string magic, IDE autocomplete works
+3. **Better Testing** - No need to mock global registries
+4. **Runtime Tools** - Create tools dynamically (perfect for UIs)
+5. **Industry Standard** - Matches OpenAI Agents SDK pattern
+
+### Migration Steps
+
+1. **Replace `register_tool()` calls:**
+   ```python
+   # Before
+   register_tool(ToolSpec(...))
+
+   # After
+   tool = ToolSpec.from_function(your_function)
+   ```
+
+2. **Update Agent initialization:**
+   ```python
+   # Before
+   agent = Agent(tools=['tool_name'])
+
+   # After
+   agent = Agent(tools=[tool])
+   ```
+
+3. **For shared tools, define once and reuse:**
+   ```python
+   shared_tool = ToolSpec.from_function(my_function)
+   agent1 = Agent(tools=[shared_tool])
+   agent2 = Agent(tools=[shared_tool])
+   ```
+
+### Timeline
+
+- **v0.3.0** (Current): Deprecation warnings added, old code still works
+- **v1.x**: Warnings continue, old code still works
+- **v2.0**: Breaking changes - `register_tool()` removed, `Agent` only accepts `List[ToolSpec]`
+
+### Examples
+
+See `examples/dynamic_tools.py` for complete migration examples.
+
+---
 
 ## License
 
