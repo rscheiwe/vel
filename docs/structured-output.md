@@ -164,22 +164,103 @@ except StructuredOutputValidationError as e:
 
 ## Streaming with Structured Output
 
-Structured output works with streaming, but validation happens at the end:
+Vel supports **progressive structured output streaming** - you get validated data as it streams, not just at the end.
+
+### Array Streaming (List[X])
+
+When `output_type` is a `List[Model]`, Vel emits `data-object-element` events as each array item completes:
 
 ```python
+from typing import List
+from pydantic import BaseModel
+
+class AIAgent(BaseModel):
+    name: str
+    description: str
+    use_case: str
+
 agent = Agent(
-    id='my-agent',
+    id='agent-generator',
     model={'provider': 'openai', 'model': 'gpt-4o'},
-    output_type=MySchema
+    output_type=List[AIAgent]  # Array mode - streams elements one-by-one
 )
 
-async for event in agent.run_stream({'message': 'Generate tasks'}):
+async for event in agent.run_stream({'message': 'Generate 5 AI agent ideas'}):
     if event['type'] == 'text-delta':
-        # Stream JSON as it's generated
+        # Raw JSON tokens (for debugging or custom parsing)
         print(event['delta'], end='')
-    elif event['type'] == 'error':
-        # Validation failure
-        print(f"Error: {event['error']}")
+
+    elif event['type'] == 'data-object-element':
+        # Validated array element - update UI immediately!
+        agent_data = event['data']['element']
+        index = event['data']['index']
+        print(f"Agent {index}: {agent_data['name']}")
+
+    elif event['type'] == 'data-object-complete':
+        # Final validated array
+        all_agents = event['data']['object']
+        print(f"Total: {len(all_agents)} agents")
+```
+
+### Object Streaming (Single Model)
+
+When `output_type` is a single Pydantic model, Vel emits `data-object-partial` events as fields complete:
+
+```python
+class WeatherResponse(BaseModel):
+    city: str
+    temperature: float
+    conditions: str
+    humidity: int
+
+agent = Agent(
+    id='weather-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o'},
+    output_type=WeatherResponse  # Object mode - streams partial updates
+)
+
+async for event in agent.run_stream({'message': 'Weather in Tokyo?'}):
+    if event['type'] == 'data-object-partial':
+        # Partial object with fields parsed so far
+        partial = event['data']['partial']
+        if 'city' in partial:
+            print(f"City: {partial['city']}")
+        if 'temperature' in partial:
+            print(f"Temp: {partial['temperature']}")
+
+    elif event['type'] == 'data-object-complete':
+        # Final validated object
+        weather = event['data']['object']
+        print(f"Complete: {weather}")
+```
+
+### Event Types
+
+| Event | When | Data |
+|-------|------|------|
+| `text-delta` | Every token | `{delta: "..."}` - raw JSON text |
+| `data-object-element` | Array item complete | `{index: N, element: {...}}` - validated item |
+| `data-object-partial` | Object field complete | `{partial: {...}}` - partial object (unvalidated) |
+| `data-object-complete` | Stream finished | `{object: ..., mode: "array"\|"object"}` - final validated output |
+
+### Frontend Integration (useChat)
+
+These events work with Vercel AI SDK's `useChat` hook via the `onData` handler:
+
+```javascript
+const { messages, sendMessage } = useChat({
+  api: '/api/chat',
+  onData: (data) => {
+    if (data.type === 'data-object-element') {
+      // Progressive array element
+      setItems(prev => [...prev, data.data.element]);
+    }
+    if (data.type === 'data-object-complete') {
+      // Final validated data
+      setFinalResult(data.data.object);
+    }
+  }
+});
 ```
 
 ## Complex Schemas

@@ -21,7 +21,12 @@ from .providers import ProviderRegistry
 from .tools import ToolRegistry, ToolSpec, validate_io
 from .events import (
     StreamEvent, StartEvent, FinishEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
-    ErrorEvent, FinishMessageEvent, StepStartEvent, StepFinishEvent
+    ErrorEvent, FinishMessageEvent, StepStartEvent, StepFinishEvent,
+    ObjectElementEvent, ObjectPartialEvent, ObjectCompleteEvent
+)
+from .core.json_stream_parser import (
+    IncrementalJsonParser, detect_output_mode, get_element_type, OutputMode,
+    StreamedElement, PartialObject
 )
 from .prompts import PromptContextManager
 
@@ -839,6 +844,15 @@ class Agent:
                 usage = None
                 response_metadata = None
 
+                # Initialize incremental JSON parser for structured output streaming
+                json_parser = None
+                output_mode = OutputMode.TEXT
+                if self.output_type:
+                    output_mode = detect_output_mode(self.output_type)
+                    if output_mode != OutputMode.TEXT:
+                        element_type = get_element_type(self.output_type) if output_mode == OutputMode.ARRAY else None
+                        json_parser = IncrementalJsonParser(self.output_type, element_type)
+
                 # Stream from provider and forward events
                 # Get schemas from instance tools + global registry
                 tool_schemas = self._get_tool_schemas()
@@ -870,6 +884,21 @@ class Agent:
                     # Track text content
                     if event.type == 'text-delta':
                         full_text.append(event.delta)
+
+                        # Feed incremental JSON parser for structured output streaming
+                        if json_parser and event.delta:
+                            for parsed in json_parser.feed(event.delta):
+                                if isinstance(parsed, StreamedElement):
+                                    # Emit data-object-element for array items
+                                    yield ObjectElementEvent(
+                                        index=parsed.index,
+                                        element=parsed.element
+                                    ).to_dict()
+                                elif isinstance(parsed, PartialObject):
+                                    # Emit data-object-partial for object updates
+                                    yield ObjectPartialEvent(
+                                        partial=parsed.partial
+                                    ).to_dict()
 
                     # Track tool calls (V5 UI Stream Protocol)
                     elif event.type == 'tool-input-available':
@@ -914,8 +943,12 @@ class Agent:
                     # Validate structured output if output_type is set
                     if self.output_type:
                         try:
-                            parse_structured_output(answer, self.output_type)
-                            # Validation passed
+                            validated_object = parse_structured_output(answer, self.output_type)
+                            # Validation passed - emit data-object-complete event
+                            yield ObjectCompleteEvent(
+                                object=validated_object,
+                                mode='array' if output_mode == OutputMode.ARRAY else 'object'
+                            ).to_dict()
                         except Exception as e:
                             structured_output_attempts += 1
                             policy = self.structured_output_policy

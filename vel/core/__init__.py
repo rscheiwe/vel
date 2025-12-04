@@ -28,6 +28,14 @@ from .structured_output import (
     get_retry_prompt,
     get_json_mode_system_prompt,
 )
+from .json_stream_parser import (
+    IncrementalJsonParser,
+    OutputMode,
+    detect_output_mode,
+    get_element_type,
+    StreamedElement,
+    PartialObject,
+)
 from .hooks import (
     HookEvent,
     StepStartHookEvent,
@@ -70,6 +78,13 @@ __all__ = [
     'parse_structured_output',
     'get_retry_prompt',
     'get_json_mode_system_prompt',
+    # JSON stream parser (structured output streaming)
+    'IncrementalJsonParser',
+    'OutputMode',
+    'detect_output_mode',
+    'get_element_type',
+    'StreamedElement',
+    'PartialObject',
     # Hooks
     'HookEvent',
     'StepStartHookEvent',

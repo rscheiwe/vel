@@ -513,3 +513,109 @@ class RlmCompleteEvent(DataEvent):
             },
             'transient': True
         }
+
+
+# ============================================================================
+# Structured Output Streaming Events
+# ============================================================================
+# Custom events for streaming structured output (arrays and objects)
+# These work with useChat's onData handler when output_type is set
+
+@dataclass
+class ObjectElementEvent(DataEvent):
+    """Emitted when a complete array element is parsed and validated.
+
+    Used when output_type is List[X] - streams validated elements one-by-one.
+
+    Example:
+        output_type=List[AIAgent] will emit this for each agent as it's parsed.
+    """
+    type: str = 'data-object-element'
+    index: int = 0
+    element: Any = None  # The validated Pydantic instance (serialized to dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        # Serialize Pydantic model to dict if needed
+        element_data = self.element
+        if hasattr(self.element, 'model_dump'):
+            element_data = self.element.model_dump()
+        elif hasattr(self.element, 'dict'):
+            element_data = self.element.dict()
+
+        return {
+            'type': self.type,
+            'data': {
+                'index': self.index,
+                'element': element_data
+            },
+            'transient': True  # Don't save to message history
+        }
+
+
+@dataclass
+class ObjectPartialEvent(DataEvent):
+    """Emitted when object fields are updated during streaming.
+
+    Used when output_type is a single Pydantic model - streams partial updates.
+    Note: Partial objects are NOT validated (may be incomplete).
+
+    Example:
+        output_type=WeatherResponse will emit this as each field is parsed.
+    """
+    type: str = 'data-object-partial'
+    partial: Dict[str, Any] = None  # Partial dict with fields parsed so far
+
+    def __post_init__(self):
+        if self.partial is None:
+            self.partial = {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.type,
+            'data': {
+                'partial': self.partial
+            },
+            'transient': True
+        }
+
+
+@dataclass
+class ObjectCompleteEvent(DataEvent):
+    """Emitted when the full structured output is complete and validated.
+
+    Sent at the end of streaming with the final validated object/array.
+
+    Example:
+        For output_type=List[AIAgent], contains the full validated list.
+        For output_type=WeatherResponse, contains the validated object.
+    """
+    type: str = 'data-object-complete'
+    object: Any = None  # The validated Pydantic instance (serialized to dict)
+    mode: str = 'object'  # 'object' or 'array'
+
+    def to_dict(self) -> Dict[str, Any]:
+        # Serialize Pydantic model to dict if needed
+        object_data = self.object
+        if hasattr(self.object, 'model_dump'):
+            object_data = self.object.model_dump()
+        elif hasattr(self.object, 'dict'):
+            object_data = self.object.dict()
+        elif isinstance(self.object, list):
+            # List of Pydantic models
+            object_data = []
+            for item in self.object:
+                if hasattr(item, 'model_dump'):
+                    object_data.append(item.model_dump())
+                elif hasattr(item, 'dict'):
+                    object_data.append(item.dict())
+                else:
+                    object_data.append(item)
+
+        return {
+            'type': self.type,
+            'data': {
+                'object': object_data,
+                'mode': self.mode
+            },
+            'transient': False  # Save to message history
+        }
