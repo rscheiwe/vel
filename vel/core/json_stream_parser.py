@@ -279,7 +279,21 @@ class IncrementalJsonParser:
             # Parse
             data = json.loads(json_str)
 
-            # Validate with output_type
+            # Handle array mode - validate each element with element_type
+            if self.mode == OutputMode.ARRAY and isinstance(data, list):
+                if self.element_type:
+                    validated_list = []
+                    for item in data:
+                        if hasattr(self.element_type, 'model_validate'):
+                            validated_list.append(self.element_type.model_validate(item))
+                        elif hasattr(self.element_type, 'parse_obj'):
+                            validated_list.append(self.element_type.parse_obj(item))
+                        else:
+                            validated_list.append(self.element_type(**item) if isinstance(item, dict) else item)
+                    return validated_list
+                return data
+
+            # Handle object mode - validate with output_type directly
             if hasattr(self.output_type, 'model_validate'):
                 return self.output_type.model_validate(data)
             elif hasattr(self.output_type, 'parse_obj'):
