@@ -39,6 +39,7 @@ class Agent:
                  prompt_vars: Optional[Dict[str, Any]]=None,
                  generation_config: Optional[Dict[str, Any]]=None,
                  rlm: Optional[Dict[str, Any]]=None,
+                 thinking: Optional[Any]=None,  # ThinkingConfig for extended thinking
                  tool_context: Optional[Dict[str, Any]]=None,
                  # Guardrails
                  input_guardrails: Optional[List]=None,
@@ -118,6 +119,11 @@ class Agent:
             rlm: RLM (Recursive Language Model) configuration for handling long contexts
                 Dictionary that will be converted to RlmConfig. Set 'enabled': True to activate.
                 See RlmConfig for full options.
+
+            thinking: Extended Thinking configuration (ThinkingConfig or dict).
+                Enables multi-pass reasoning (Analyze -> Critique -> Refine -> Conclude).
+                Example: ThinkingConfig(mode='reflection', max_refinements=3)
+                See vel.thinking.ThinkingConfig for options.
 
             tool_context: Optional context dict to pass to all tool handlers via ctx parameter.
                 Useful for passing shared resources like storage backends, database connections, etc.
@@ -215,6 +221,15 @@ class Agent:
                 self.rlm_config = RlmConfig(**rlm)
             else:
                 self.rlm_config = rlm
+
+        # Extended Thinking configuration
+        self.thinking_config = None
+        if thinking:
+            from .thinking import ThinkingConfig
+            if isinstance(thinking, dict):
+                self.thinking_config = ThinkingConfig(**thinking)
+            else:
+                self.thinking_config = thinking
 
         # Handle backwards compatibility for session_storage
         if session_storage is not None:
@@ -738,7 +753,8 @@ class Agent:
         session_id: Optional[str] = None,
         generation_config: Optional[Dict[str, Any]] = None,
         context_refs: Optional[Any] = None,
-        rlm: Optional[Dict[str, Any]] = None
+        rlm: Optional[Dict[str, Any]] = None,
+        thinking: Optional[Any] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streaming run - yields stream protocol events as they occur.
@@ -763,6 +779,7 @@ class Agent:
             generation_config: Optional per-run generation config that overrides agent-level config.
             context_refs: Optional context references for RLM (large documents, files, URLs)
             rlm: Optional per-run RLM config that overrides agent-level config
+            thinking: Optional per-run ThinkingConfig for extended thinking (runtime override)
         """
         # Check if RLM is enabled (per-run override or agent-level config)
         rlm_config = None
@@ -782,6 +799,23 @@ class Agent:
                 context_refs=context_refs,
                 session_id=session_id
             ):
+                yield event
+            return
+
+        # Check if Extended Thinking is enabled (per-run override or agent-level config)
+        thinking_config = None
+        if thinking:
+            from .thinking import ThinkingConfig
+            if isinstance(thinking, dict):
+                thinking_config = ThinkingConfig(**thinking)
+            else:
+                thinking_config = thinking
+        elif self.thinking_config and self.thinking_config.mode == 'reflection':
+            thinking_config = self.thinking_config
+
+        # If Extended Thinking is enabled, route to thinking controller
+        if thinking_config and thinking_config.mode == 'reflection':
+            async for event in self._run_with_thinking(input, session_id, thinking_config):
                 yield event
             return
 
@@ -1087,6 +1121,143 @@ class Agent:
             error_event = ErrorEvent(error=str(e))
             yield error_event.to_dict()
             raise
+
+    async def _run_with_thinking(
+        self,
+        input: Dict[str, Any],
+        session_id: Optional[str],
+        config: Any  # ThinkingConfig
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Execute with Extended Thinking enabled.
+
+        Routes to ReflectionController for multi-pass reasoning:
+        Analyze -> Critique -> Refine (adaptive) -> Conclude
+
+        Args:
+            input: Input dict with 'message' or 'messages'
+            session_id: Optional session ID
+            config: ThinkingConfig instance
+
+        Yields:
+            Stream protocol events
+        """
+        from .thinking import ReflectionController
+
+        run_id = str(uuid.uuid4())
+        self.ctxmgr.set_input(run_id, input, session_id)
+
+        # Emit start event
+        yield StartEvent().to_dict()
+
+        # Get provider (use thinking_model if specified)
+        thinking_provider = self._get_thinking_provider(config)
+        model = (
+            config.thinking_model.get('model', self.model_cfg['model'])
+            if config.thinking_model
+            else self.model_cfg['model']
+        )
+
+        # Get tool schemas if thinking_tools enabled
+        tools = self._get_tool_schemas() if config.thinking_tools else None
+
+        # Create controller
+        controller = ReflectionController(
+            provider=thinking_provider,
+            model=model,
+            config=config,
+            tools=tools,
+            tool_executor=self._call_tool
+        )
+
+        # Track accumulated content for storage
+        reasoning_parts = []
+        answer_parts = []
+        thinking_metadata = {}
+
+        # Extract question from input
+        question = input.get('message', str(input))
+
+        # Stream events from controller
+        async for event in controller.run(question):
+            yield event
+
+            # Track for storage
+            event_type = event.get('type')
+            if event_type == 'reasoning-delta':
+                reasoning_parts.append(event.get('delta', ''))
+            elif event_type == 'text-delta':
+                answer_parts.append(event.get('delta', ''))
+            elif event_type == 'data-thinking-complete':
+                thinking_metadata = event.get('data', {})
+
+        # Save to context with multi-part message
+        full_reasoning = ''.join(reasoning_parts)
+        final_answer = ''.join(answer_parts)
+
+        self.ctxmgr.append_assistant_with_reasoning(
+            run_id,
+            full_reasoning,
+            final_answer,
+            thinking_metadata,
+            session_id
+        )
+
+        # Emit finish
+        yield FinishEvent().to_dict()
+
+    def _get_thinking_provider(self, config: Any):
+        """
+        Get provider for thinking steps.
+
+        If config.thinking_model is set and has a different provider,
+        creates a new provider instance. Otherwise, uses the main provider.
+        """
+        if not config.thinking_model:
+            return self._get_provider()
+
+        thinking_provider_name = config.thinking_model.get('provider', self.model_cfg['provider'])
+        thinking_api_key = config.thinking_model.get('api_key')
+
+        # If same provider and no custom API key, use main provider
+        if thinking_provider_name == self.model_cfg['provider'] and not thinking_api_key:
+            return self._get_provider()
+
+        # Create new provider instance for thinking
+        from .providers import OpenAIProvider, GeminiProvider, AnthropicProvider
+
+        if thinking_api_key:
+            if thinking_provider_name == 'openai':
+                return OpenAIProvider(api_key=thinking_api_key)
+            elif thinking_provider_name == 'google':
+                return GeminiProvider(api_key=thinking_api_key)
+            elif thinking_provider_name == 'anthropic':
+                return AnthropicProvider(api_key=thinking_api_key)
+            else:
+                # Fall back to main provider
+                return self._get_provider()
+        else:
+            # Different provider but no custom key - use registry
+            return self.providers.get(thinking_provider_name)
+
+    def _get_tool_schemas(self) -> Dict[str, Any]:
+        """
+        Get tool schemas for all enabled tools.
+
+        Returns dict mapping tool name to JSON schema.
+        """
+        schemas = {}
+        for name in self._tool_names:
+            try:
+                tool = self._get_tool(name)
+                schemas[name] = {
+                    'description': tool.description or f'Tool: {name}',
+                    'parameters': tool.input_schema
+                }
+            except KeyError:
+                pass  # Tool not found, skip
+        return schemas
+
 
 async def run_stream(agent: 'Agent', input: Dict[str, Any]):
     """Helper function for streaming"""
