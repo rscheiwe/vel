@@ -272,6 +272,51 @@ class ContextManager:
         """Append an assistant message"""
         self.append(run_id, {'role': 'assistant', 'content': content}, session_id)
 
+    def append_assistant_with_reasoning(
+        self,
+        run_id: str,
+        reasoning: str,
+        answer: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None
+    ):
+        """
+        Append an assistant message with both reasoning and answer parts.
+
+        Used by Extended Thinking to store the full reasoning trace alongside
+        the final answer. The multi-part content format is compatible with
+        Vercel AI SDK message structure.
+
+        Args:
+            run_id: Run identifier
+            reasoning: The accumulated reasoning text (all phases)
+            answer: The final answer text
+            metadata: Optional thinking metadata (steps, confidence, etc.)
+            session_id: Optional session identifier
+
+        Example:
+            ```python
+            ctx.append_assistant_with_reasoning(
+                run_id='run-123',
+                reasoning='[Analysis]\\n...\\n[Critique]\\n...\\n[Refinement]\\n...',
+                answer='Based on my analysis, the answer is...',
+                metadata={'steps': 5, 'iterations': 2, 'final_confidence': 0.9}
+            )
+            ```
+        """
+        message = {
+            'role': 'assistant',
+            'content': [
+                {'type': 'reasoning', 'text': reasoning},
+                {'type': 'text', 'text': answer}
+            ]
+        }
+
+        if metadata:
+            message['thinking_metadata'] = metadata
+
+        self.append(run_id, message, session_id)
+
     def append_tool_result(self, run_id: str, tool_name: str, result: Any, session_id: Optional[str] = None):
         """Append a tool result as a message"""
         self.append(run_id, {

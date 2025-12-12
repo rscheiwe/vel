@@ -619,3 +619,88 @@ class ObjectCompleteEvent(DataEvent):
             },
             'transient': False  # Save to message history
         }
+
+
+# ============================================================================
+# Extended Thinking Events
+# ============================================================================
+# Custom events for Extended Thinking (multi-pass reasoning)
+# Pattern: Analyze -> Critique -> Refine -> Conclude
+
+@dataclass
+class ThinkingStageEvent(DataEvent):
+    """
+    Transient event for UI progress during thinking phases.
+
+    Emitted at the start of each thinking phase to let the UI
+    show progress (e.g., "Analyzing...", "Refining (60% confident)...").
+
+    Example:
+        {
+            "type": "data-thinking-stage",
+            "data": {"stage": "refining", "step": 3, "iteration": 1, "confidence": 0.6},
+            "transient": true
+        }
+    """
+    type: str = 'data-thinking-stage'
+    stage: str = ''  # 'analyzing', 'critiquing', 'refining', 'concluding'
+    step: int = 0
+    iteration: Optional[int] = None
+    confidence: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {'stage': self.stage, 'step': self.step}
+        if self.iteration is not None:
+            data['iteration'] = self.iteration
+        if self.confidence is not None:
+            data['confidence'] = self.confidence
+        return {
+            'type': self.type,
+            'data': data,
+            'transient': True
+        }
+
+
+@dataclass
+class ThinkingCompleteEvent(DataEvent):
+    """
+    Persistent event with thinking metadata.
+
+    Emitted at the end of thinking with summary information.
+    Saved to message history for analytics and debugging.
+
+    Example:
+        {
+            "type": "data-thinking-complete",
+            "data": {
+                "steps": 5,
+                "iterations": 2,
+                "final_confidence": 0.9,
+                "thinking_tokens": 2450,
+                "thinking_model": "gpt-4o-mini"
+            },
+            "transient": false
+        }
+    """
+    type: str = 'data-thinking-complete'
+    steps: int = 0
+    iterations: int = 0
+    final_confidence: float = 0.0
+    thinking_tokens: Optional[int] = None
+    thinking_model: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            'steps': self.steps,
+            'iterations': self.iterations,
+            'final_confidence': self.final_confidence
+        }
+        if self.thinking_tokens is not None:
+            data['thinking_tokens'] = self.thinking_tokens
+        if self.thinking_model is not None:
+            data['thinking_model'] = self.thinking_model
+        return {
+            'type': self.type,
+            'data': data,
+            'transient': False  # Save to message history
+        }
