@@ -4,9 +4,10 @@ Prompt-aware context manager extending the base ContextManager.
 Integrates prompt templates with conversation context management.
 """
 from __future__ import annotations
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from ..core.context import ContextManager
 from .manager import PromptManager
+from .template import PromptTemplate
 
 
 class PromptContextManager(ContextManager):
@@ -16,16 +17,28 @@ class PromptContextManager(ContextManager):
     Extends ContextManager to automatically inject system prompts from templates
     while maintaining all existing context management features.
 
-    Example:
+    Supports two approaches for providing prompts:
+    1. Dynamic prompts: Pass a PromptTemplate instance directly (recommended)
+    2. Registry prompts: Pass a prompt_id to look up in the global registry
+
+    Example (dynamic prompt - recommended):
+        >>> template = PromptTemplate(
+        ...     id="chat-agent:v1",
+        ...     system="You are {{role_name}}, a helpful assistant."
+        ... )
+        >>> ctx_mgr = PromptContextManager(
+        ...     prompt=template,
+        ...     prompt_vars={"role_name": "Alex"},
+        ...     max_history=20
+        ... )
+
+    Example (registry prompt):
         >>> ctx_mgr = PromptContextManager(
         ...     prompt_id="chat-agent:v1",
         ...     prompt_vars={"role_name": "Alex"},
         ...     prompt_env="prod",
         ...     max_history=20
         ... )
-        >>> ctx_mgr.set_input(run_id, {"message": "Hello"})
-        >>> messages = ctx_mgr.messages_for_llm(run_id)
-        # Messages will include rendered system prompt
     """
 
     def __init__(
@@ -34,23 +47,36 @@ class PromptContextManager(ContextManager):
         prompt_vars: Optional[Dict[str, Any]] = None,
         prompt_env: str = 'prod',
         max_history: Optional[int] = None,
-        summarize: bool = False
+        summarize: bool = False,
+        prompt: Optional[PromptTemplate] = None
     ):
         """
         Initialize prompt-aware context manager.
 
         Args:
-            prompt_id: ID of prompt template to use
+            prompt_id: ID of prompt template to look up in registry (legacy approach)
             prompt_vars: Variables for prompt rendering
             prompt_env: Environment for prompt (dev/staging/prod)
             max_history: Maximum number of messages to retain (None = unlimited)
             summarize: Whether to summarize old messages (not yet implemented)
+            prompt: PromptTemplate instance to use directly (preferred approach)
+
+        Note:
+            If both `prompt` and `prompt_id` are provided, `prompt` takes precedence.
         """
         super().__init__(max_history=max_history, summarize=summarize)
 
-        # Initialize prompt manager if prompt_id provided
+        # Initialize prompt manager if prompt or prompt_id provided
         self.prompt_manager: Optional[PromptManager] = None
-        if prompt_id:
+        if prompt is not None:
+            # Dynamic prompt - use directly (no registration needed!)
+            self.prompt_manager = PromptManager(
+                template=prompt,
+                prompt_vars=prompt_vars,
+                environment=prompt_env
+            )
+        elif prompt_id:
+            # Registry lookup
             self.prompt_manager = PromptManager(
                 prompt_id=prompt_id,
                 prompt_vars=prompt_vars,

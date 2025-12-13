@@ -18,6 +18,18 @@ class PromptManager:
     Manager for prompt templates in Agent execution.
 
     Bridges PromptTemplate system with Agent's message flow.
+
+    Supports two approaches for providing prompts:
+    1. Dynamic prompts: Pass a PromptTemplate instance directly (recommended)
+    2. Registry prompts: Pass a prompt_id to look up in the global registry
+
+    Example (dynamic):
+        >>> template = PromptTemplate(id='my-prompt', system='You are {{role}}')
+        >>> manager = PromptManager(template=template, prompt_vars={'role': 'assistant'})
+
+    Example (registry):
+        >>> register_prompt(template)
+        >>> manager = PromptManager(prompt_id='my-prompt', prompt_vars={'role': 'assistant'})
     """
 
     def __init__(
@@ -25,26 +37,38 @@ class PromptManager:
         prompt_id: Optional[str] = None,
         prompt_vars: Optional[Dict[str, Any]] = None,
         environment: str = 'prod',
-        registry: Optional[PromptRegistry] = None
+        registry: Optional[PromptRegistry] = None,
+        template: Optional[PromptTemplate] = None
     ):
         """
         Initialize prompt manager.
 
         Args:
-            prompt_id: ID of prompt template to use
+            prompt_id: ID of prompt template to look up in registry (legacy approach)
             prompt_vars: Variables for prompt rendering
             environment: Environment to use (dev/staging/prod)
             registry: PromptRegistry instance (defaults to singleton)
+            template: PromptTemplate instance to use directly (preferred approach)
+
+        Note:
+            If both `template` and `prompt_id` are provided, `template` takes precedence.
         """
-        self.prompt_id = prompt_id
         self.prompt_vars = prompt_vars or {}
         self.environment = environment
         self.registry = registry or PromptRegistry.default()
         self._template: Optional[PromptTemplate] = None
 
-        # Load template if prompt_id provided
-        if self.prompt_id:
+        # Prefer direct template over registry lookup
+        if template is not None:
+            # Dynamic prompt - use directly (no registration needed!)
+            self._template = template
+            self.prompt_id = template.id
+        elif prompt_id:
+            # Registry lookup
+            self.prompt_id = prompt_id
             self._load_template()
+        else:
+            self.prompt_id = None
 
     def _load_template(self) -> None:
         """Load template from registry"""

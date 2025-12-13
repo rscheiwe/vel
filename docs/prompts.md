@@ -20,10 +20,14 @@ The prompt module provides:
 
 ## Quick Start
 
-### Basic Template
+**Vel supports two approaches for providing prompt templates:**
+
+### Approach 1: Dynamic Prompts (Recommended)
+
+Pass `PromptTemplate` instances directly to agents without global registration:
 
 ```python
-from vel import Agent, PromptTemplate, register_prompt
+from vel import Agent, PromptTemplate
 
 # Define a template
 template = PromptTemplate(
@@ -41,18 +45,63 @@ template = PromptTemplate(
     variables={"role_name": "Alex"}
 )
 
-# Register globally
-register_prompt(template)
-
-# Use with Agent
+# Pass directly to agent (no registration needed!)
 agent = Agent(
     id='chat-assistant:v1',
     model={'provider': 'anthropic', 'model': 'claude-sonnet-4'},
-    prompt_id='chat-assistant:v1',
+    prompt=template,  # ✅ Instance-scoped, no global state
     prompt_vars={'role_name': 'Sarah'},
     prompt_env='prod'
 )
 ```
+
+**Benefits:**
+- ✅ No global registration required
+- ✅ Prompts scoped to agent instance
+- ✅ Enables runtime/UI prompt creation
+- ✅ Perfect for prompts stored in databases or APIs
+- ✅ Jinja2 templating with variable interpolation
+
+### Approach 2: Global Registry (Legacy)
+
+Register prompts globally for reuse across agents:
+
+```python
+from vel import Agent, PromptTemplate, register_prompt
+
+# Define and register template
+template = PromptTemplate(
+    id="chat-assistant:v1",
+    system="""
+    <system_instructions>
+      <role>You are {{role_name}}, a helpful AI assistant.</role>
+    </system_instructions>
+    """,
+    variables={"role_name": "Alex"}
+)
+
+# Register globally
+register_prompt(template)
+
+# Use by ID
+agent = Agent(
+    id='chat-assistant:v1',
+    model={'provider': 'anthropic', 'model': 'claude-sonnet-4'},
+    prompt_id='chat-assistant:v1',  # String reference to global registry
+    prompt_vars={'role_name': 'Sarah'},
+    prompt_env='prod'
+)
+```
+
+**When to use each approach:**
+
+| Scenario | Recommended Method |
+|----------|-------------------|
+| Prompts from database/API | Dynamic prompts (`prompt=`) |
+| User-created prompts at runtime | Dynamic prompts (`prompt=`) |
+| Shared prompts across many agents | Global registry (`prompt_id=`) |
+| Testing/development | Dynamic prompts (`prompt=`) |
+| Static, version-controlled prompts | Either approach works |
 
 ## Core Concepts
 
@@ -212,12 +261,14 @@ prompt = builder.build()
 
 ## Integration with Agent
 
-### Option 1: Using prompt_id (Recommended)
+### Option 1: Dynamic Prompts (Recommended)
+
+Pass `PromptTemplate` instances directly to agents - no registration needed:
 
 ```python
-from vel import Agent, PromptTemplate, register_prompt
+from vel import Agent, PromptTemplate
 
-# 1. Create and register template
+# 1. Create template (can come from database, API, or user input)
 template = PromptTemplate(
     id="customer-support:v1",
     system="""
@@ -236,13 +287,12 @@ template = PromptTemplate(
         "company_name": "Acme Corp"
     }
 )
-register_prompt(template)
 
-# 2. Create agent with prompt
+# 2. Pass directly to agent (no registration!)
 agent = Agent(
     id='customer-support:v1',
     model={'provider': 'anthropic', 'model': 'claude-sonnet-4'},
-    prompt_id='customer-support:v1',
+    prompt=template,  # ✅ Direct instance
     prompt_vars={
         'agent_name': 'Emily',
         'company_name': 'Acme Corporation'
@@ -254,17 +304,43 @@ agent = Agent(
 answer = await agent.run({'message': 'I need help with my order'})
 ```
 
-### Option 2: Using PromptContextManager
+### Option 2: Using prompt_id (Registry Lookup)
 
 ```python
-from vel import Agent, PromptContextManager, register_prompt
+from vel import Agent, PromptTemplate, register_prompt
 
-# Register template
+# 1. Create and register template
+template = PromptTemplate(
+    id="customer-support:v1",
+    system="""...""",
+    variables={"agent_name": "Support Assistant"}
+)
 register_prompt(template)
+
+# 2. Create agent with prompt_id
+agent = Agent(
+    id='customer-support:v1',
+    model={'provider': 'anthropic', 'model': 'claude-sonnet-4'},
+    prompt_id='customer-support:v1',  # Lookup by ID
+    prompt_vars={'agent_name': 'Emily'},
+    prompt_env='prod'
+)
+```
+
+### Option 3: Using PromptContextManager
+
+```python
+from vel import Agent, PromptTemplate, PromptContextManager
+
+# Create template
+template = PromptTemplate(
+    id='customer-support:v1',
+    system="""..."""
+)
 
 # Create custom context manager with prompt support
 ctx_mgr = PromptContextManager(
-    prompt_id='customer-support:v1',
+    prompt=template,  # Direct instance (or use prompt_id for registry)
     prompt_vars={'agent_name': 'Emily'},
     prompt_env='prod',
     max_history=20  # Limit context window
@@ -278,7 +354,7 @@ agent = Agent(
 )
 ```
 
-### Option 3: Backwards Compatible (No Prompts)
+### Option 4: Backwards Compatible (No Prompts)
 
 ```python
 # Existing code continues to work without changes
@@ -645,13 +721,25 @@ messages = ContextCompactor.sliding_window(messages, max_messages=10)
 
 ## Examples
 
-See `examples/prompt_templates.py` for comprehensive examples including:
+### Dynamic Prompts (Recommended)
+
+See `examples/dynamic_prompts.py` for comprehensive examples including:
+- Creating prompts without global registration
+- Passing PromptTemplate instances directly to agents
+- Runtime prompt creation (from database/API)
+- Environment-specific prompts (dev/staging/prod)
+- Updating prompt variables at runtime
+- RAG context injection
+- Content review workflows
+
+### Registry-Based Prompts
+
+See `examples/prompt_templates.py` for examples using global registration:
 - Basic templates
 - Environment-based prompts
 - SystemPromptBuilder usage
 - Agent integration
 - Versioned prompts
-- Dynamic context injection
 - Custom context managers
 
 ## 12-Factor Alignment

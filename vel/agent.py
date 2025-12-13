@@ -28,7 +28,7 @@ from .core.json_stream_parser import (
     IncrementalJsonParser, detect_output_mode, get_element_type, OutputMode,
     StreamedElement, PartialObject
 )
-from .prompts import PromptContextManager
+from .prompts import PromptContextManager, PromptTemplate
 
 class Agent:
     def __init__(self, id: str, model: Dict[str, Any], prompt_env: str='prod',
@@ -37,6 +37,7 @@ class Agent:
                  session_persistence: Optional[Literal['transient', 'persistent']]=None,
                  prompt_id: Optional[str]=None,
                  prompt_vars: Optional[Dict[str, Any]]=None,
+                 prompt: Optional['PromptTemplate']=None,
                  generation_config: Optional[Dict[str, Any]]=None,
                  rlm: Optional[Dict[str, Any]]=None,
                  thinking: Optional[Any]=None,  # ThinkingConfig for extended thinking
@@ -102,8 +103,12 @@ class Agent:
                 - 'persistent': Database-backed (survives restarts, requires PostgreSQL)
                 - None: defaults to 'transient'
 
-            prompt_id: Optional prompt template ID (e.g., 'chat-agent:v1')
+            prompt_id: Optional prompt template ID to look up in registry (legacy approach)
             prompt_vars: Optional variables for prompt template rendering
+            prompt: Optional PromptTemplate instance to use directly (preferred approach).
+                    When provided, no registry lookup is needed. Example:
+                    - prompt=PromptTemplate(id='my-agent', system='You are {{role}}')
+                    Note: If both `prompt` and `prompt_id` are provided, `prompt` takes precedence.
 
             generation_config: Model generation parameters (temperature, max_tokens, etc.)
                 Common parameters:
@@ -278,8 +283,15 @@ class Agent:
         if context_manager is not None:
             # User provided custom context manager - use as-is
             self.ctxmgr = context_manager
+        elif prompt is not None:
+            # Dynamic prompt template provided - use PromptContextManager (preferred)
+            self.ctxmgr = PromptContextManager(
+                prompt=prompt,
+                prompt_vars=prompt_vars,
+                prompt_env=prompt_env
+            )
         elif prompt_id:
-            # Prompt template provided - use PromptContextManager
+            # Prompt template ID provided - look up in registry (legacy)
             self.ctxmgr = PromptContextManager(
                 prompt_id=prompt_id,
                 prompt_vars=prompt_vars,
