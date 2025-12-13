@@ -191,45 +191,69 @@ async def session_example():
 ### With Tools
 
 ```python
-from vel import Agent, ToolSpec, register_tool
+from vel import Agent, ToolSpec
 
-# Define a custom tool
-def get_weather_handler(input: dict, ctx: dict) -> dict:
-    city = input['city']
+# Define a custom tool (no registration needed!)
+def get_weather(city: str) -> dict:
+    """Get weather for a city."""
     return {'temp_f': 72, 'condition': 'sunny', 'city': city}
 
-weather_tool = ToolSpec(
-    name='get_weather',
-    input_schema={
-        'type': 'object',
-        'properties': {'city': {'type': 'string'}},
-        'required': ['city']
-    },
-    output_schema={
-        'type': 'object',
-        'properties': {
-            'temp_f': {'type': 'number'},
-            'condition': {'type': 'string'},
-            'city': {'type': 'string'}
-        },
-        'required': ['temp_f', 'condition', 'city']
-    },
-    handler=get_weather_handler
-)
-
-register_tool(weather_tool)
+# Create tool from function
+weather_tool = ToolSpec.from_function(get_weather)
 
 # Use the agent with tools
 async def tool_example():
     agent = Agent(
         id='my-agent',
         model={'provider': 'openai', 'model': 'gpt-4o'},
-        tools=['get_weather']
+        tools=[weather_tool]  # Pass directly, no registration!
     )
 
     answer = await agent.run({'message': 'What is the weather in New York?'})
     print(answer)  # Agent will call the tool and respond
 ```
+
+### With Prompt Templates
+
+```python
+from vel import Agent, PromptTemplate
+
+# Define a prompt template (no registration needed!)
+template = PromptTemplate(
+    id="assistant:v1",
+    system="""
+    <system_instructions>
+      <role>You are {{role_name}}, an expert in {{domain}}.</role>
+      <guidelines>
+        - Be concise and accurate
+        - Cite sources when possible
+      </guidelines>
+    </system_instructions>
+    """
+)
+
+async def prompt_example():
+    agent = Agent(
+        id='assistant',
+        model={'provider': 'openai', 'model': 'gpt-4o'},
+        prompt=template,  # Pass directly, no registration!
+        prompt_vars={
+            'role_name': 'Dr. Smith',
+            'domain': 'medical information'
+        }
+    )
+
+    answer = await agent.run({'message': 'What causes headaches?'})
+    print(answer)
+```
+
+This enables powerful use cases:
+- **Prompts from database/API** - Load templates at runtime
+- **User-created prompts** - Let users customize agent behavior
+- **A/B testing** - Test different prompt versions
+- **Per-tenant customization** - Different prompts for different customers
+
+See [Prompt Templates](prompts.md) for more details.
 
 ### Message Aggregation
 
@@ -368,6 +392,7 @@ The translator layer can be reused across different orchestration strategies wit
 ## Next Steps
 
 - [Session Management](sessions.md) - Learn about multi-turn conversations
+- [Prompt Templates](prompts.md) - Dynamic system prompts with Jinja2 templating
 - [Providers](providers.md) - Configure OpenAI, Gemini, and Claude
 - [Tools](tools.md) - Create custom tools
 - [Stream Protocol](stream-protocol.md) - Understand streaming events and custom data-* events for RAG, progress tracking, and analytics

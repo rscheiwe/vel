@@ -80,4 +80,62 @@ agent = Agent(
 - ✓ Session persistence enables multi-hour workflows
 - ✓ Clear audit trail of human decisions
 
-**See:** [Tools - Async Tools](../tools#async-tool)
+## Frontend Integration
+
+Vel's stream protocol emits tool events that frontends can use to render approval UIs:
+
+```
+tool-input-start      → Show "Requesting approval..."
+tool-input-available  → Render approval card with action/reason
+[human decision]      → User clicks approve/reject
+tool-output-available → Display result, agent continues
+```
+
+**Quick example with Vercel AI SDK:**
+
+```jsx
+import { useChat } from 'ai/react';
+
+function Chat() {
+  const [pendingApproval, setPendingApproval] = useState(null);
+
+  const { messages } = useChat({
+    api: '/api/chat',
+    onToolCall: ({ toolCall }) => {
+      if (toolCall.toolName === 'request_approval') {
+        setPendingApproval({
+          id: toolCall.toolCallId,
+          action: toolCall.args.action,
+          reason: toolCall.args.reason
+        });
+      }
+    }
+  });
+
+  const handleApprove = async (approved) => {
+    await fetch(`/api/approvals/${pendingApproval.id}`, {
+      method: 'POST',
+      body: JSON.stringify({ approved })
+    });
+    setPendingApproval(null);
+  };
+
+  return (
+    <div>
+      {/* Chat messages */}
+      {pendingApproval && (
+        <ApprovalCard
+          action={pendingApproval.action}
+          reason={pendingApproval.reason}
+          onApprove={() => handleApprove(true)}
+          onReject={() => handleApprove(false)}
+        />
+      )}
+    </div>
+  );
+}
+```
+
+**See:** [HITL Frontend Integration Guide](../hitl-frontend) for complete implementation with React components, streaming events, and end-to-end examples.
+
+**See also:** [Tools - Async Tools](../tools#async-tool)
