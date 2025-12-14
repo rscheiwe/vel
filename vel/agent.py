@@ -1252,24 +1252,6 @@ class Agent:
             # Different provider but no custom key - use registry
             return self.providers.get(thinking_provider_name)
 
-    def _get_tool_schemas(self) -> Dict[str, Any]:
-        """
-        Get tool schemas for all enabled tools.
-
-        Returns dict mapping tool name to JSON schema.
-        """
-        schemas = {}
-        for name in self._tool_names:
-            try:
-                tool = self._get_tool(name)
-                schemas[name] = {
-                    'description': tool.description or f'Tool: {name}',
-                    'parameters': tool.input_schema
-                }
-            except KeyError:
-                pass  # Tool not found, skip
-        return schemas
-
 
 async def run_stream(agent: 'Agent', input: Dict[str, Any]):
     """Helper function for streaming"""
