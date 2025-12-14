@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import json
 import warnings
 import logging
 import uuid
@@ -749,8 +750,29 @@ class Agent:
                         return final_answer
                 steps += 1
                 if steps > self.policies.get('max_steps', 24):
-                    msg = 'max steps exceeded'
-                    raise RuntimeError(msg)
+                    # Max steps exceeded - make one final LLM call WITHOUT tools to synthesize a response
+                    logger.warning(f'max steps ({self.policies.get("max_steps", 24)}) exceeded, making final synthesis call')
+
+                    # Add a message to guide the final response
+                    synthesis_msg = {
+                        'role': 'user',
+                        'content': 'You have reached the maximum number of steps. Please synthesize a response based on the information you have gathered so far. Do not call any more tools.'
+                    }
+                    self.ctxmgr.append(run_id, synthesis_msg, session_id)
+
+                    # Make final LLM call without tools
+                    messages = self.ctxmgr.messages_for_llm(run_id, session_id)
+                    system_prompt = self._get_system_prompt(run_id)
+                    if system_prompt:
+                        messages = [{'role': 'system', 'content': system_prompt}] + messages
+
+                    provider = self._get_provider()
+                    response = await provider.generate(messages, self.model_cfg.get('model', 'gpt-4o'), tools=[])
+
+                    final_answer = response.get('answer', 'Unable to complete the request within the allowed steps.')
+                    self.ctxmgr.append_assistant_message(run_id, final_answer, session_id)
+                    return final_answer
+
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1026,6 +1048,26 @@ class Agent:
 
                 # If we got tool calls, execute them and continue
                 if tool_calls:
+                    # Add assistant's tool call to context BEFORE executing tools
+                    # This is critical - without this, LLM doesn't know it made tool calls
+                    # Use OpenAI's expected format with tool_calls array
+                    tool_calls_formatted = [
+                        {
+                            'id': tc['tool_call_id'],
+                            'type': 'function',
+                            'function': {
+                                'name': tc['tool_name'],
+                                'arguments': json.dumps(tc['input']) if isinstance(tc['input'], dict) else str(tc['input'])
+                            }
+                        }
+                        for tc in tool_calls
+                    ]
+                    self.ctxmgr.append(run_id, {
+                        'role': 'assistant',
+                        'content': None,
+                        'tool_calls': tool_calls_formatted
+                    }, session_id)
+
                     for tc in tool_calls:
                         try:
                             # Get tool to check if it's streaming (instance or global)
@@ -1095,8 +1137,8 @@ class Agent:
                                     else:
                                         self.ctxmgr._by_run[run_id].append(msg)
 
-                            # Add to context for next iteration
-                            self.ctxmgr.append_tool_result(run_id, tc['tool_name'], result, session_id)
+                            # Add to context for next iteration (with tool_call_id for proper OpenAI format)
+                            self.ctxmgr.append_tool_result(run_id, tc['tool_name'], result, session_id, tool_call_id=tc['tool_call_id'])
 
                             # Add reset tool choice message if enabled
                             reset_msg = self._get_reset_tool_choice_message()
@@ -1121,10 +1163,41 @@ class Agent:
                 yield {'type': 'finish'}
                 return
 
-            # Max steps exceeded
-            msg = f'max steps ({max_steps}) exceeded'
-            error_event = ErrorEvent(error=msg)
-            yield error_event.to_dict()
+            # Max steps exceeded - make one final LLM call WITHOUT tools to synthesize a response
+            # This gives the user a partial answer rather than an error
+            logger.warning(f'max steps ({max_steps}) exceeded, making final synthesis call')
+
+            # Add a system message to guide the final response
+            synthesis_msg = {
+                'role': 'user',
+                'content': 'You have reached the maximum number of steps. Please synthesize a response based on the information you have gathered so far. Do not call any more tools.'
+            }
+            self.ctxmgr.append(run_id, synthesis_msg, session_id)
+
+            # Make final LLM call without tools
+            messages = self.ctxmgr.messages_for_llm(run_id, session_id)
+            system_prompt = self._get_system_prompt(run_id)
+            if system_prompt:
+                messages = [{'role': 'system', 'content': system_prompt}] + messages
+
+            provider = self._get_provider()
+
+            # Stream the final response (no tools)
+            final_text = ''
+            async for event in provider.stream(messages, self.model_cfg.get('model', 'gpt-4o'), tools=[]):
+                event_type = event.get('type')
+                if event_type in ('text-delta', 'text-start', 'text-end'):
+                    yield event
+                    if event_type == 'text-delta':
+                        final_text += event.get('delta', '')
+                elif event_type == 'finish-message':
+                    yield event
+
+            # Save final response to context
+            if final_text:
+                self.ctxmgr.append_assistant_message(run_id, final_text, session_id)
+
+            yield {'type': 'finish-step'}
             yield {'type': 'finish'}
 
         except asyncio.CancelledError:
