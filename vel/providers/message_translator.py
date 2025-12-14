@@ -208,6 +208,22 @@ def translate_to_openai(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
             # Assistant message - can have text and/or tool calls
             if role == 'assistant':
+                # Check if message is already in OpenAI format (has tool_calls at top level)
+                if 'tool_calls' in msg:
+                    # Already in OpenAI format - passthrough
+                    assistant_msg = {'role': 'assistant'}
+                    if content is not None:
+                        assistant_msg['content'] = content if isinstance(content, str) else ''
+                    else:
+                        assistant_msg['content'] = ''
+                    assistant_msg['tool_calls'] = msg['tool_calls']
+                    openai_messages.append(assistant_msg)
+                    continue
+
+                # Handle None content (no text, only tool calls in original format)
+                if content is None:
+                    content = []
+
                 parts = _normalize_content(content)
 
                 text_parts = []
@@ -264,6 +280,20 @@ def translate_to_openai(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
             # Tool message - tool execution results
             if role == 'tool':
+                # Check if message is already in OpenAI format (has tool_call_id at top level)
+                if 'tool_call_id' in msg:
+                    # Already in OpenAI format - passthrough
+                    openai_messages.append({
+                        'role': 'tool',
+                        'tool_call_id': msg['tool_call_id'],
+                        'content': content if isinstance(content, str) else str(content)
+                    })
+                    continue
+
+                # Handle None content
+                if content is None:
+                    content = []
+
                 parts = _normalize_content(content)
 
                 for part in parts:

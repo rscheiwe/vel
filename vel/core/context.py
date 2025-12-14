@@ -317,12 +317,26 @@ class ContextManager:
 
         self.append(run_id, message, session_id)
 
-    def append_tool_result(self, run_id: str, tool_name: str, result: Any, session_id: Optional[str] = None):
-        """Append a tool result as a message"""
-        self.append(run_id, {
-            'role': 'user',
-            'content': f"Tool {tool_name} returned: {result}"
-        }, session_id)
+    def append_tool_result(self, run_id: str, tool_name: str, result: Any, session_id: Optional[str] = None, tool_call_id: Optional[str] = None):
+        """Append a tool result as a message.
+
+        Uses OpenAI's expected format with role='tool' and tool_call_id when provided.
+        Falls back to legacy format for backwards compatibility.
+        """
+        if tool_call_id:
+            # OpenAI format: role='tool' with tool_call_id
+            content = result if isinstance(result, str) else str(result)
+            self.append(run_id, {
+                'role': 'tool',
+                'tool_call_id': tool_call_id,
+                'content': content
+            }, session_id)
+        else:
+            # Legacy format for backwards compatibility
+            self.append(run_id, {
+                'role': 'user',
+                'content': f"Tool {tool_name} returned: {result}"
+            }, session_id)
 
     def get_session_context(self, session_id: str) -> List[Dict[str, Any]]:
         """Get all messages for a session"""
