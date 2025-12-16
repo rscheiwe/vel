@@ -1,5 +1,10 @@
 # VEL
 
+[![PyPI version](https://img.shields.io/pypi/v/vel-ai.svg)](https://pypi.org/project/vel-ai/)
+[![Python](https://img.shields.io/pypi/pyversions/vel-ai.svg)](https://pypi.org/project/vel-ai/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://rscheiwe.github.io/vel)
+
 ## Agent Runtime (12-Factor Agents Aligned)
 
 A production-ready AI agent runtime aligned with [12-Factor Agent principles](https://github.com/humanlayer/12-factor-agents) by Dex and contributors. Built for reliability, scalability, and maintainability with streaming responses, multiple LLM providers, and event-driven architecture.
@@ -138,14 +143,20 @@ This separation enables **composability**: use Agent for turnkey workflows, or u
 ## Installation
 
 ```bash
-# Clone and install
-git clone <repo-url>
+pip install vel-ai
+```
+
+Or install from source:
+```bash
+git clone https://github.com/rscheiwe/vel.git
 cd vel
 pip install -e .
+```
 
-# Set up environment
-cp .env.example .env
-# Edit .env with your API keys
+Set up your API keys:
+```bash
+export OPENAI_API_KEY='sk-...'
+# Or use explicit keys in code (see Quick Start)
 ```
 
 ## ⚠️ Deprecation Notice
