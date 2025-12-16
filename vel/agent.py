@@ -177,6 +177,7 @@ class Agent:
         # Normalize tools: support both strings (global registry) and ToolSpec instances
         self._instance_tools: Dict[str, ToolSpec] = {}  # Instance-level tools
         self._tool_names: List[str] = []  # All tool names (for schema filtering)
+        self._injected_tools: Dict[str, ToolSpec] = {}  # Dynamically injected tools (per-run)
 
         for tool in (tools or []):
             if isinstance(tool, str):
@@ -310,7 +311,11 @@ class Agent:
 
     def _get_tool(self, name: str) -> ToolSpec:
         """
-        Get tool by name from instance registry or global registry.
+        Get tool by name from injected tools, instance tools, or global registry.
+
+        IMPORTANT: Only tools explicitly passed to this agent (via tools array)
+        or dynamically injected during the run are accessible. Global registry
+        is only used to resolve string references from the tools array.
 
         Args:
             name: Tool name
@@ -319,26 +324,51 @@ class Agent:
             ToolSpec instance
 
         Raises:
-            KeyError: If tool not found in either registry
+            KeyError: If tool not found or not authorized for this agent
         """
-        # Check instance tools first (takes precedence)
+        # Check injected tools first (highest precedence - dynamically added during run)
+        if name in self._injected_tools:
+            return self._injected_tools[name]
+
+        # Check instance tools (ToolSpec instances passed directly)
         if name in self._instance_tools:
             return self._instance_tools[name]
 
-        # Fall back to global registry
-        return self.toolreg.get(name)
+        # Check if tool was passed by name (string) in tools array
+        # Only allow global registry lookup if the tool was explicitly listed
+        if name in self._tool_names:
+            return self.toolreg.get(name)
+
+        # Tool not authorized for this agent
+        raise KeyError(
+            f"Tool '{name}' not found. This agent only has access to: {self._tool_names}. "
+            f"If you need this tool, add it to the tools array when creating the agent."
+        )
 
     def _get_tool_schemas(self) -> Dict[str, Any]:
         """
-        Get schemas for all tools (instance + global registry).
+        Get schemas for all tools (injected + instance + global registry).
 
         Returns:
             Dict mapping tool names to their schemas
         """
         schemas = {}
 
-        for tool_name in self._tool_names:
-            if tool_name in self._instance_tools:
+        # Collect all tool names including injected tools
+        all_tool_names = list(self._tool_names) + [
+            name for name in self._injected_tools if name not in self._tool_names
+        ]
+
+        for tool_name in all_tool_names:
+            if tool_name in self._injected_tools:
+                # Injected tool (highest precedence)
+                tool = self._injected_tools[tool_name]
+                schemas[tool_name] = {
+                    'input': tool.input_schema,
+                    'output': tool.output_schema,
+                    'description': tool.description
+                }
+            elif tool_name in self._instance_tools:
                 # Instance tool
                 tool = self._instance_tools[tool_name]
                 schemas[tool_name] = {
@@ -539,6 +569,95 @@ class Agent:
 
         # Default: continue
         return ToolUseDirective(decision=ToolUseDecision.CONTINUE)
+
+    def _process_inject_tools(self, result: Any) -> List[str]:
+        """
+        Process tool output for inject_tools directive.
+
+        If a tool returns an 'inject_tools' key in its output, those tools
+        will be dynamically added to this agent's available tools for the
+        remainder of the current run.
+
+        Args:
+            result: Tool output (dict or any)
+
+        Returns:
+            List of newly injected tool names (for logging/debugging)
+
+        Example tool output:
+            {
+                "inject_tools": [
+                    {
+                        "name": "email_send",
+                        "description": "Send an email",
+                        "input_schema": {...},
+                        "handler": "email_send"  # References globally registered handler
+                    }
+                ],
+                "message": "Found 1 matching tool: email_send"
+            }
+        """
+        if not isinstance(result, dict):
+            return []
+
+        inject_tools = result.get('inject_tools', [])
+        if not inject_tools:
+            return []
+
+        injected_names = []
+
+        for tool_def in inject_tools:
+            name = tool_def.get('name')
+            if not name:
+                logger.warning("inject_tools entry missing 'name', skipping")
+                continue
+
+            # Skip if already available
+            if name in self._injected_tools or name in self._instance_tools:
+                logger.debug(f"Tool '{name}' already available, skipping injection")
+                continue
+
+            # Get handler - either from global registry or inline
+            handler = None
+            handler_ref = tool_def.get('handler')
+            registered_tool = None  # Track for copying _unpack_args
+
+            if handler_ref:
+                # Handler reference - look up in global registry
+                try:
+                    registered_tool = self.toolreg.get(handler_ref)
+                    handler = registered_tool._handler  # Note: _handler is the private attribute
+                except KeyError:
+                    logger.warning(f"Handler '{handler_ref}' not found in registry for tool '{name}'")
+                    continue
+            elif callable(tool_def.get('handler_fn')):
+                # Inline handler function (less common)
+                handler = tool_def['handler_fn']
+            else:
+                logger.warning(f"No handler specified for inject_tools entry '{name}'")
+                continue
+
+            # Create ToolSpec for injected tool
+            # Preserve _unpack_args flag if the handler came from a registered tool
+            unpack_args = getattr(registered_tool, '_unpack_args', False) if registered_tool else False
+            injected_tool = ToolSpec(
+                name=name,
+                description=tool_def.get('description', ''),
+                input_schema=tool_def.get('input_schema', {'type': 'object', 'properties': {}}),
+                output_schema=tool_def.get('output_schema', {}),
+                handler=handler,
+                _unpack_args=unpack_args
+            )
+
+            self._injected_tools[name] = injected_tool
+            injected_names.append(name)
+            logger.info(f"Injected tool '{name}' for current run")
+
+        return injected_names
+
+    def _clear_injected_tools(self) -> None:
+        """Clear all injected tools (called at start of new run)."""
+        self._injected_tools.clear()
 
     def _get_reset_tool_choice_message(self) -> Optional[Dict[str, Any]]:
         """
@@ -856,6 +975,9 @@ class Agent:
         run_id = str(uuid.uuid4())
         self.ctxmgr.set_input(run_id, input, session_id)
 
+        # Clear any injected tools from previous runs
+        self._clear_injected_tools()
+
         # Add dynamic instruction if set
         if self.instruction:
             if callable(self.instruction):
@@ -1087,6 +1209,9 @@ class Agent:
                                 tool_args = modified_args
 
                             # Execute tool (streaming or non-streaming)
+                            # Track reasoning block ID for auto-injection
+                            _current_reasoning_id = None
+
                             async for event in tool.run_stream(tool_args, ctx=self.tool_context):
                                 if event.get('type') == 'tool-output':
                                     # Final output from tool
@@ -1098,12 +1223,31 @@ class Agent:
                                     )
                                     yield output_event.to_dict()
                                 else:
+                                    # Auto-inject ID for reasoning events (Vercel AI SDK requires it)
+                                    event_type = event.get('type', '')
+                                    if event_type.startswith('reasoning-'):
+                                        # Generate or reuse reasoning block ID
+                                        if 'id' not in event:
+                                            if event_type == 'reasoning-start' or _current_reasoning_id is None:
+                                                _current_reasoning_id = str(uuid.uuid4())
+                                            event = {**event, 'id': _current_reasoning_id}
+
+                                        # Strip non-standard fields (AI SDK only allows type, id, delta)
+                                        # 'transient' is a Vel-internal hint, not part of AI SDK spec
+                                        allowed_keys = {'type', 'id', 'delta'}
+                                        event = {k: v for k, v in event.items() if k in allowed_keys}
+
                                     # Custom artifact event (e.g., data-artifact-table-editor)
                                     yield event
 
                             # Validate final output (only if schema is non-empty)
                             if result is not None and tool.output_schema:
                                 validate_io(tool.output_schema, result)
+
+                            # Process inject_tools directive (dynamic tool injection)
+                            injected = self._process_inject_tools(result)
+                            if injected:
+                                logger.debug(f"Injected tools for next LLM call: {injected}")
 
                             # Process through custom handler if configured
                             directive = self._process_tool_result(
@@ -1203,7 +1347,10 @@ class Agent:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            error_event = ErrorEvent(error=str(e))
+            # Ensure error message is never empty
+            error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
+            logger.error(f"Agent stream error: {error_msg}", exc_info=True)
+            error_event = ErrorEvent(error=error_msg)
             yield error_event.to_dict()
             raise
 

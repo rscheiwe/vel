@@ -20,7 +20,8 @@ class ToolSpec:
         # Per-tool policies
         timeout: Optional[float] = None,  # Timeout in seconds
         retries: int = 0,  # Number of retry attempts
-        fallback: Optional[str] = None  # "return_error" | "call_other_tool" | handler
+        fallback: Optional[str] = None,  # "return_error" | "call_other_tool" | handler
+        _unpack_args: bool = False  # Internal: whether to unpack input dict as kwargs
     ):
         self.name = name
         self.input_schema = input_schema
@@ -36,6 +37,8 @@ class ToolSpec:
         self.timeout = timeout
         self.retries = retries
         self.fallback = fallback
+        # Whether handler expects **kwargs unpacking (from_function style)
+        self._unpack_args = _unpack_args
 
     def is_enabled(self, ctx: Optional[Dict[str, Any]] = None) -> bool:
         """
@@ -135,14 +138,22 @@ class ToolSpec:
             output_schema=output_schema,
             handler=fn,
             description=tool_desc,
+            _unpack_args=True,  # from_function handlers expect **kwargs, not (input, ctx)
             **kwargs
         )
 
     async def run(self, input: Dict[str,Any], ctx: Dict[str,Any]) -> Dict[str,Any]:
         """Execute non-streaming tool (returns single result)"""
-        if asyncio.iscoroutinefunction(self._handler):
-            return await self._handler(input, ctx)
-        return self._handler(input, ctx)
+        if self._unpack_args:
+            # from_function style: handler expects **kwargs (e.g., email_send(to, subject, body))
+            if asyncio.iscoroutinefunction(self._handler):
+                return await self._handler(**input)
+            return self._handler(**input)
+        else:
+            # Traditional style: handler expects (input, ctx) signature
+            if asyncio.iscoroutinefunction(self._handler):
+                return await self._handler(input, ctx)
+            return self._handler(input, ctx)
 
     async def run_stream(self, input: Dict[str,Any], ctx: Dict[str,Any]) -> AsyncGenerator[Dict[str, Any], None]:
         """
@@ -158,8 +169,14 @@ class ToolSpec:
             yield {"type": "tool-output", "output": result}
         else:
             # Streaming tool: yield all events from async generator
-            async for event in self._handler(input, ctx):
-                yield event
+            if self._unpack_args:
+                # from_function style: handler expects **kwargs
+                async for event in self._handler(**input):
+                    yield event
+            else:
+                # Traditional style: handler expects (input, ctx)
+                async for event in self._handler(input, ctx):
+                    yield event
 
 class ToolRegistry:
     _global_instance: Optional['ToolRegistry'] = None

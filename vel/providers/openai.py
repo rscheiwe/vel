@@ -61,6 +61,9 @@ class OpenAIProvider(BaseProvider):
             for n, s in tools.items()
         ] if tools else []
 
+        # Add generation config parameters
+        config = generation_config or {}
+
         payload = {
             'model': model,
             'messages': msgs,
@@ -70,9 +73,10 @@ class OpenAIProvider(BaseProvider):
         if oaitools:
             payload['tools'] = oaitools
             payload['tool_choice'] = 'auto'
+            # Disable parallel tool calls if specified (prevents duplicate calls in same response)
+            if config.get('parallel_tool_calls') is False:
+                payload['parallel_tool_calls'] = False
 
-        # Add generation config parameters
-        config = generation_config or {}
         if 'temperature' in config:
             payload['temperature'] = config['temperature']
         if 'max_tokens' in config:
@@ -156,16 +160,32 @@ class OpenAIProvider(BaseProvider):
             error_type = None
 
             try:
-                error_body = response.json()
-                if 'error' in error_body:
-                    error_data = error_body['error']
-                    error_message = error_data.get('message', str(exception))
-                    error_code = error_data.get('code')
-                    error_type = error_data.get('type')
-                    error_details = error_data
-            except Exception:
-                # If JSON parsing fails, use response text
-                error_message = f"HTTP {status_code}: {response.text[:200]}"
+                # For streaming responses, body may not have been read yet
+                # Check if response content is available before accessing
+                if hasattr(response, 'is_stream_consumed') and not response.is_stream_consumed:
+                    # Streaming response - body not available
+                    error_message = f"OpenAI API error: HTTP {status_code}"
+                elif hasattr(response, '_content') and response._content:
+                    # Non-streaming response with content available
+                    error_body = response.json()
+                    if 'error' in error_body:
+                        error_data = error_body['error']
+                        error_message = error_data.get('message', str(exception))
+                        error_code = error_data.get('code')
+                        error_type = error_data.get('type')
+                        error_details = error_data
+                else:
+                    # Fallback - try to read but catch if not available
+                    error_body = response.json()
+                    if 'error' in error_body:
+                        error_data = error_body['error']
+                        error_message = error_data.get('message', str(exception))
+                        error_code = error_data.get('code')
+                        error_type = error_data.get('type')
+                        error_details = error_data
+            except (httpx.ResponseNotRead, Exception):
+                # If response body not available or JSON parsing fails
+                error_message = f"OpenAI API error: HTTP {status_code}"
 
             return ErrorEvent(
                 error=error_message,
@@ -212,13 +232,17 @@ class OpenAIProvider(BaseProvider):
             for n, s in tools.items()
         ] if tools else []
 
+        # Add generation config parameters
+        config = generation_config or {}
+
         payload = {'model': model, 'messages': msgs}
         if oaitools:
             payload['tools'] = oaitools
             payload['tool_choice'] = 'auto'
+            # Disable parallel tool calls if specified (prevents duplicate calls in same response)
+            if config.get('parallel_tool_calls') is False:
+                payload['parallel_tool_calls'] = False
 
-        # Add generation config parameters
-        config = generation_config or {}
         if 'temperature' in config:
             payload['temperature'] = config['temperature']
         if 'max_tokens' in config:
@@ -437,16 +461,32 @@ class OpenAIResponsesProvider(BaseProvider):
             error_type = None
 
             try:
-                error_body = response.json()
-                if 'error' in error_body:
-                    error_data = error_body['error']
-                    error_message = error_data.get('message', str(exception))
-                    error_code = error_data.get('code')
-                    error_type = error_data.get('type')
-                    error_details = error_data
-            except Exception:
-                # If JSON parsing fails, use response text
-                error_message = f"HTTP {status_code}: {response.text[:200]}"
+                # For streaming responses, body may not have been read yet
+                # Check if response content is available before accessing
+                if hasattr(response, 'is_stream_consumed') and not response.is_stream_consumed:
+                    # Streaming response - body not available
+                    error_message = f"OpenAI API error: HTTP {status_code}"
+                elif hasattr(response, '_content') and response._content:
+                    # Non-streaming response with content available
+                    error_body = response.json()
+                    if 'error' in error_body:
+                        error_data = error_body['error']
+                        error_message = error_data.get('message', str(exception))
+                        error_code = error_data.get('code')
+                        error_type = error_data.get('type')
+                        error_details = error_data
+                else:
+                    # Fallback - try to read but catch if not available
+                    error_body = response.json()
+                    if 'error' in error_body:
+                        error_data = error_body['error']
+                        error_message = error_data.get('message', str(exception))
+                        error_code = error_data.get('code')
+                        error_type = error_data.get('type')
+                        error_details = error_data
+            except (httpx.ResponseNotRead, Exception):
+                # If response body not available or JSON parsing fails
+                error_message = f"OpenAI API error: HTTP {status_code}"
 
             return ErrorEvent(
                 error=error_message,

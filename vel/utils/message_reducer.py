@@ -354,7 +354,7 @@ class MessageReducer:
 
     def _handle_error(self, event: Dict[str, Any]) -> None:
         """Handle error event"""
-        error_msg = event.get('error', 'Unknown error')
+        error_msg = event.get('error') or event.get('message') or 'Unknown error occurred'
 
         # Add error as a part
         self._parts.append({
