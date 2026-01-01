@@ -5,6 +5,19 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://rscheiwe.github.io/vel)
 
+---
+
+### What's New
+
+| Feature | Description |
+|---------|-------------|
+| **Langfuse Observability** | Built-in tracing with Langfuse: LLM generations, tool executions, memory operations, nested spans. Non-blocking with sampling support. `pip install vel-ai[langfuse]` |
+| **Agents-as-Tools** | Enhanced `as_tool()` with custom schemas and context passthrough for hierarchical agent composition |
+| **ReasoningBank Phase 2** | Full auto-learning pipeline: TrajectoryStore, LLM-as-Judge, StrategyExtractor, MemoryConsolidator |
+| **Scratchpad** | Ephemeral working memory with 8 entry types, thread-safety, and automatic summary injection between runs |
+
+---
+
 ## Agent Runtime (12-Factor Agents Aligned)
 
 A production-ready AI agent runtime aligned with [12-Factor Agent principles](https://github.com/humanlayer/12-factor-agents) by Dex and contributors. Built for reliability, scalability, and maintainability with streaming responses, multiple LLM providers, and event-driven architecture.
@@ -771,13 +784,15 @@ Vel is designed following the [12-Factor Agent principles](https://github.com/hu
 
 ## TODO
 
-- [ ] Add features from OpenAI Agent SDK (tool responses, e.g.)
+- [x] Add features from OpenAI Agent SDK (tool responses, e.g.)
 - [ ] Test Gemini tool calling
 - [ ] Finish Postgres integration
 - [ ] Add knowledge-graph memory layer
-- [ ] Add example of how to create Vel agents via a tool
+- [x] Add example of how to create Vel agents via a tool
 - [ ] Add guardrails
 - [ ] Stress test RLM with real-world large documents
+- [ ] Test ReasoningBank integration via `examples/memory_examples/`
+- [ ] Test `as_tool` feature via `examples/orchestrator_example.py`
 - [x] ~~Update ReasoningBank to include e2e implementation as described in Google's paper~~ (Phase 1 complete, see `docs/Memory/reasoningbank-phase2-roadmap.md` for Phase 2)
 - [x] ~~Add RLM (Recursive Language Model) support for long contexts~~ (Complete - see `docs/rlm.md`)
 

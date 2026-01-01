@@ -7,13 +7,30 @@ nav_order: 1
 
 # Vel Memory System (Optional Runtime Boosts)
 
-Vel's memory system provides **optional**, runtime-owned memory that works without LLM tool calls.
-It includes two components:
+Vel's memory system provides **optional** memory components for different use cases:
 
-- **Fact Store** – Namespaced key-value store for long-term structured data
-- **ReasoningBank** – Strategy memory for distilled "do/avoid" heuristics that improve reasoning
+| Component | Lifetime | Purpose |
+|-----------|----------|---------|
+| **Scratchpad** | Single run | Ephemeral working memory for multi-step tasks |
+| **Fact Store** | Persistent | Namespaced key-value store for long-term structured data |
+| **ReasoningBank** | Persistent | Strategy memory for distilled "do/avoid" heuristics |
 
-These modules are **off by default**.
+All memory modules are **off by default**.
+
+---
+
+## What's New: Phase 2 Auto-Learning ✅
+
+ReasoningBank now supports **automatic self-evolution**. Agents can learn from experience without human intervention:
+
+| Component | Description |
+|-----------|-------------|
+| **TrajectoryStore** | Records agent execution traces |
+| **LLM-as-Judge** | Automatic success/failure evaluation |
+| **StrategyExtractor** | Distills strategies from successful runs |
+| **MemoryConsolidator** | Merges similar strategies, prevents bloat |
+
+**Getting Started:** See the [Auto-Learning Guide](auto-learning-guide.md) for a step-by-step walkthrough, or run the [demo](https://github.com/rscheiwe/vel/blob/main/examples/memory_examples/auto_learning_demo.py) to see it in action.
 
 ---
 
@@ -137,20 +154,53 @@ ctx.finalize_outcome(run_success=True)
 
 ---
 
-## 6. When To Use Each
+## 6. Scratchpad (Working Memory)
+
+The **Scratchpad** is ephemeral working memory for multi-step agent execution. Unlike Fact Store and ReasoningBank (which persist), the Scratchpad lives only for a single agent run.
+
+### Quick Start
+
+```python
+from vel import Agent
+
+agent = Agent(
+    id="researcher",
+    model={"provider": "openai", "model": "gpt-4o"},
+    scratchpad=True,  # Enable with defaults
+)
+
+# Agent automatically gets scratchpad tools:
+# save_plan, record_finding, record_observation, read_from_scratchpad, etc.
+result = await agent.run({"message": "Research quantum computing"})
+```
+
+### Key Features
+
+- **Automatic summary injection**: Summary from run N is injected into run N+1
+- **Structured entry types**: Plan, Finding, Observation, Reasoning, Error
+- **Thread-safe**: Handles concurrent tool calls
+- **Zero dependencies**: Pure Python stdlib
+
+See the [Scratchpad Guide](scratchpad.md) for full documentation.
+
+---
+
+## 7. When To Use Each
 
 | Use Case                                              | Recommended Memory |
 | ----------------------------------------------------- | ------------------ |
+| Multi-step tool execution within a run                | Scratchpad         |
+| Research tasks with findings accumulation             | Scratchpad         |
 | User preferences                                      | Fact Store         |
 | Project metadata                                      | Fact Store         |
 | Domain knowledge                                      | Fact Store         |
 | Behavioral heuristics ("always clarify intent first") | ReasoningBank      |
 | Avoiding repeated mistakes                            | ReasoningBank      |
-| Both contextual and strategic adaptation              | Both               |
+| Both contextual and strategic adaptation              | Fact Store + ReasoningBank |
 
 ---
 
-## 7. Configuration via Environment Variables
+## 8. Configuration via Environment Variables
 
 ```bash
 VEL_MEMORY_MODE=all           # none | facts | reasoning | all
@@ -162,7 +212,7 @@ VEL_RB_TOP_K=5
 
 ---
 
-## 8. Performance Notes
+## 9. Performance Notes
 
 - Retrieval is bounded and synchronous (typically <40ms).
 - Post-run updates happen in a background thread.
@@ -171,7 +221,7 @@ VEL_RB_TOP_K=5
 
 ---
 
-## 9. Safety Guidelines
+## 10. Safety Guidelines
 
 - ReasoningBank advice should be treated as **system-only**, not user-facing text.
 - Limit advice injection to 3–5 items to avoid prompt bloat.
@@ -179,7 +229,7 @@ VEL_RB_TOP_K=5
 
 ---
 
-## 10. Summary
+## 11. Summary
 
 Vel’s memory extensions give your agent:
 

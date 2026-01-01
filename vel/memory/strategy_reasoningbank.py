@@ -105,6 +105,11 @@ class ReasoningBankStore:
         return out
 
     def update_confidence(self, strategy_id: int, success: bool, alpha: float = 0.1):
+        """
+        Update confidence using linear increment (Phase 1 method).
+
+        Deprecated: Use update_confidence_bayesian for Phase 2.
+        """
         row = self.db.execute("SELECT confidence FROM rb_strategies WHERE id=?", (strategy_id,)).fetchone()
         if not row:
             return
@@ -112,6 +117,51 @@ class ReasoningBankStore:
         c = min(1.0, max(0.0, c))
         self.db.execute("UPDATE rb_strategies SET confidence=?, updated_at=? WHERE id=?",
                         (c, time(), strategy_id))
+        self.db.commit()
+
+    def update_confidence_bayesian(
+        self,
+        strategy_id: int,
+        success: bool,
+        success_multiplier: float = 1.20,
+        failure_multiplier: float = 0.85,
+        max_confidence: float = 0.95,
+        min_confidence: float = 0.05
+    ):
+        """
+        Update confidence using Bayesian-style multiplicative update (Phase 2).
+
+        - Success: confidence *= 1.20 (capped at 95%)
+        - Failure: confidence *= 0.85 (floored at 5%)
+
+        This provides exponential decay/growth which naturally:
+        - Rewards consistently useful strategies
+        - Punishes consistently failing strategies
+        - Requires multiple successes to reach high confidence
+
+        Args:
+            strategy_id: Strategy ID to update
+            success: Whether the outcome was successful
+            success_multiplier: Multiplier for success (default 1.20)
+            failure_multiplier: Multiplier for failure (default 0.85)
+            max_confidence: Maximum confidence cap (default 0.95)
+            min_confidence: Minimum confidence floor (default 0.05)
+        """
+        row = self.db.execute("SELECT confidence FROM rb_strategies WHERE id=?", (strategy_id,)).fetchone()
+        if not row:
+            return
+
+        current = float(row["confidence"])
+
+        if success:
+            new_confidence = current * success_multiplier
+        else:
+            new_confidence = current * failure_multiplier
+
+        new_confidence = max(min_confidence, min(max_confidence, new_confidence))
+
+        self.db.execute("UPDATE rb_strategies SET confidence=?, updated_at=? WHERE id=?",
+                        (new_confidence, time(), strategy_id))
         self.db.commit()
 
     def add_anti_patterns(self, strategy_id: int, patterns: Iterable[str]):

@@ -33,7 +33,9 @@
       "Read(//Users/richard.s/Downloads/ai-artifact-table/hooks/**)",
       "Read(//Users/richard.s/dev/newsroom-data-science/py36/taboola/oas/taboolabot_api/server/routers/**)",
       "Read(//Users/richard.s/llm-platform/src/components/layout/MosaicChat/components/Chat/**)",
-      "Read(//Users/richard.s/llm-platform/src/components/layout/MosaicChat/components/AiChat/**)"
+      "Read(//Users/richard.s/llm-platform/src/components/layout/MosaicChat/components/AiChat/**)",
+      "Bash(PYTHONPATH=/Users/richard.s/vel:$PYTHONPATH python -m pytest:*)",
+      "WebFetch(domain:langfuse.com)"
     ],
     "deny": [],
     "ask": []

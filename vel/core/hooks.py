@@ -85,6 +85,27 @@ class ErrorHookEvent(HookEvent):
     step: int = 0
 
 
+@dataclass
+class RunStartHookEvent(HookEvent):
+    """Emitted at the start of agent.run() / run_stream()."""
+    input: Dict[str, Any] = field(default_factory=dict)
+    agent_id: str = ""
+
+
+@dataclass
+class RunFinallyHookEvent(HookEvent):
+    """
+    Always emitted at end of run (in finally block).
+
+    This hook is guaranteed to fire even if an error occurred,
+    making it useful for cleanup and observability trace completion.
+    """
+    output: Any = None
+    error: Optional[Exception] = None
+    total_steps: int = 0
+    total_duration_ms: float = 0
+
+
 # Type alias for hook functions
 HookFn = Callable[[HookEvent], None]
 
@@ -101,17 +122,29 @@ class HookRegistry:
         Args:
             hooks: Dict mapping hook names to handler functions
                    Supported hooks:
-                   - on_step_start
-                   - on_step_end
-                   - on_tool_call
-                   - on_tool_result
-                   - on_llm_request
-                   - on_llm_response
-                   - on_finish
-                   - on_error
+                   - on_run_start: Emitted at start of run()
+                   - on_step_start: Emitted at start of each step
+                   - on_step_end: Emitted at end of each step
+                   - on_tool_call: Emitted before tool execution
+                   - on_tool_result: Emitted after tool returns
+                   - on_llm_request: Emitted before LLM call
+                   - on_llm_response: Emitted after LLM responds
+                   - on_finish: Emitted on successful completion
+                   - on_error: Emitted on error
+                   - on_run_finally: Always emitted at end (for cleanup)
         """
         self._hooks = hooks or {}
         self._trace_id = str(uuid.uuid4())
+
+    def register(self, hook_name: str, handler: HookFn) -> None:
+        """
+        Register a hook handler.
+
+        Args:
+            hook_name: Name of the hook (e.g., 'on_step_start')
+            handler: Handler function to call when hook fires
+        """
+        self._hooks[hook_name] = handler
 
     async def emit(self, hook_name: str, event: HookEvent) -> None:
         """

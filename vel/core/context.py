@@ -1,10 +1,14 @@
 # context.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Callable, TypedDict
+import time
+from typing import Any, Dict, List, Optional, Callable, TypedDict, TYPE_CHECKING
 from dataclasses import dataclass
 import os
 import warnings
+
+if TYPE_CHECKING:
+    from vel.integrations.base import ObservabilityHandler, SpanContext
 
 # --- Optional memory backends (soft imports; safe if modules are absent) ---
 try:
@@ -59,11 +63,22 @@ class MemoryConfig:
         embeddings_fn: Embedding function for ReasoningBank
             - Must return np.ndarray with dtype=float32
             - Required if mode includes "reasoning"
+
+    Phase 2 (Auto-Learning) Args:
+        enable_auto_learning: Enable automatic strategy learning (default False)
+        enable_trajectories: Enable trajectory recording (default False)
+        auto_learning_config: AutoLearningConfig for fine-tuning (optional)
     """
+    # Phase 1: Core Memory
     mode: str = "none"
     db_path: str = ".vel/vel.db"
     rb_top_k: int = 5
     embeddings_fn: Optional[Callable[[List[str]], "object"]] = None  # return: np.ndarray
+
+    # Phase 2: Auto-Learning
+    enable_auto_learning: bool = False
+    enable_trajectories: bool = False
+    auto_learning_config: Optional[Any] = None  # AutoLearningConfig
 
     def __post_init__(self):
         """Handle backwards compatibility for mode names."""
@@ -82,6 +97,10 @@ class MemoryConfig:
                 DeprecationWarning,
                 stacklevel=3
             )
+
+        # Auto-enable trajectories if auto_learning is enabled
+        if self.enable_auto_learning and not self.enable_trajectories:
+            self.enable_trajectories = True
 
 
 def load_memory_config_from_env(default: Optional[MemoryConfig] = None) -> MemoryConfig:
@@ -113,9 +132,13 @@ class MemoryAdapters(TypedDict, total=False):
     Keys:
         facts: FactStore instance (namespaced KV store)
         rb: ReasoningBank instance (strategy memory)
+        trajectories: TrajectoryStore instance (Phase 2)
+        rb_store: ReasoningBankStore instance (for Phase 2 consolidation)
     """
     facts: Any
     rb: Any
+    trajectories: Any
+    rb_store: Any
 
 
 def _expand_path(path: str) -> str:
@@ -133,7 +156,7 @@ def build_memory_adapters(cfg: MemoryConfig) -> MemoryAdapters:
         cfg: MemoryConfig with mode, db_path, and embeddings_fn
 
     Returns:
-        MemoryAdapters dict with 'facts' and/or 'rb' keys
+        MemoryAdapters dict with 'facts', 'rb', 'trajectories', and/or 'rb_store' keys
     """
     mode = (cfg.mode or "none").strip().lower()
     db_path = _expand_path(cfg.db_path)
@@ -149,8 +172,18 @@ def build_memory_adapters(cfg: MemoryConfig) -> MemoryAdapters:
             emb = Embeddings(cfg.embeddings_fn)
             store = ReasoningBankStore(db_path=db_path, emb=emb)
             adapters["rb"] = ReasoningBank(store)
+            adapters["rb_store"] = store  # Expose store for Phase 2 components
         else:
             adapters["rb"] = None
+            adapters["rb_store"] = None
+
+    # Phase 2: TrajectoryStore (if trajectories enabled)
+    if cfg.enable_trajectories:
+        try:
+            from vel.memory.trajectory_store import TrajectoryStore
+            adapters["trajectories"] = TrajectoryStore(db_path)
+        except ImportError:
+            adapters["trajectories"] = None
 
     return adapters
 
@@ -212,6 +245,24 @@ class ContextManager:
         self._memory_cfg: Optional[MemoryConfig] = None
         self._adapters: MemoryAdapters = {}
         self._rb_last_ids: List[int] = []   # strategy_ids used for the current run (if any)
+
+        # Observability (set by Agent if observability is enabled)
+        self._observer: Optional['ObservabilityHandler'] = None
+        self._trace_ctx: Optional['SpanContext'] = None
+
+    def set_observer(self, observer: 'ObservabilityHandler', trace_ctx: 'SpanContext'):
+        """
+        Set the observability handler for memory operation tracing.
+
+        Called by Agent during run setup if observability is enabled.
+        """
+        self._observer = observer
+        self._trace_ctx = trace_ctx
+
+    def clear_observer(self):
+        """Clear the observability handler after run completes."""
+        self._observer = None
+        self._trace_ctx = None
 
     # ---------- existing behavior stays the same ----------
 
@@ -380,7 +431,21 @@ class ContextManager:
         """
         store = self._adapters.get("facts") if self._adapters else None
         if store is not None:
+            start_time = time.time()
             store.put(namespace, key, value)
+
+            # Log memory operation for observability
+            if self._observer and self._trace_ctx:
+                from vel.integrations.base import MemoryData
+                self._observer.log_memory(
+                    self._trace_ctx,
+                    MemoryData(
+                        operation='fact_put',
+                        namespace=namespace,
+                        key=key,
+                        latency_ms=(time.time() - start_time) * 1000,
+                    )
+                )
 
     def fact_get(self, namespace: str, key: str) -> Optional[Any]:
         """
@@ -397,7 +462,23 @@ class ContextManager:
         """
         store = self._adapters.get("facts") if self._adapters else None
         if store is not None:
-            return store.get(namespace, key)
+            start_time = time.time()
+            result = store.get(namespace, key)
+
+            # Log memory operation for observability
+            if self._observer and self._trace_ctx:
+                from vel.integrations.base import MemoryData
+                self._observer.log_memory(
+                    self._trace_ctx,
+                    MemoryData(
+                        operation='fact_get',
+                        namespace=namespace,
+                        key=key,
+                        result=result,
+                        latency_ms=(time.time() - start_time) * 1000,
+                    )
+                )
+            return result
         return None
 
     def fact_list(self, namespace: str, limit: int = 50) -> List[Dict[str, Any]]:
@@ -413,7 +494,22 @@ class ContextManager:
         """
         store = self._adapters.get("facts") if self._adapters else None
         if store is not None:
-            return store.list(namespace, limit=limit)
+            start_time = time.time()
+            result = store.list(namespace, limit=limit)
+
+            # Log memory operation for observability
+            if self._observer and self._trace_ctx:
+                from vel.integrations.base import MemoryData
+                self._observer.log_memory(
+                    self._trace_ctx,
+                    MemoryData(
+                        operation='fact_list',
+                        namespace=namespace,
+                        result={'count': len(result)},
+                        latency_ms=(time.time() - start_time) * 1000,
+                    )
+                )
+            return result
         return []
 
     # ---- Backwards compatibility (deprecated) ----
@@ -469,6 +565,7 @@ class ContextManager:
         if not rb or not self._memory_cfg:
             return ""
 
+        start_time = time.time()
         try:
             top_k = max(1, int(self._memory_cfg.rb_top_k))
         except Exception:
@@ -476,6 +573,17 @@ class ContextManager:
 
         items: List[StrategyItem] = rb.get_advice(signature, k=top_k)  # type: ignore[attr-defined]
         if not items:
+            # Log empty retrieval
+            if self._observer and self._trace_ctx:
+                from vel.integrations.base import MemoryData
+                self._observer.log_memory(
+                    self._trace_ctx,
+                    MemoryData(
+                        operation='strategy_retrieval',
+                        result={'strategies_found': 0},
+                        latency_ms=(time.time() - start_time) * 1000,
+                    )
+                )
             return ""
 
         advice_lines: List[str] = []
@@ -488,6 +596,18 @@ class ContextManager:
             sid = getattr(s, "id", None)
             if isinstance(sid, int):
                 self._rb_last_ids.append(sid)
+
+        # Log strategy retrieval for observability
+        if self._observer and self._trace_ctx:
+            from vel.integrations.base import MemoryData
+            self._observer.log_memory(
+                self._trace_ctx,
+                MemoryData(
+                    operation='strategy_retrieval',
+                    result={'strategies_found': len(items), 'strategy_ids': self._rb_last_ids},
+                    latency_ms=(time.time() - start_time) * 1000,
+                )
+            )
 
         return "Strategy Advice:\n" + "\n".join(advice_lines)
 
@@ -503,8 +623,27 @@ class ContextManager:
         if not rb or not self._rb_last_ids:
             return
 
+        start_time = time.time()
         notes = fail_notes or []
+        strategy_ids = list(self._rb_last_ids)  # copy before clearing
         rb.mark_outcome(self._rb_last_ids, success=bool(run_success), fail_notes=notes)  # type: ignore[attr-defined]
+
+        # Log outcome recording for observability
+        if self._observer and self._trace_ctx:
+            from vel.integrations.base import MemoryData
+            self._observer.log_memory(
+                self._trace_ctx,
+                MemoryData(
+                    operation='strategy_outcome',
+                    result={
+                        'strategy_ids': strategy_ids,
+                        'success': run_success,
+                        'fail_notes_count': len(notes),
+                    },
+                    latency_ms=(time.time() - start_time) * 1000,
+                )
+            )
+
         # clear last ids after recording
         self._rb_last_ids = []
 

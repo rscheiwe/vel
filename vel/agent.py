@@ -1,10 +1,16 @@
 from __future__ import annotations
 import asyncio
 import json
+import re
+import time
 import warnings
 import logging
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional, Literal, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Literal, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .integrations.langfuse import ObservabilityConfig
+    from .integrations.base import ObservabilityHandler, SpanContext
 
 # Configure logger for error surfacing
 logger = logging.getLogger('vel.agent')
@@ -17,7 +23,11 @@ from .core.structured_output import (
     StructuredOutputPolicy, StructuredOutputValidationError,
     parse_structured_output, get_retry_prompt, get_json_mode_system_prompt
 )
-from .core.hooks import HookRegistry
+from .core.hooks import (
+    HookRegistry, RunStartHookEvent, RunFinallyHookEvent,
+    StepStartHookEvent, StepEndHookEvent, ToolCallHookEvent, ToolResultHookEvent,
+    LLMRequestHookEvent, LLMResponseHookEvent, FinishHookEvent, ErrorHookEvent
+)
 from .providers import ProviderRegistry
 from .tools import ToolRegistry, ToolSpec, validate_io
 from .events import (
@@ -54,6 +64,10 @@ class Agent:
                  hooks: Optional[Dict[str, Any]]=None,
                  # Dynamic instructions
                  instruction: Optional[Any]=None,  # str or Callable[[dict], str]
+                 # Scratchpad for working memory
+                 scratchpad: Optional[Any]=None,  # bool, dict, or ScratchpadConfig
+                 # Observability
+                 observability: Optional[Union['ObservabilityConfig', Dict[str, Any]]]=None,
                  # Deprecated (backwards compatibility)
                  session_storage: Optional[Literal['memory', 'database']]=None):
         """
@@ -163,6 +177,27 @@ class Agent:
                 If callable, evaluated per-run with context dict: (ctx) -> str
                 Example: lambda ctx: f"User tier: {ctx.get('user_tier', 'free')}"
 
+            scratchpad: Scratchpad configuration for ephemeral working memory.
+                Enables agents to maintain context during multi-step tool execution.
+                Can be:
+                - True: Use default ScratchpadConfig
+                - dict: Configuration options (max_entries, summary_max_chars, etc.)
+                - ScratchpadConfig: Explicit config object
+                Example: scratchpad=True or scratchpad=ScratchpadConfig(max_entries=50)
+
+            observability: Observability configuration for tracing and monitoring.
+                Can be:
+                - None: Observability disabled (default)
+                - ObservabilityConfig: Full configuration object
+                - dict: Configuration dict (converted to ObservabilityConfig)
+
+                Example:
+                    observability=ObservabilityConfig(
+                        provider='langfuse',
+                        user_id='user-123',
+                        tags=['production']
+                    )
+
             session_storage: [DEPRECATED] Use session_persistence instead
                 - 'memory' → use 'transient'
                 - 'database' → use 'persistent'
@@ -237,6 +272,31 @@ class Agent:
                 self.thinking_config = ThinkingConfig(**thinking)
             else:
                 self.thinking_config = thinking
+
+        # Scratchpad configuration
+        self._scratchpad_config = None
+        self._scratchpad_summary: Optional[str] = None
+        if scratchpad:
+            from .tools.scratchpad import ScratchpadConfig
+            if isinstance(scratchpad, bool):
+                self._scratchpad_config = ScratchpadConfig()
+            elif isinstance(scratchpad, dict):
+                self._scratchpad_config = ScratchpadConfig(**scratchpad)
+            else:
+                self._scratchpad_config = scratchpad
+
+        # Observability configuration
+        self._observability_config: Optional['ObservabilityConfig'] = None
+        self._observer: Optional['ObservabilityHandler'] = None
+        if observability:
+            from .integrations.langfuse import ObservabilityConfig, build_handler
+            if isinstance(observability, dict):
+                self._observability_config = ObservabilityConfig(**observability)
+            else:
+                self._observability_config = observability
+            # Build handler if enabled
+            if self._observability_config.enabled and self._observability_config.provider != 'none':
+                self._observer = build_handler(self._observability_config, self.id)
 
         # Handle backwards compatibility for session_storage
         if session_storage is not None:
@@ -388,43 +448,98 @@ class Agent:
         self,
         name: Optional[str] = None,
         description: Optional[str] = None,
-        system_prompt_override: Optional[str] = None
+        input_schema: Optional[Dict[str, Any]] = None,
+        output_schema: Optional[Dict[str, Any]] = None,
+        pass_context: bool = True
     ) -> 'ToolSpec':
         """
         Expose this agent as a tool that can be used by other agents.
 
+        This enables hierarchical agent composition where an orchestrator agent
+        can delegate tasks to specialized sub-agents.
+
         Args:
-            name: Tool name (defaults to agent ID)
-            description: Tool description
-            system_prompt_override: Optional system prompt to override agent's default
+            name: Tool name (defaults to sanitized agent ID). Characters like
+                ':', '-', '.' are replaced with '_' for LLM compatibility.
+            description: Tool description shown to the orchestrator LLM.
+            input_schema: Custom JSON schema for tool input. Defaults to
+                {'message': string} if not provided.
+            output_schema: Custom JSON schema for tool output. Defaults to
+                empty (flexible output) if not provided.
+            pass_context: If True (default), the parent agent's tool_context
+                is merged into this agent's tool_context during execution.
 
         Returns:
             ToolSpec that wraps this agent
+
+        Example:
+            ```python
+            researcher = Agent(id='researcher:v1', ...)
+            orchestrator = Agent(
+                id='orchestrator',
+                tools=[
+                    researcher.as_tool(
+                        name='research_expert',
+                        description='Delegate research tasks to the research agent.'
+                    )
+                ]
+            )
+            ```
         """
         from .tools import ToolSpec
 
-        tool_name = name or self.id
+        # Sanitize tool name: replace :, -, . with underscores
+        raw_name = name or self.id
+        tool_name = re.sub(r'[:\-.]', '_', raw_name)
         tool_desc = description or f"Run the {self.id} agent"
+
+        # Default input schema: simple message-based interface
+        default_input_schema = {
+            'type': 'object',
+            'properties': {
+                'message': {
+                    'type': 'string',
+                    'description': f'Message to send to the {tool_name} agent'
+                }
+            },
+            'required': ['message']
+        }
+        final_input_schema = input_schema or default_input_schema
+
+        # Default output schema: empty = flexible (matches ToolSpec pattern)
+        final_output_schema = output_schema or {}
+
+        # Capture pass_context in closure
+        _pass_context = pass_context
+        _custom_input_schema = input_schema is not None
 
         # Create handler that calls this agent
         async def agent_tool_handler(input: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
-            # Get message from input
-            message = input.get('message', input.get('query', str(input)))
+            # Context passthrough: merge parent's ctx with sub-agent's tool_context
+            original_context = self.tool_context
+            if _pass_context:
+                merged_context = {**self.tool_context, **ctx}
+            else:
+                merged_context = self.tool_context
 
-            # Apply system prompt override if provided
-            original_ctxmgr = None
-            if system_prompt_override:
-                # Store original and create modified context
-                original_ctxmgr = self.ctxmgr
-                # This is a simplified approach - a full implementation would
-                # properly inject the system prompt override
-                pass
+            self.tool_context = merged_context
 
             try:
+                # Extract message based on schema type
+                if _custom_input_schema:
+                    # Custom schema: pass entire input as JSON message
+                    if 'message' in input and isinstance(input['message'], str):
+                        message = input['message']
+                    else:
+                        message = json.dumps(input)
+                else:
+                    # Default schema: extract 'message' or 'query' key
+                    message = input.get('message', input.get('query', str(input)))
+
                 # Run the agent
                 result = await self.run({'message': message})
 
-                # Return result in structured format
+                # Return result as-is (no success wrapper for successful responses)
                 if isinstance(result, str):
                     return {'response': result}
                 elif isinstance(result, dict):
@@ -437,28 +552,22 @@ class Agent:
                         return result.dict()
                     else:
                         return {'response': str(result)}
+
+            except Exception as e:
+                # Only errors get wrapped with success: False
+                return {
+                    'success': False,
+                    'error': str(e),
+                    'error_type': type(e).__name__
+                }
             finally:
-                if original_ctxmgr:
-                    self.ctxmgr = original_ctxmgr
+                # Restore original context
+                self.tool_context = original_context
 
         return ToolSpec(
             name=tool_name,
-            input_schema={
-                'type': 'object',
-                'properties': {
-                    'message': {
-                        'type': 'string',
-                        'description': f'Message to send to the {tool_name} agent'
-                    }
-                },
-                'required': ['message']
-            },
-            output_schema={
-                'type': 'object',
-                'properties': {
-                    'response': {'type': 'string'}
-                }
-            },
+            input_schema=final_input_schema,
+            output_schema=final_output_schema,
             handler=agent_tool_handler,
             description=tool_desc
         )
@@ -659,6 +768,15 @@ class Agent:
         """Clear all injected tools (called at start of new run)."""
         self._injected_tools.clear()
 
+    def clear_scratchpad_context(self) -> None:
+        """
+        Clear stored scratchpad summary.
+
+        Call when starting a new conversation or changing topics.
+        The summary from the previous run will no longer be injected.
+        """
+        self._scratchpad_summary = None
+
     def _get_reset_tool_choice_message(self) -> Optional[Dict[str, Any]]:
         """
         Get system message to reset tool choice if enabled.
@@ -678,7 +796,8 @@ class Agent:
         session_id: Optional[str] = None,
         generation_config: Optional[Dict[str, Any]] = None,
         context_refs: Optional[Any] = None,
-        rlm: Optional[Dict[str, Any]] = None
+        rlm: Optional[Dict[str, Any]] = None,
+        observability_context: Optional[Dict[str, Any]] = None
     ) -> Union[str, Dict[str, Any]]:
         """
         Non-streaming run - returns final answer or raw tool output.
@@ -703,6 +822,9 @@ class Agent:
             generation_config: Optional per-run generation config that overrides agent-level config.
             context_refs: Optional context references for RLM (large documents, files, URLs)
             rlm: Optional per-run RLM config that overrides agent-level config
+            observability_context: Optional per-run observability context overrides.
+                Merges with agent-level ObservabilityConfig.
+                Supported keys: user_id, session_id, tags, metadata, trace_name
         """
         # Check if RLM is enabled (per-run override or agent-level config)
         rlm_config = None
@@ -725,7 +847,56 @@ class Agent:
             return result['answer']
 
         run_id = str(uuid.uuid4())
+        run_start_time = time.time()
         self.ctxmgr.set_input(run_id, input, session_id)
+
+        # Clear any injected tools from previous runs
+        self._clear_injected_tools()
+
+        # Setup observability trace
+        trace_ctx: Optional['SpanContext'] = None
+        current_step_ctx: Optional['SpanContext'] = None
+        if self._observer and self._observer.should_sample():
+            from .integrations.base import SpanKind, GenerationData, ToolData
+            # Merge observability_context with config
+            obs_config = self._observability_config
+            if observability_context:
+                obs_config = obs_config.with_context(**observability_context)
+
+            trace_ctx = self._observer.start_trace(
+                trace_id=run_id,
+                name=obs_config.trace_name or self.id,
+                input=input if obs_config.capture_input else {'message': '[redacted]'},
+                metadata=obs_config.metadata,
+                tags=obs_config.tags,
+                user_id=obs_config.user_id,
+                session_id=obs_config.session_id or session_id,
+            )
+
+            # Wire up observer to ContextManager for memory operation tracing
+            self.ctxmgr.set_observer(self._observer, trace_ctx)
+
+            # Emit run start hook
+            await self.hooks.emit('on_run_start', RunStartHookEvent(
+                run_id=run_id,
+                session_id=session_id,
+                input=input,
+                agent_id=self.id
+            ))
+
+        # Setup scratchpad for this run
+        scratchpad = None
+        if self._scratchpad_config:
+            from .tools.scratchpad import Scratchpad, get_scratchpad_tools
+            scratchpad = Scratchpad(self._scratchpad_config)
+            for tool in get_scratchpad_tools(scratchpad):
+                self._injected_tools[tool.name] = tool
+            # Inject previous run's summary into context
+            if self._scratchpad_summary:
+                self.ctxmgr._by_run[run_id].insert(0, {
+                    'role': 'system',
+                    'content': f"[Previous Run Context]\n{self._scratchpad_summary}"
+                })
 
         # Add dynamic instruction if set
         if self.instruction:
@@ -764,7 +935,37 @@ class Agent:
                 state, effects = reduce(state, event)
                 for eff in effects:
                     if eff.kind == 'call_llm':
+                        # Get messages for LLM call (for observability)
+                        messages_for_obs = self.ctxmgr.messages_for_llm(run_id, session_id)
+
+                        # Start step span for observability
+                        if trace_ctx and self._observer:
+                            from .integrations.base import SpanKind, GenerationData
+                            current_step_ctx = self._observer.start_span(
+                                trace_ctx, f"step-{steps}", SpanKind.STEP,
+                                input={'messages_count': len(messages_for_obs), 'step': steps}
+                            )
+                        llm_start_time = time.time()
+
                         step = await self._call_llm_generate(run_id, session_id, generation_config)
+
+                        # Log LLM generation
+                        if trace_ctx and self._observer:
+                            llm_latency = (time.time() - llm_start_time) * 1000
+                            self._observer.log_generation(
+                                current_step_ctx or trace_ctx,
+                                GenerationData(
+                                    model=self.model_cfg.get('model', 'unknown'),
+                                    provider=self.model_cfg.get('provider', 'unknown'),
+                                    messages=messages_for_obs,
+                                    response=step.get('answer'),
+                                    tool_calls=[{'tool': step.get('tool'), 'args': step.get('args')}] if step.get('tool') else None,
+                                    usage=step.get('usage'),
+                                    generation_config=generation_config,
+                                    latency_ms=llm_latency,
+                                )
+                            )
+
                         event = {'kind':'llm_step', 'step': step}
                         break
                     elif eff.kind == 'call_tool':
@@ -779,7 +980,29 @@ class Agent:
                                 raise GuardrailError(f'tool:{tool_name}', error, tool_args)
                             tool_args = modified_args
 
-                        result = await self._call_tool(tool_name, tool_args)
+                        # Track tool execution time
+                        tool_start_time = time.time()
+                        tool_error = None
+                        try:
+                            result = await self._call_tool(tool_name, tool_args)
+                        except Exception as e:
+                            tool_error = str(e)
+                            raise
+                        finally:
+                            # Log tool execution
+                            if trace_ctx and self._observer:
+                                from .integrations.base import ToolData
+                                tool_latency = (time.time() - tool_start_time) * 1000
+                                self._observer.log_tool(
+                                    current_step_ctx or trace_ctx,
+                                    ToolData(
+                                        tool_name=tool_name,
+                                        input=tool_args,
+                                        output=result if not tool_error else None,
+                                        error=tool_error,
+                                        latency_ms=tool_latency,
+                                    )
+                                )
 
                         # Process through custom handler if configured
                         directive = self._process_tool_result(
@@ -826,6 +1049,11 @@ class Agent:
                     elif eff.kind == 'halt':
                         final_answer = eff.payload.get('final','')
 
+                        # End step span
+                        if current_step_ctx and self._observer:
+                            self._observer.end_span(current_step_ctx, output=final_answer)
+                            current_step_ctx = None
+
                         # Run output guardrails
                         if self.guardrails.has_output_guardrails:
                             ctx = {'run_id': run_id, 'session_id': session_id}
@@ -867,6 +1095,12 @@ class Agent:
                         # Add assistant response to context
                         self.ctxmgr.append_assistant_message(run_id, final_answer, session_id)
                         return final_answer
+
+                # End step span if it's still open (tool loop continues)
+                if current_step_ctx and self._observer:
+                    self._observer.end_span(current_step_ctx, output={'status': 'continue', 'has_tool_call': True})
+                    current_step_ctx = None
+
                 steps += 1
                 if steps > self.policies.get('max_steps', 24):
                     # Max steps exceeded - make one final LLM call WITHOUT tools to synthesize a response
@@ -898,7 +1132,43 @@ class Agent:
             # Log detailed error information
             error_type = type(e).__name__
             logger.error(f"Agent run failed: {error_type}: {str(e)}", exc_info=True)
+
+            # End observability trace with error
+            if trace_ctx and self._observer:
+                self._observer.end_trace(trace_ctx, error=str(e))
+                self._observer.flush()
+
+            # Emit error hook
+            await self.hooks.emit('on_error', ErrorHookEvent(
+                run_id=run_id,
+                session_id=session_id,
+                error=e,
+                error_message=str(e),
+                step=steps
+            ))
             raise
+        finally:
+            # Capture scratchpad summary for next run
+            if scratchpad:
+                self._scratchpad_summary = scratchpad.get_summary()
+
+            # End observability trace if not already ended (success case)
+            run_duration_ms = (time.time() - run_start_time) * 1000
+            if trace_ctx and self._observer:
+                self._observer.end_trace(trace_ctx, output=final_answer)
+                self._observer.flush()
+
+            # Clear observer from ContextManager
+            self.ctxmgr.clear_observer()
+
+            # Emit run finally hook
+            await self.hooks.emit('on_run_finally', RunFinallyHookEvent(
+                run_id=run_id,
+                session_id=session_id,
+                output=final_answer,
+                total_steps=steps,
+                total_duration_ms=run_duration_ms
+            ))
 
     async def run_stream(
         self,
@@ -907,7 +1177,8 @@ class Agent:
         generation_config: Optional[Dict[str, Any]] = None,
         context_refs: Optional[Any] = None,
         rlm: Optional[Dict[str, Any]] = None,
-        thinking: Optional[Any] = None
+        thinking: Optional[Any] = None,
+        observability_context: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streaming run - yields stream protocol events as they occur.
@@ -933,6 +1204,9 @@ class Agent:
             context_refs: Optional context references for RLM (large documents, files, URLs)
             rlm: Optional per-run RLM config that overrides agent-level config
             thinking: Optional per-run ThinkingConfig for extended thinking (runtime override)
+            observability_context: Optional per-run observability context overrides.
+                Merges with agent-level ObservabilityConfig.
+                Supported keys: user_id, session_id, tags, metadata, trace_name
         """
         # Check if RLM is enabled (per-run override or agent-level config)
         rlm_config = None
@@ -973,10 +1247,57 @@ class Agent:
             return
 
         run_id = str(uuid.uuid4())
+        run_start_time = time.time()
         self.ctxmgr.set_input(run_id, input, session_id)
 
         # Clear any injected tools from previous runs
         self._clear_injected_tools()
+
+        # Setup observability trace
+        trace_ctx: Optional['SpanContext'] = None
+        current_step_ctx: Optional['SpanContext'] = None
+        final_answer = ''
+        if self._observer and self._observer.should_sample():
+            from .integrations.base import SpanKind, GenerationData, ToolData
+            # Merge observability_context with config
+            obs_config = self._observability_config
+            if observability_context:
+                obs_config = obs_config.with_context(**observability_context)
+
+            trace_ctx = self._observer.start_trace(
+                trace_id=run_id,
+                name=obs_config.trace_name or self.id,
+                input=input if obs_config.capture_input else {'message': '[redacted]'},
+                metadata=obs_config.metadata,
+                tags=obs_config.tags,
+                user_id=obs_config.user_id,
+                session_id=obs_config.session_id or session_id,
+            )
+
+            # Wire up observer to ContextManager for memory operation tracing
+            self.ctxmgr.set_observer(self._observer, trace_ctx)
+
+            # Emit run start hook
+            await self.hooks.emit('on_run_start', RunStartHookEvent(
+                run_id=run_id,
+                session_id=session_id,
+                input=input,
+                agent_id=self.id
+            ))
+
+        # Setup scratchpad for this run
+        scratchpad = None
+        if self._scratchpad_config:
+            from .tools.scratchpad import Scratchpad, get_scratchpad_tools
+            scratchpad = Scratchpad(self._scratchpad_config)
+            for tool in get_scratchpad_tools(scratchpad):
+                self._injected_tools[tool.name] = tool
+            # Inject previous run's summary into context
+            if self._scratchpad_summary:
+                self.ctxmgr._by_run[run_id].insert(0, {
+                    'role': 'system',
+                    'content': f"[Previous Run Context]\n{self._scratchpad_summary}"
+                })
 
         # Add dynamic instruction if set
         if self.instruction:
@@ -1017,11 +1338,21 @@ class Agent:
             while steps < max_steps:
                 steps += 1
 
-                # Emit start-step event (V5 UI Stream Protocol for multi-step agents)
-                yield StepStartEvent().to_dict()
-
                 # Get messages and stream LLM response
                 messages = self.ctxmgr.messages_for_llm(run_id, session_id)
+
+                # Start step span for observability
+                if trace_ctx and self._observer:
+                    from .integrations.base import SpanKind, GenerationData, ToolData
+                    current_step_ctx = self._observer.start_span(
+                        trace_ctx, f"step-{steps}", SpanKind.STEP,
+                        input={'messages_count': len(messages), 'step': steps}
+                    )
+
+                # Emit start-step event (V5 UI Stream Protocol for multi-step agents)
+                yield StepStartEvent().to_dict()
+                messages_for_obs = messages.copy()  # Copy for observability
+                llm_start_time = time.time()
                 provider = self._get_provider()
 
                 # Merge agent-level and per-run generation configs
@@ -1115,9 +1446,27 @@ class Agent:
                         yield {'type': 'finish'}
                         return
 
+                # Log LLM generation for observability (after streaming completes)
+                if trace_ctx and self._observer:
+                    llm_latency = (time.time() - llm_start_time) * 1000
+                    self._observer.log_generation(
+                        current_step_ctx or trace_ctx,
+                        GenerationData(
+                            model=self.model_cfg.get('model', 'unknown'),
+                            provider=self.model_cfg.get('provider', 'unknown'),
+                            messages=messages_for_obs,
+                            response=''.join(full_text) if full_text else None,
+                            tool_calls=[{'tool': tc['tool_name'], 'args': tc['input']} for tc in tool_calls] if tool_calls else None,
+                            usage=usage,
+                            generation_config=config,
+                            latency_ms=llm_latency,
+                        )
+                    )
+
                 # If we got text and no tool calls, we're done
                 if full_text and not tool_calls:
                     answer = ''.join(full_text)
+                    final_answer = answer  # Track for observability
 
                     # Run output guardrails
                     if self.guardrails.has_output_guardrails:
@@ -1161,6 +1510,11 @@ class Agent:
 
                     self.ctxmgr.append_assistant_message(run_id, answer, session_id)
 
+                    # End step span for observability
+                    if current_step_ctx and self._observer:
+                        self._observer.end_span(current_step_ctx, output=answer)
+                        current_step_ctx = None
+
                     # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
                     yield {'type': 'finish-step'}
 
@@ -1196,6 +1550,8 @@ class Agent:
                             tool = self._get_tool(tc['tool_name'])
                             tool_args = tc['input']
                             result = None
+                            tool_error = None
+                            tool_start_time = time.time()
 
                             # Run tool guardrails
                             if self.guardrails.has_tool_guardrails(tc['tool_name']):
@@ -1244,6 +1600,20 @@ class Agent:
                             if result is not None and tool.output_schema:
                                 validate_io(tool.output_schema, result)
 
+                            # Log tool execution for observability
+                            if trace_ctx and self._observer:
+                                tool_latency = (time.time() - tool_start_time) * 1000
+                                self._observer.log_tool(
+                                    current_step_ctx or trace_ctx,
+                                    ToolData(
+                                        tool_name=tc['tool_name'],
+                                        tool_call_id=tc['tool_call_id'],
+                                        input=tool_args,
+                                        output=result,
+                                        latency_ms=tool_latency,
+                                    )
+                                )
+
                             # Process inject_tools directive (dynamic tool injection)
                             injected = self._process_inject_tools(result)
                             if injected:
@@ -1290,10 +1660,28 @@ class Agent:
                                 self.ctxmgr._by_run[run_id].append(reset_msg)
 
                         except Exception as e:
+                            # Log tool error for observability
+                            if trace_ctx and self._observer:
+                                tool_latency = (time.time() - tool_start_time) * 1000
+                                self._observer.log_tool(
+                                    current_step_ctx or trace_ctx,
+                                    ToolData(
+                                        tool_name=tc['tool_name'],
+                                        tool_call_id=tc['tool_call_id'],
+                                        input=tool_args,
+                                        error=str(e),
+                                        latency_ms=tool_latency,
+                                    )
+                                )
                             error_event = ErrorEvent(error=f"Tool execution failed: {str(e)}")
                             yield error_event.to_dict()
                             yield {'type': 'finish'}
                             return
+
+                    # End step span for observability
+                    if current_step_ctx and self._observer:
+                        self._observer.end_span(current_step_ctx, output={'status': 'continue', 'tools_executed': len(tool_calls)})
+                        current_step_ctx = None
 
                     # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
                     yield {'type': 'finish-step'}
@@ -1350,9 +1738,46 @@ class Agent:
             # Ensure error message is never empty
             error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
             logger.error(f"Agent stream error: {error_msg}", exc_info=True)
+
+            # End observability trace with error
+            if trace_ctx and self._observer:
+                self._observer.end_trace(trace_ctx, error=error_msg)
+                self._observer.flush()
+
+            # Emit error hook
+            await self.hooks.emit('on_error', ErrorHookEvent(
+                run_id=run_id,
+                session_id=session_id,
+                error=e,
+                error_message=error_msg,
+                step=steps
+            ))
+
             error_event = ErrorEvent(error=error_msg)
             yield error_event.to_dict()
             raise
+        finally:
+            # Capture scratchpad summary for next run
+            if scratchpad:
+                self._scratchpad_summary = scratchpad.get_summary()
+
+            # End observability trace if not already ended (success case)
+            run_duration_ms = (time.time() - run_start_time) * 1000
+            if trace_ctx and self._observer:
+                self._observer.end_trace(trace_ctx, output=final_answer)
+                self._observer.flush()
+
+            # Clear observer from ContextManager
+            self.ctxmgr.clear_observer()
+
+            # Emit run finally hook
+            await self.hooks.emit('on_run_finally', RunFinallyHookEvent(
+                run_id=run_id,
+                session_id=session_id,
+                output=final_answer,
+                total_steps=steps,
+                total_duration_ms=run_duration_ms
+            ))
 
     async def _run_with_thinking(
         self,
