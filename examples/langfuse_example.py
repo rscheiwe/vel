@@ -23,8 +23,12 @@ Usage:
 
 import asyncio
 import os
+from dotenv import load_dotenv
 from vel import Agent, ToolSpec
 from vel.integrations import ObservabilityConfig
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 # Define some tools for the agent
@@ -88,11 +92,10 @@ async def full_config_example():
             provider='langfuse',
             enabled=True,
 
-            # API keys (optional - defaults to LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY env vars)
-            # Use these to explicitly set keys in code (e.g., for multi-tenant apps)
-            public_key='pk-...your-langfuse-public-key...',
-            secret_key='sk-...your-langfuse-secret-key...',
-            host='https://...your-langfuse-instance.../',
+            # API keys loaded from .env file
+            public_key=os.getenv('LANGFUSE_PUBLIC_KEY'),
+            secret_key=os.getenv('LANGFUSE_SECRET_KEY'),
+            host=os.getenv('LANGFUSE_HOST', 'https://cloud.langfuse.com'),
 
             # User and session tracking
             user_id='user-12345',

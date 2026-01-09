@@ -543,12 +543,36 @@ class VectorSearchStore(ContextStore):
 
 ## Best Practices
 
-1. **Start with depth=1** - Most tasks don't need deep recursion
-2. **Tune budgets** - Monitor costs and adjust limits
-3. **Use control/writer split** - Cheap model for iteration, strong for synthesis
-4. **Chunk appropriately** - Default 4KB chunks work well
-5. **Monitor events** - Use streaming to understand execution
-6. **Disable python_exec** - Unless you trust the input
+### Do
+
+- **Start with depth=1** - Most tasks don't need deep recursion
+- **Tune budgets** - Monitor costs and adjust limits
+- **Use control/writer split** - Cheap model for iteration, strong for synthesis
+- **Chunk appropriately** - Default 4KB chunks work well
+- **Monitor events** - Use streaming to understand execution
+- **Disable python_exec** - Unless you trust the input
+
+### Don't
+
+- Enable `allow_exec` without sandboxing
+- Set unlimited budgets
+- Use expensive models for control
+- Ignore budget exhaustion reasons
+
+### Optimization Tips
+
+1. **Chunking**: Pre-chunk documents for faster probing
+2. **Caching**: Cache probe results for repeated queries
+3. **Summarization**: Summarize chunks before detailed analysis
+4. **Early Exit**: Tune FINAL() detection for faster completion
+
+### Cost Estimation
+
+RLM uses conservative mid-range pricing for budget tracking:
+- Prompt: $1.00 / 1M tokens
+- Completion: $3.00 / 1M tokens
+
+Actual costs vary by provider and model. Monitor `result.metadata['cost']` in production
 
 ## Troubleshooting
 
