@@ -236,9 +236,9 @@ async def main():
 
     # Run examples
     # await basic_example()
-    await full_config_example()
+    # await full_config_example()
     # await per_request_context_example()
-    # await streaming_example()
+    await streaming_example()
     # await dict_config_example()
 
     print("\n=== All examples completed ===")
