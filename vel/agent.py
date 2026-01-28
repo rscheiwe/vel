@@ -369,6 +369,23 @@ class Agent:
             return self._custom_provider
         return self.providers.get(self.model_cfg['provider'])
 
+    def _get_system_prompt(self, run_id: str) -> Optional[str]:
+        """
+        Get the rendered system prompt for a run.
+
+        Uses the PromptContextManager to render the system prompt with
+        all registered variables.
+
+        Args:
+            run_id: The run identifier
+
+        Returns:
+            Rendered system prompt string, or None if no prompt configured
+        """
+        if hasattr(self.ctxmgr, 'get_rendered_system_prompt'):
+            return self.ctxmgr.get_rendered_system_prompt()
+        return None
+
     def _get_tool(self, name: str) -> ToolSpec:
         """
         Get tool by name from injected tools, instance tools, or global registry.
@@ -1717,11 +1734,11 @@ class Agent:
             # Stream the final response (no tools)
             final_text = ''
             async for event in provider.stream(messages, self.model_cfg.get('model', 'gpt-4o'), tools=[]):
-                event_type = event.get('type')
+                event_type = event.type  # Events are objects with .type attribute, not dicts
                 if event_type in ('text-delta', 'text-start', 'text-end'):
                     yield event
                     if event_type == 'text-delta':
-                        final_text += event.get('delta', '')
+                        final_text += getattr(event, 'delta', '')
                 elif event_type == 'finish-message':
                     yield event
 
