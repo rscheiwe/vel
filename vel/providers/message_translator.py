@@ -483,6 +483,43 @@ def translate_to_anthropic(messages: List[Dict[str, Any]]) -> Tuple[Optional[str
 
             # Assistant message
             if role == 'assistant':
+                # Check if message is in OpenAI format (has tool_calls at top level)
+                if 'tool_calls' in msg:
+                    # Convert OpenAI format to Anthropic format
+                    anthropic_content = []
+
+                    # Add text content if present
+                    if content and isinstance(content, str):
+                        anthropic_content.append({'type': 'text', 'text': content})
+
+                    # Convert tool_calls to tool_use blocks
+                    for tc in msg['tool_calls']:
+                        tc_id = tc.get('id')
+                        tc_func = tc.get('function', {})
+                        tc_name = tc_func.get('name')
+                        tc_args_str = tc_func.get('arguments', '{}')
+
+                        try:
+                            tc_args = json.loads(tc_args_str) if isinstance(tc_args_str, str) else tc_args_str
+                        except json.JSONDecodeError:
+                            tc_args = {}
+
+                        anthropic_content.append({
+                            'type': 'tool_use',
+                            'id': tc_id,
+                            'name': tc_name,
+                            'input': tc_args
+                        })
+
+                    anthropic_messages.append({
+                        'role': 'assistant',
+                        'content': anthropic_content
+                    })
+                    continue
+
+                # Handle None content (no text, only tool calls in original format)
+                if content is None:
+                    content = []
                 parts = _normalize_content(content)
 
                 anthropic_content = []
@@ -533,6 +570,24 @@ def translate_to_anthropic(messages: List[Dict[str, Any]]) -> Tuple[Optional[str
 
             # Tool message - convert to user message with tool_result
             if role == 'tool':
+                # Check if message is already in OpenAI format (has tool_call_id at top level)
+                if 'tool_call_id' in msg:
+                    # Convert OpenAI format to Anthropic format
+                    tool_call_id = msg['tool_call_id']
+                    result_content = content if isinstance(content, str) else json.dumps(content) if isinstance(content, dict) else str(content)
+                    anthropic_messages.append({
+                        'role': 'user',
+                        'content': [{
+                            'type': 'tool_result',
+                            'tool_use_id': tool_call_id,
+                            'content': result_content
+                        }]
+                    })
+                    continue
+
+                # Handle None content
+                if content is None:
+                    content = []
                 parts = _normalize_content(content)
 
                 tool_results = []
@@ -564,6 +619,15 @@ def translate_to_anthropic(messages: List[Dict[str, Any]]) -> Tuple[Optional[str
                             'tool_use_id': tool_call_id,
                             'content': result_content
                         })
+                    elif part_type == 'text':
+                        # Text parts in tool messages - include as text content
+                        # This can happen when tool output includes additional text
+                        text_content = part.get('text', '')
+                        if text_content:
+                            tool_results.append({
+                                'type': 'text',
+                                'text': text_content
+                            })
                     else:
                         logger.warning(
                             f"Unknown tool content part type '{part_type}' at message index {idx}"

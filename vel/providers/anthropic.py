@@ -101,7 +101,13 @@ class AnthropicProvider(BaseProvider):
         }
 
         if system_message:
-            payload['system'] = system_message
+            # Use structured format with cache_control for prompt caching
+            # This enables Anthropic's prompt caching feature
+            payload['system'] = [{
+                "type": "text",
+                "text": system_message,
+                "cache_control": {"type": "ephemeral"}
+            }]
 
         if anthropic_tools:
             payload['tools'] = anthropic_tools
@@ -155,6 +161,10 @@ class AnthropicProvider(BaseProvider):
 
                                 # Check if this is a stop event
                                 if vel_event.type == 'finish-message':
+                                    # Emit metadata event with usage before returning
+                                    metadata_event = self.translator.get_metadata_event()
+                                    if metadata_event:
+                                        yield metadata_event
                                     return
                                 elif vel_event.type == 'error':
                                     return
@@ -188,9 +198,15 @@ class AnthropicProvider(BaseProvider):
                     error_code = error_data.get('code')
                     error_type = error_data.get('type')
                     error_details = error_data
+            except httpx.ResponseNotRead:
+                # Streaming response hasn't been read - use exception message
+                error_message = f"HTTP {status_code}: {str(exception)}"
             except Exception:
-                # If JSON parsing fails, use response text
-                error_message = f"HTTP {status_code}: {response.text[:200]}"
+                # If JSON parsing fails, try response text (may fail for streaming)
+                try:
+                    error_message = f"HTTP {status_code}: {response.text[:200]}"
+                except httpx.ResponseNotRead:
+                    error_message = f"HTTP {status_code}: {str(exception)}"
 
             return ErrorEvent(
                 error=error_message,
@@ -241,7 +257,13 @@ class AnthropicProvider(BaseProvider):
         }
 
         if system_message:
-            payload['system'] = system_message
+            # Use structured format with cache_control for prompt caching
+            # This enables Anthropic's prompt caching feature
+            payload['system'] = [{
+                "type": "text",
+                "text": system_message,
+                "cache_control": {"type": "ephemeral"}
+            }]
 
         if anthropic_tools:
             payload['tools'] = anthropic_tools
@@ -280,7 +302,9 @@ class AnthropicProvider(BaseProvider):
         usage_data = data.get('usage', {})
         usage = {
             'input_tokens': usage_data.get('input_tokens', 0),
-            'output_tokens': usage_data.get('output_tokens', 0)
+            'output_tokens': usage_data.get('output_tokens', 0),
+            'cache_read_input_tokens': usage_data.get('cache_read_input_tokens', 0),
+            'cache_creation_input_tokens': usage_data.get('cache_creation_input_tokens', 0),
         }
 
         # Check for tool use

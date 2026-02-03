@@ -4,7 +4,59 @@ Based on Vercel AI SDK stream protocol: https://ai-sdk.dev/docs/ai-sdk-ui/stream
 """
 from __future__ import annotations
 from typing import Any, Dict, Literal, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import time
+
+
+# =========================
+# Event Metadata (for Mesh/Valis orchestration)
+# =========================
+
+@dataclass
+class EventMetadata:
+    """
+    Metadata for event orchestration in Mesh/Valis integration.
+
+    Provides correlation and routing information for events when
+    Vel is used as a node in a larger graph execution.
+
+    Args:
+        node_id: Identifier for the graph node emitting events
+        run_id: External correlation ID for tracing across systems
+        step: Step counter within the current execution
+        timestamp: Event timestamp (auto-populated)
+    """
+    node_id: Optional[str] = None
+    run_id: Optional[str] = None
+    step: Optional[int] = None
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict, excluding None values."""
+        return {k: v for k, v in {
+            'node_id': self.node_id,
+            'run_id': self.run_id,
+            'step': self.step,
+            'timestamp': self.timestamp,
+        }.items() if v is not None}
+
+
+def add_metadata(event: Dict[str, Any], metadata: EventMetadata) -> Dict[str, Any]:
+    """
+    Add metadata to an event dict if metadata has values.
+
+    Args:
+        event: Event dictionary to enhance
+        metadata: EventMetadata instance
+
+    Returns:
+        Event dict with 'metadata' field if metadata has values,
+        otherwise returns original event unchanged.
+    """
+    meta_dict = metadata.to_dict()
+    if meta_dict:
+        return {**event, 'metadata': meta_dict}
+    return event
 
 # Event types - V5 UI Stream Protocol
 # Note: Custom data-* events are supported via DataEvent class (not in this Literal)

@@ -266,35 +266,54 @@ class ContextManager:
 
     # ---------- existing behavior stays the same ----------
 
-    def set_input(self, run_id: str, input: Dict[str, Any], session_id: Optional[str] = None):
+    def set_input(self, run_id: str, input: Dict[str, Any], session_id: Optional[str] = None, stateless: bool = False):
         """
         Store the initial input for a run.
 
-        Supports two modes:
+        Supports three modes:
         1. Stateless with messages array: input={'messages': [...]}
            Client provides full conversation history, no session management
         2. Session-based: input={'message': '...'} with session_id
            Vel manages conversation history across calls
+        3. Stateless with session_id: stateless=True with session_id
+           Read from session but don't mutate it (for Mesh/Valis integration)
+
+        Args:
+            run_id: Unique identifier for this run
+            input: Input dict with 'message' or 'messages'
+            session_id: Optional session ID for multi-turn conversations
+            stateless: If True, don't mutate session state (copy instead of reference)
         """
         self._inputs[run_id] = input
 
-        # Stateless mode: client provides full messages array
+        # Mode 1: Client provides full messages array (always stateless)
         if 'messages' in input and isinstance(input['messages'], list):
-            # Use provided messages array directly (copy for safety during tool calls)
-            self._by_run[run_id] = list(input['messages'])
+            # Use provided messages array directly (copy for safety)
+            messages = list(input['messages'])
+            # If 'message' is also provided, append it
+            if 'message' in input and input['message']:
+                messages.append({'role': 'user', 'content': input['message']})
+            self._by_run[run_id] = messages
             # Don't link to session - client manages history
             return
 
-        # Legacy session-based mode: Vel manages history
+        # Mode 2/3: Session-based or stateless with session
         message = input.get('message', '') or str(input)
 
         if session_id:
-            # Session-based: append to existing session or create new
+            # Initialize session if needed
             if session_id not in self._by_session:
                 self._by_session[session_id] = []
-            self._by_session[session_id].append({'role': 'user', 'content': message})
-            # Link run to session
-            self._by_run[run_id] = self._by_session[session_id]
+
+            if stateless:
+                # Mode 3: Stateless - copy session history, don't mutate
+                # Copy existing history + new message (no reference to session)
+                self._by_run[run_id] = list(self._by_session[session_id]) + [{'role': 'user', 'content': message}]
+            else:
+                # Mode 2: Session-based - link and mutate
+                self._by_session[session_id].append({'role': 'user', 'content': message})
+                # Link run to session (same list reference)
+                self._by_run[run_id] = self._by_session[session_id]
         else:
             # Run-based: each run is independent
             self._by_run[run_id] = [{'role': 'user', 'content': message}]

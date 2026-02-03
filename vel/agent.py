@@ -33,7 +33,8 @@ from .tools import ToolRegistry, ToolSpec, validate_io
 from .events import (
     StreamEvent, StartEvent, FinishEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
     ErrorEvent, FinishMessageEvent, StepStartEvent, StepFinishEvent,
-    ObjectElementEvent, ObjectPartialEvent, ObjectCompleteEvent
+    ObjectElementEvent, ObjectPartialEvent, ObjectCompleteEvent,
+    EventMetadata, add_metadata
 )
 from .core.json_stream_parser import (
     IncrementalJsonParser, detect_output_mode, get_element_type, OutputMode,
@@ -64,10 +65,14 @@ class Agent:
                  hooks: Optional[Dict[str, Any]]=None,
                  # Dynamic instructions
                  instruction: Optional[Any]=None,  # str or Callable[[dict], str]
+                 # Direct system prompt (takes priority over prompt/prompt_id)
+                 system_prompt: Optional[Any]=None,  # str or Callable[[dict], str]
                  # Scratchpad for working memory
                  scratchpad: Optional[Any]=None,  # bool, dict, or ScratchpadConfig
                  # Observability
                  observability: Optional[Union['ObservabilityConfig', Dict[str, Any]]]=None,
+                 # Tool approval callback (for CLI/TUI approval flows)
+                 tool_approval_callback: Optional[Any]=None,  # Callable[[str, Dict], Awaitable[bool]]
                  # Deprecated (backwards compatibility)
                  session_storage: Optional[Literal['memory', 'database']]=None):
         """
@@ -177,6 +182,13 @@ class Agent:
                 If callable, evaluated per-run with context dict: (ctx) -> str
                 Example: lambda ctx: f"User tier: {ctx.get('user_tier', 'free')}"
 
+            system_prompt: Direct system prompt string or callable. Takes priority over
+                prompt/prompt_id templates. Useful for dynamic prompt building:
+                - str: Used directly as system prompt
+                - Callable[[dict], str]: Called with context dict from run()
+                Example: lambda ctx: f"You are {ctx.get('role')}. Skills: {ctx.get('skill')}"
+                Priority: system_prompt > prompt template > default
+
             scratchpad: Scratchpad configuration for ephemeral working memory.
                 Enables agents to maintain context during multi-step tool execution.
                 Can be:
@@ -255,6 +267,9 @@ class Agent:
         # Dynamic instructions
         self.instruction = instruction
 
+        # Direct system prompt (takes priority over prompt templates)
+        self._system_prompt = system_prompt
+
         # RLM configuration
         self.rlm_config = None
         if rlm:
@@ -297,6 +312,11 @@ class Agent:
             # Build handler if enabled
             if self._observability_config.enabled and self._observability_config.provider != 'none':
                 self._observer = build_handler(self._observability_config, self.id)
+
+        # Tool approval callback for CLI/TUI approval flows
+        # Signature: async def callback(tool_name: str, tool_args: Dict) -> bool
+        # Returns True to approve, False to deny
+        self._tool_approval_callback = tool_approval_callback
 
         # Handle backwards compatibility for session_storage
         if session_storage is not None:
@@ -369,22 +389,51 @@ class Agent:
             return self._custom_provider
         return self.providers.get(self.model_cfg['provider'])
 
-    def _get_system_prompt(self, run_id: str) -> Optional[str]:
+    def _get_system_prompt(self, run_id: str, context: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """
         Get the rendered system prompt for a run.
 
-        Uses the PromptContextManager to render the system prompt with
-        all registered variables.
+        Priority order:
+        1. Direct system_prompt (string or callable) - highest priority
+        2. PromptContextManager template - if system_prompt not set
+        3. None - provider default
 
         Args:
             run_id: The run identifier
+            context: Optional runtime context dict for callable system_prompt
 
         Returns:
             Rendered system prompt string, or None if no prompt configured
         """
+        context = context or {}
+
+        # Priority 1: Direct system_prompt
+        if self._system_prompt is not None:
+            if callable(self._system_prompt):
+                return self._system_prompt(context)
+            return self._system_prompt
+
+        # Priority 2: Template via PromptContextManager
         if hasattr(self.ctxmgr, 'get_rendered_system_prompt'):
             return self.ctxmgr.get_rendered_system_prompt()
+
+        # Priority 3: None (provider default)
         return None
+
+    def get_system_prompt(self, context: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """
+        Get the resolved system prompt for external inspection.
+
+        Public method for consumers (like Valis/Mesh) to retrieve the
+        system prompt that would be used for a run.
+
+        Args:
+            context: Optional runtime context dict for callable system_prompt
+
+        Returns:
+            Resolved system prompt string, or None if no prompt configured
+        """
+        return self._get_system_prompt(run_id='', context=context)
 
     def _get_tool(self, name: str) -> ToolSpec:
         """
@@ -814,7 +863,9 @@ class Agent:
         generation_config: Optional[Dict[str, Any]] = None,
         context_refs: Optional[Any] = None,
         rlm: Optional[Dict[str, Any]] = None,
-        observability_context: Optional[Dict[str, Any]] = None
+        observability_context: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        stateless: bool = False
     ) -> Union[str, Dict[str, Any]]:
         """
         Non-streaming run - returns final answer or raw tool output.
@@ -842,6 +893,12 @@ class Agent:
             observability_context: Optional per-run observability context overrides.
                 Merges with agent-level ObservabilityConfig.
                 Supported keys: user_id, session_id, tags, metadata, trace_name
+            context: Optional runtime context dict for callable system_prompt.
+                Passed to system_prompt(context) if system_prompt is callable.
+                Separate from context_refs (which is for RLM document content).
+            stateless: If True, skip session state mutation. Messages won't be
+                saved to session history. Useful for Mesh/Valis integration where
+                state is managed externally. Default: False.
         """
         # Check if RLM is enabled (per-run override or agent-level config)
         rlm_config = None
@@ -865,7 +922,7 @@ class Agent:
 
         run_id = str(uuid.uuid4())
         run_start_time = time.time()
-        self.ctxmgr.set_input(run_id, input, session_id)
+        self.ctxmgr.set_input(run_id, input, session_id, stateless=stateless)
 
         # Clear any injected tools from previous runs
         self._clear_injected_tools()
@@ -938,7 +995,7 @@ class Agent:
             # If content was modified, update the input
             if modified != content and 'message' in input:
                 input['message'] = modified
-                self.ctxmgr.set_input(run_id, input, session_id)
+                self.ctxmgr.set_input(run_id, input, session_id, stateless=stateless)
 
         state = State(run_id=run_id)
         event: Dict[str, Any] = {'kind':'start'}
@@ -1132,7 +1189,7 @@ class Agent:
 
                     # Make final LLM call without tools
                     messages = self.ctxmgr.messages_for_llm(run_id, session_id)
-                    system_prompt = self._get_system_prompt(run_id)
+                    system_prompt = self._get_system_prompt(run_id, context=context)
                     if system_prompt:
                         messages = [{'role': 'system', 'content': system_prompt}] + messages
 
@@ -1195,7 +1252,11 @@ class Agent:
         context_refs: Optional[Any] = None,
         rlm: Optional[Dict[str, Any]] = None,
         thinking: Optional[Any] = None,
-        observability_context: Optional[Dict[str, Any]] = None
+        observability_context: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        stateless: bool = False,
+        node_id: Optional[str] = None,
+        external_run_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streaming run - yields stream protocol events as they occur.
@@ -1224,6 +1285,17 @@ class Agent:
             observability_context: Optional per-run observability context overrides.
                 Merges with agent-level ObservabilityConfig.
                 Supported keys: user_id, session_id, tags, metadata, trace_name
+            context: Optional runtime context dict for callable system_prompt.
+                Passed to system_prompt(context) if system_prompt is callable.
+                Separate from context_refs (which is for RLM document content).
+            stateless: If True, skip session state mutation. Messages won't be
+                saved to session history. Useful for Mesh/Valis integration where
+                state is managed externally. Default: False.
+            node_id: Optional node identifier for Mesh orchestration.
+                When set, events will include metadata with this node_id.
+            external_run_id: Optional correlation ID for Mesh/external tracing.
+                When set, events will include metadata with this ID for
+                correlation across systems.
         """
         # Check if RLM is enabled (per-run override or agent-level config)
         rlm_config = None
@@ -1259,16 +1331,41 @@ class Agent:
 
         # If Extended Thinking is enabled, route to thinking controller
         if thinking_config and thinking_config.mode == 'reflection':
-            async for event in self._run_with_thinking(input, session_id, thinking_config):
+            async for event in self._run_with_thinking(input, session_id, thinking_config, stateless=stateless):
                 yield event
             return
 
         run_id = str(uuid.uuid4())
         run_start_time = time.time()
-        self.ctxmgr.set_input(run_id, input, session_id)
+        self.ctxmgr.set_input(run_id, input, session_id, stateless=stateless)
 
         # Clear any injected tools from previous runs
         self._clear_injected_tools()
+
+        # Setup event metadata for Mesh/Valis orchestration
+        _event_metadata: Optional[EventMetadata] = None
+        _event_step = 0
+        if node_id or external_run_id:
+            _event_metadata = EventMetadata(
+                node_id=node_id or self.id,
+                run_id=external_run_id
+            )
+
+        def _wrap_event(event_dict: Dict[str, Any]) -> Dict[str, Any]:
+            """Wrap event with metadata if orchestration is enabled."""
+            nonlocal _event_step
+            if _event_metadata is None:
+                return event_dict
+            event_type = event_dict.get('type', '')
+            # Add metadata to streaming content events
+            if event_type in ('text-delta', 'reasoning-delta', 'reasoning-signature',
+                              'tool-input-available', 'tool-output-available',
+                              'start-step', 'finish-step', 'finish-message'):
+                _event_metadata.step = _event_step
+                _event_metadata.timestamp = time.time()
+                _event_step += 1
+                return add_metadata(event_dict, _event_metadata)
+            return event_dict
 
         # Setup observability trace
         trace_ctx: Optional['SpanContext'] = None
@@ -1342,7 +1439,7 @@ class Agent:
             # If content was modified, update the input
             if modified != content and 'message' in input:
                 input['message'] = modified
-                self.ctxmgr.set_input(run_id, input, session_id)
+                self.ctxmgr.set_input(run_id, input, session_id, stateless=stateless)
 
         # Emit start event (V5 UI Stream Protocol)
         yield StartEvent().to_dict()
@@ -1358,6 +1455,11 @@ class Agent:
                 # Get messages and stream LLM response
                 messages = self.ctxmgr.messages_for_llm(run_id, session_id)
 
+                # Prepend system prompt if set (for prompt caching)
+                system_prompt = self._get_system_prompt(run_id, context=context)
+                if system_prompt:
+                    messages = [{'role': 'system', 'content': system_prompt}] + messages
+
                 # Start step span for observability
                 if trace_ctx and self._observer:
                     from .integrations.base import SpanKind, GenerationData, ToolData
@@ -1367,7 +1469,7 @@ class Agent:
                     )
 
                 # Emit start-step event (V5 UI Stream Protocol for multi-step agents)
-                yield StepStartEvent().to_dict()
+                yield _wrap_event(StepStartEvent().to_dict())
                 messages_for_obs = messages.copy()  # Copy for observability
                 llm_start_time = time.time()
                 provider = self._get_provider()
@@ -1401,7 +1503,6 @@ class Agent:
                         continue  # Don't forward, consume internally
 
                     # Track response metadata (usage, model info)
-                    # AI SDK v5 parity: Consume internally, don't forward
                     elif event.type == 'response-metadata':
                         if not response_metadata:
                             response_metadata = {}
@@ -1414,10 +1515,12 @@ class Agent:
                             response_metadata['timestamp'] = event.timestamp
                         if hasattr(event, 'usage') and event.usage:
                             usage = event.usage
-                        continue  # Don't forward, consume internally
+                        # Forward response-metadata so consumers can track usage
+                        yield _wrap_event(event.to_dict())
+                        continue
 
                     # Forward all other stream protocol events
-                    yield event.to_dict()
+                    yield _wrap_event(event.to_dict())
 
                     # Track text content
                     if event.type == 'text-delta':
@@ -1533,7 +1636,7 @@ class Agent:
                         current_step_ctx = None
 
                     # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
-                    yield {'type': 'finish-step'}
+                    yield _wrap_event({'type': 'finish-step'})
 
                     # Emit finish event (AI SDK v5 spec: simple event, no fields)
                     yield {'type': 'finish'}
@@ -1570,6 +1673,20 @@ class Agent:
                             tool_error = None
                             tool_start_time = time.time()
 
+                            # Check tool approval callback (for CLI/TUI approval flows)
+                            if self._tool_approval_callback:
+                                approved = await self._tool_approval_callback(tc['tool_name'], tool_args, tc['tool_call_id'])
+                                if not approved:
+                                    # Tool was denied - add error result and continue
+                                    error_result = {'error': f"Tool '{tc['tool_name']}' was denied by user"}
+                                    output_event = ToolOutputAvailableEvent(
+                                        tool_call_id=tc['tool_call_id'],
+                                        output=error_result
+                                    )
+                                    yield _wrap_event(output_event.to_dict())
+                                    self.ctxmgr.append_tool_result(run_id, tc['tool_name'], error_result, session_id, tool_call_id=tc['tool_call_id'])
+                                    continue  # Skip to next tool call
+
                             # Run tool guardrails
                             if self.guardrails.has_tool_guardrails(tc['tool_name']):
                                 ctx = {'run_id': run_id, 'session_id': session_id, 'tool_name': tc['tool_name']}
@@ -1594,7 +1711,7 @@ class Agent:
                                         tool_call_id=tc['tool_call_id'],
                                         output=result
                                     )
-                                    yield output_event.to_dict()
+                                    yield _wrap_event(output_event.to_dict())
                                 else:
                                     # Auto-inject ID for reasoning events (Vercel AI SDK requires it)
                                     event_type = event.get('type', '')
@@ -1643,7 +1760,7 @@ class Agent:
 
                             # Handle directive decision
                             if directive.decision == ToolUseDecision.STOP:
-                                yield {'type': 'finish-step'}
+                                yield _wrap_event({'type': 'finish-step'})
                                 yield {'type': 'finish'}
                                 return
                             elif directive.decision == ToolUseDecision.ERROR:
@@ -1654,7 +1771,7 @@ class Agent:
 
                             # Check if we should stop after this tool (non-custom behavior)
                             if self.should_stop_after_tool(tc['tool_name']):
-                                yield {'type': 'finish-step'}
+                                yield _wrap_event({'type': 'finish-step'})
                                 yield {'type': 'finish'}
                                 return  # Don't add to context or continue loop
 
@@ -1701,7 +1818,7 @@ class Agent:
                         current_step_ctx = None
 
                     # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
-                    yield {'type': 'finish-step'}
+                    yield _wrap_event({'type': 'finish-step'})
 
                     # Continue loop to get next LLM response
                     continue
@@ -1725,7 +1842,7 @@ class Agent:
 
             # Make final LLM call without tools
             messages = self.ctxmgr.messages_for_llm(run_id, session_id)
-            system_prompt = self._get_system_prompt(run_id)
+            system_prompt = self._get_system_prompt(run_id, context=context)
             if system_prompt:
                 messages = [{'role': 'system', 'content': system_prompt}] + messages
 
@@ -1746,7 +1863,7 @@ class Agent:
             if final_text:
                 self.ctxmgr.append_assistant_message(run_id, final_text, session_id)
 
-            yield {'type': 'finish-step'}
+            yield _wrap_event({'type': 'finish-step'})
             yield {'type': 'finish'}
 
         except asyncio.CancelledError:
@@ -1800,7 +1917,8 @@ class Agent:
         self,
         input: Dict[str, Any],
         session_id: Optional[str],
-        config: Any  # ThinkingConfig
+        config: Any,  # ThinkingConfig
+        stateless: bool = False
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Execute with Extended Thinking enabled.
@@ -1812,6 +1930,7 @@ class Agent:
             input: Input dict with 'message' or 'messages'
             session_id: Optional session ID
             config: ThinkingConfig instance
+            stateless: If True, don't mutate session state
 
         Yields:
             Stream protocol events
@@ -1819,7 +1938,7 @@ class Agent:
         from .thinking import ReflectionController
 
         run_id = str(uuid.uuid4())
-        self.ctxmgr.set_input(run_id, input, session_id)
+        self.ctxmgr.set_input(run_id, input, session_id, stateless=stateless)
 
         # Emit start event
         yield StartEvent().to_dict()

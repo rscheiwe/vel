@@ -540,6 +540,11 @@ class AnthropicAPITranslator:
             usage = message.get('usage')
             if usage and 'input_tokens' in usage:
                 self._usage_data['promptTokens'] = usage['input_tokens']
+                # Track cache stats for prompt caching
+                if 'cache_read_input_tokens' in usage:
+                    self._usage_data['cacheReadTokens'] = usage['cache_read_input_tokens']
+                if 'cache_creation_input_tokens' in usage:
+                    self._usage_data['cacheCreationTokens'] = usage['cache_creation_input_tokens']
 
             # Emit early metadata if we have id or model
             if self._message_id or self._model_id:
@@ -697,14 +702,21 @@ class AnthropicAPITranslator:
 
             # If we already emitted early metadata, emit usage update
             # Otherwise, emit complete metadata
+            usage_dict = {
+                'promptTokens': prompt_tokens,
+                'completionTokens': completion_tokens,
+                'totalTokens': prompt_tokens + completion_tokens
+            }
+            # Include cache stats if available
+            if 'cacheReadTokens' in self._usage_data:
+                usage_dict['cacheReadTokens'] = self._usage_data['cacheReadTokens']
+            if 'cacheCreationTokens' in self._usage_data:
+                usage_dict['cacheCreationTokens'] = self._usage_data['cacheCreationTokens']
+
             return ResponseMetadataEvent(
                 id=self._message_id if not self._metadata_emitted else None,
                 model_id=self._model_id if not self._metadata_emitted else None,
-                usage={
-                    'promptTokens': prompt_tokens,
-                    'completionTokens': completion_tokens,
-                    'totalTokens': prompt_tokens + completion_tokens
-                }
+                usage=usage_dict
             )
         return None
 

@@ -21,7 +21,12 @@ class ToolSpec:
         timeout: Optional[float] = None,  # Timeout in seconds
         retries: int = 0,  # Number of retry attempts
         fallback: Optional[str] = None,  # "return_error" | "call_other_tool" | handler
-        _unpack_args: bool = False  # Internal: whether to unpack input dict as kwargs
+        _unpack_args: bool = False,  # Internal: whether to unpack input dict as kwargs
+        # Valis Harness integration
+        is_async: Optional[bool] = None,  # Explicit async indicator (auto-detected if None)
+        category: Optional[str] = None,  # Tool category for organization (e.g., 'data', 'api', 'filesystem')
+        tags: Optional[List[str]] = None,  # Tags for filtering/grouping tools
+        requires_confirmation: bool = False  # Flag for HITL confirmation routing
     ):
         self.name = name
         self.input_schema = input_schema
@@ -39,6 +44,15 @@ class ToolSpec:
         self.fallback = fallback
         # Whether handler expects **kwargs unpacking (from_function style)
         self._unpack_args = _unpack_args
+        # Valis Harness integration fields
+        if is_async is None:
+            # Auto-detect: True if handler is coroutine or async generator
+            self.is_async = asyncio.iscoroutinefunction(handler) or self._is_async_generator
+        else:
+            self.is_async = is_async
+        self.category = category
+        self.tags = tags or []
+        self.requires_confirmation = requires_confirmation
 
     def is_enabled(self, ctx: Optional[Dict[str, Any]] = None) -> bool:
         """
@@ -67,6 +81,11 @@ class ToolSpec:
         output_schema: Optional[Dict[str, Any]] = None,
         description: Optional[str] = None,
         validate_output: bool = False,
+        # Valis Harness integration
+        is_async: Optional[bool] = None,
+        category: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        requires_confirmation: bool = False,
         **kwargs
     ) -> 'ToolSpec':
         """
@@ -82,6 +101,10 @@ class ToolSpec:
             output_schema: Override auto-generated output schema
             description: Tool description (defaults to function docstring)
             validate_output: If False (default), accept any output. If True, validate against schema.
+            is_async: Explicit async indicator. If None (default), auto-detected from function.
+            category: Tool category for organization (e.g., 'data', 'api', 'filesystem')
+            tags: List of tags for filtering/grouping tools
+            requires_confirmation: Flag indicating tool should trigger HITL confirmation
             **kwargs: Additional ToolSpec parameters (enabled, timeout, retries, fallback)
 
         Returns:
@@ -107,6 +130,14 @@ class ToolSpec:
                     },
                     'required': ['temp', 'condition']
                 }
+            )
+
+            # Tool with Valis integration fields
+            tool = ToolSpec.from_function(
+                delete_file,
+                category='filesystem',
+                tags=['destructive', 'io'],
+                requires_confirmation=True
             )
 
             # Pass directly to agent (no registration!)
@@ -139,6 +170,11 @@ class ToolSpec:
             handler=fn,
             description=tool_desc,
             _unpack_args=True,  # from_function handlers expect **kwargs, not (input, ctx)
+            # Valis Harness integration fields
+            is_async=is_async,
+            category=category,
+            tags=tags,
+            requires_confirmation=requires_confirmation,
             **kwargs
         )
 
