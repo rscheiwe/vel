@@ -392,6 +392,53 @@ async def progress_tracking():
 
 
 # =============================================================================
+# Example 8: Auto-Routed Thinking
+# =============================================================================
+
+async def auto_routed_thinking():
+    """
+    Let Vel decide whether a request needs reflection.
+
+    The routing classifier emits a normal direct response for simple prompts and
+    uses the reflection controller for multi-step prompts. When reflection is
+    selected, Vel owns the full stream envelope:
+    start -> start-step -> reasoning-* -> finish-step -> answer step -> finish.
+    """
+    print("\n" + "="*60)
+    print("Example 8: Auto-Routed Thinking")
+    print("="*60 + "\n")
+
+    agent = Agent(
+        id='auto-routed-thinker',
+        model={'provider': 'openai', 'model': 'gpt-4o'},
+        thinking=ThinkingConfig(
+            mode='reflection',
+            routing='auto',
+            effort='high',
+            router_confidence_threshold=0.8,
+            router_model={'provider': 'openai', 'model': 'gpt-4o-mini'},
+            thinking_model={'provider': 'openai', 'model': 'gpt-4o-mini'},
+        )
+    )
+
+    question = (
+        "Compare three ways to model a reseller account: subtype of Account, "
+        "subtype of Vendor, or Account with a VendorRole. Recommend the safest design."
+    )
+    print(f"Question: {question}\n")
+    print("-" * 40)
+
+    async for event in agent.run_stream({'message': question}):
+        event_type = event.get('type')
+        if event_type in {'start-step', 'finish-step', 'reasoning-start', 'reasoning-end'}:
+            print(f"\n[{event_type}]")
+        elif event_type == 'reasoning-delta':
+            print(event.get('delta', ''), end='', flush=True)
+        elif event_type == 'text-delta':
+            print(event.get('delta', ''), end='', flush=True)
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -412,6 +459,7 @@ async def main():
         ("High Confidence Threshold", high_confidence),
         ("Silent Thinking", silent_thinking),
         ("Progress Tracking UI", progress_tracking),
+        ("Auto-Routed Thinking", auto_routed_thinking),
     ]
 
     print("\n" + "="*60)

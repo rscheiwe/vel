@@ -5,12 +5,15 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import AsyncGenerator, Dict, Any
 
-from vel.thinking import ThinkingConfig, ReflectionController
+from vel import Agent
+from vel.providers import BaseProvider
+from vel.thinking import ThinkingConfig, ReflectionController, route_thinking
 from vel.thinking.controller import ThinkingPhase, ThinkingState
 from vel.events import (
     ReasoningStartEvent, ReasoningDeltaEvent, ReasoningEndEvent,
     TextStartEvent, TextDeltaEvent, TextEndEvent,
-    ToolInputAvailableEvent, ToolOutputAvailableEvent
+    ToolInputAvailableEvent, ToolOutputAvailableEvent,
+    FinishMessageEvent,
 )
 
 
@@ -29,6 +32,11 @@ class TestThinkingConfig:
         assert config.confidence_threshold == 0.8
         assert config.thinking_tools is True
         assert config.thinking_model is None
+        assert config.routing == 'always'
+        assert config.router_model is None
+        assert config.router_confidence_threshold == 0.8
+        assert config.effort == 'high'
+        assert config.emit_summaries_only is True
 
     def test_reflection_mode(self):
         """Test reflection mode configuration."""
@@ -61,6 +69,14 @@ class TestThinkingConfig:
         config = ThinkingConfig(confidence_threshold=1.5)
         assert config.confidence_threshold == 1
 
+    def test_validation_router_confidence_threshold(self):
+        """Test router_confidence_threshold validation bounds."""
+        config = ThinkingConfig(router_confidence_threshold=-0.5)
+        assert config.router_confidence_threshold == 0
+
+        config = ThinkingConfig(router_confidence_threshold=1.5)
+        assert config.router_confidence_threshold == 1
+
     def test_thinking_model_override(self):
         """Test thinking_model configuration."""
         config = ThinkingConfig(
@@ -77,6 +93,132 @@ class TestThinkingConfig:
         assert isinstance(d, dict)
         assert d['mode'] == 'reflection'
         assert 'max_refinements' in d
+        assert d['routing'] == 'always'
+        assert d['effort'] == 'high'
+
+    def test_routing_and_effort_validation(self):
+        """Invalid routing/effort values fall back to safe defaults."""
+        config = ThinkingConfig(mode='reflection', routing='sometimes', effort='huge')  # type: ignore[arg-type]
+        assert config.routing == 'always'
+        assert config.effort == 'high'
+
+
+class FakeProvider(BaseProvider):
+    """Deterministic test provider."""
+
+    name = 'fake'
+
+    def __init__(self, responses: list[str]):
+        self.responses = responses
+        self.calls: list[dict[str, Any]] = []
+
+    async def stream(self, messages, model, tools, generation_config=None):
+        self.calls.append({
+            'messages': messages,
+            'model': model,
+            'tools': tools,
+            'generation_config': generation_config,
+        })
+        content = self.responses.pop(0) if self.responses else ''
+        yield TextStartEvent(block_id='test')
+        if content:
+            yield TextDeltaEvent(block_id='test', delta=content)
+        yield TextEndEvent(block_id='test')
+        yield FinishMessageEvent(finish_reason='stop')
+
+    async def generate(self, messages, model, tools, generation_config=None):
+        return {'done': True, 'answer': self.responses.pop(0) if self.responses else ''}
+
+
+class TestThinkingRouter:
+    """Test automatic thinking routing."""
+
+    @pytest.mark.asyncio
+    async def test_route_thinking_reflection(self):
+        provider = FakeProvider([
+            '{"mode":"reflection","confidence":0.95,"category":"tradeoff_analysis","reason":"complex tradeoff"}'
+        ])
+
+        decision = await route_thinking(
+            provider=provider,
+            model='router-model',
+            message='Compare three ontology designs and recommend one.',
+            effort='extra',
+        )
+
+        assert decision.mode == 'reflection'
+        assert decision.reason == 'complex tradeoff'
+        assert decision.effort == 'extra'
+        assert decision.confidence == 0.95
+        assert decision.category == 'tradeoff_analysis'
+        assert decision.raw_mode == 'reflection'
+
+    @pytest.mark.asyncio
+    async def test_route_thinking_low_confidence_reflection_downgrades_to_direct(self):
+        provider = FakeProvider([
+            '{"mode":"reflection","confidence":0.4,"category":"ambiguous","reason":"maybe complex"}'
+        ])
+
+        decision = await route_thinking(
+            provider=provider,
+            model='router-model',
+            message='Could you look at this?',
+            effort='high',
+            confidence_threshold=0.8,
+        )
+
+        assert decision.mode == 'direct'
+        assert decision.raw_mode == 'reflection'
+        assert decision.confidence == 0.4
+        assert decision.category == 'ambiguous'
+
+    @pytest.mark.asyncio
+    async def test_route_thinking_acknowledgement_stays_direct(self):
+        provider = FakeProvider([
+            '{"mode":"direct","confidence":0.98,"category":"acknowledgement","reason":"thanks only"}'
+        ])
+
+        decision = await route_thinking(
+            provider=provider,
+            model='router-model',
+            message='thanks',
+            effort='high',
+        )
+
+        assert decision.mode == 'direct'
+        assert decision.confidence == 0.98
+        assert decision.category == 'acknowledgement'
+
+    @pytest.mark.asyncio
+    async def test_route_thinking_effort_does_not_bias_mode_prompt(self):
+        provider = FakeProvider([
+            '{"mode":"direct","confidence":0.98,"category":"acknowledgement","reason":"thanks only"}'
+        ])
+
+        await route_thinking(
+            provider=provider,
+            model='router-model',
+            message='thanks',
+            effort='max',
+        )
+
+        system_prompt = provider.calls[0]['messages'][0]['content']
+        assert 'must not make a simple request more likely to reflect' in system_prompt
+        assert 'A thank-you after a complex answer is still direct' in system_prompt
+
+    @pytest.mark.asyncio
+    async def test_route_thinking_defaults_to_direct_on_bad_payload(self):
+        provider = FakeProvider(['not json'])
+
+        decision = await route_thinking(
+            provider=provider,
+            model='router-model',
+            message='What is 2 + 2?',
+            effort='medium',
+        )
+
+        assert decision.mode == 'direct'
+        assert decision.effort == 'medium'
 
 
 class TestThinkingState:
@@ -392,6 +534,68 @@ class TestReflectionControllerIntegration:
 
         # Should have multiple iterations (low confidence first, then high)
         assert complete_event['data']['iterations'] >= 2
+
+
+class TestAgentExtendedThinking:
+    """Agent-level thinking stream envelope tests."""
+
+    @pytest.mark.asyncio
+    async def test_reflection_stream_uses_step_envelope(self):
+        provider = FakeProvider([
+            'Analysis summary.',
+            'Critique summary.',
+            'Refined summary.\nConfidence: 95%',
+            'Final answer.',
+        ])
+        agent = Agent(
+            id='thinking-agent',
+            model={'provider': 'fake', 'model': 'answer-model'},
+        )
+        agent.providers.register(provider)
+
+        events = []
+        async for event in agent.run_stream(
+            {'message': 'Compare subtype and role modeling.'},
+            thinking=ThinkingConfig(mode='reflection', thinking_tools=False),
+        ):
+            events.append(event)
+
+        types = [event.get('type') for event in events]
+        assert types[0] == 'start'
+        assert types[1] == 'start-step'
+        assert 'reasoning-start' in types
+        assert 'reasoning-end' in types
+        assert types.index('reasoning-start') < types.index('reasoning-end')
+        text_start_index = types.index('text-start')
+        reasoning_end_index = types.index('reasoning-end')
+        assert reasoning_end_index < text_start_index
+        assert 'finish-step' in types[reasoning_end_index:text_start_index]
+        assert 'start-step' in types[reasoning_end_index:text_start_index]
+        assert types[-1] == 'finish'
+        assert any(event.get('type') == 'text-delta' and event.get('delta') == 'Final answer.' for event in events)
+
+    @pytest.mark.asyncio
+    async def test_auto_router_direct_uses_standard_stream(self):
+        provider = FakeProvider([
+            '{"mode":"direct","confidence":0.99,"category":"simple_factual","reason":"simple"}',
+            'Direct answer.',
+        ])
+        agent = Agent(
+            id='auto-agent',
+            model={'provider': 'fake', 'model': 'answer-model'},
+        )
+        agent.providers.register(provider)
+
+        events = []
+        async for event in agent.run_stream(
+            {'message': 'What is 2 + 2?'},
+            thinking=ThinkingConfig(mode='reflection', routing='auto', thinking_tools=False),
+        ):
+            events.append(event)
+
+        types = [event.get('type') for event in events]
+        assert 'reasoning-start' not in types
+        assert any(event.get('type') == 'text-delta' and event.get('delta') == 'Direct answer.' for event in events)
 
 
 class TestContextManagerWithReasoning:

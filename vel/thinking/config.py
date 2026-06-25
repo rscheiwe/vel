@@ -32,6 +32,21 @@ class ThinkingConfig:
     mode: Literal['reflection', 'none'] = 'none'
     """Thinking mode: 'reflection' for multi-pass reasoning, 'none' for standard execution."""
 
+    routing: Literal['always', 'auto', 'never'] = 'always'
+    """When reflection mode is enabled, decide whether to always think, auto-route, or never think."""
+
+    router_model: Optional[Dict[str, Any]] = None
+    """Optional model config for the auto-routing classifier."""
+
+    router_confidence_threshold: float = 0.8
+    """Minimum router confidence required before auto-routing can select reflection."""
+
+    effort: Literal['low', 'medium', 'high', 'extra', 'max'] = 'high'
+    """Requested thinking effort. Higher effort increases refinements/confidence targets."""
+
+    emit_summaries_only: bool = True
+    """Prefer UI-safe summary/progress reasoning events rather than raw hidden chain-of-thought."""
+
     # Display controls
     show_analysis: bool = True
     """Include analysis step content in reasoning events."""
@@ -81,6 +96,17 @@ class ThinkingConfig:
 
     def __post_init__(self):
         """Validate configuration."""
+        if self.routing not in {'always', 'auto', 'never'}:
+            self.routing = 'always'
+
+        if self.effort not in {'low', 'medium', 'high', 'extra', 'max'}:
+            self.effort = 'high'
+
+        if self.router_confidence_threshold < 0:
+            self.router_confidence_threshold = 0
+        elif self.router_confidence_threshold > 1:
+            self.router_confidence_threshold = 1
+
         if self.max_refinements < 1:
             self.max_refinements = 1
         elif self.max_refinements > 5:

@@ -89,6 +89,8 @@ class ReflectionController:
         config: 'ThinkingConfig',
         tools: Optional[Dict[str, Any]] = None,
         tool_executor: Optional[Callable] = None,
+        answer_provider: Optional['BaseProvider'] = None,
+        answer_model: Optional[str] = None,
     ):
         """
         Initialize ReflectionController.
@@ -105,6 +107,8 @@ class ReflectionController:
         self.config = config
         self.tools = tools if config.thinking_tools else None
         self.tool_executor = tool_executor
+        self.answer_provider = answer_provider or provider
+        self.answer_model = answer_model or model
 
     async def run(
         self,
@@ -379,9 +383,9 @@ class ReflectionController:
         text_id = str(uuid.uuid4())
         yield TextStartEvent(block_id=text_id).to_dict()
 
-        async for event in self.provider.stream(
+        async for event in self.answer_provider.stream(
             messages=messages,
-            model=self.model,
+            model=self.answer_model,
             tools={},
             generation_config={'temperature': 0.7}
         ):

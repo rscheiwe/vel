@@ -52,6 +52,11 @@ from vel.thinking import ThinkingConfig
 
 config = ThinkingConfig(
     mode='reflection',              # 'reflection' or 'none'
+    routing='always',               # 'always', 'auto', or 'never'
+    effort='high',                  # 'low', 'medium', 'high', 'extra', or 'max'
+    router_model=None,              # Optional model config for auto routing
+    router_confidence_threshold=0.8, # Min confidence before auto selects reflection
+    emit_summaries_only=True,       # Prefer UI-safe reasoning summaries
 
     # Display controls
     show_analysis=True,             # Show analysis in reasoning events
@@ -96,7 +101,27 @@ await agent.run_stream(
     {'message': 'Analyze the economic implications of AI automation'},
     thinking=ThinkingConfig(mode='reflection')
 )
+
+# Auto route: simple requests answer directly; complex requests reflect first
+await agent.run_stream(
+    {'message': 'Compare three ontology modeling options and recommend one'},
+    thinking=ThinkingConfig(
+        mode='reflection',
+        routing='auto',
+        effort='high',
+        router_confidence_threshold=0.8,
+        router_model={'provider': 'openai', 'model': 'gpt-4o-mini'},
+    )
+)
 ```
+
+In `routing='auto'`, Vel asks the router model for a structured decision:
+`mode`, `confidence`, `category`, and `reason`. Reflection is used only when the
+router selects `reflection` and its confidence meets
+`router_confidence_threshold`. Low-confidence reflection decisions are downgraded
+to direct answers. This keeps acknowledgements, greetings, simple follow-ups, and
+short factual requests from running a reflection loop just because thinking is
+available.
 
 ## The Reflection Flow
 
@@ -139,6 +164,8 @@ Extended Thinking emits these events:
 
 | Event | Description | When |
 |-------|-------------|------|
+| `start` | Message stream begins | Before any steps |
+| `start-step` | Generation step begins | Before reasoning and answer steps |
 | `reasoning-start` | Reasoning block begins | Start of thinking |
 | `data-thinking-stage` | Phase transition | Each phase change |
 | `reasoning-delta` | Reasoning content | During each phase |
@@ -149,11 +176,14 @@ Extended Thinking emits these events:
 | `text-delta` | Answer content | Streaming answer |
 | `text-end` | Answer ends | End of final answer |
 | `data-thinking-complete` | Metadata | End of thinking |
+| `finish-step` | Generation step ends | After reasoning and answer steps |
+| `finish` | Message stream ends | After all steps |
 
 ### Event Sequence Example
 
 ```
 start
+start-step
 reasoning-start        {id: "reasoning_abc"}
 data-thinking-stage    {stage: "analyzing", step: 1}
 reasoning-delta        {delta: "Breaking down the question..."}
@@ -166,10 +196,13 @@ data-thinking-stage    {stage: "refining", step: 4, iteration: 2, confidence: 0.
 reasoning-delta        {delta: "Further strengthening..."}
 data-thinking-stage    {stage: "concluding", step: 5}
 reasoning-end          {id: "reasoning_abc"}
+finish-step
+start-step
 text-start             {id: "text_xyz"}
 text-delta             {delta: "Based on my analysis..."}
 text-end               {id: "text_xyz"}
 data-thinking-complete {steps: 5, iterations: 2, final_confidence: 0.85}
+finish-step
 finish
 ```
 
@@ -377,6 +410,10 @@ See `examples/extended_thinking.py` for complete examples:
 ```python
 class ThinkingConfig:
     mode: Literal['reflection', 'none'] = 'none'
+    routing: Literal['always', 'auto', 'never'] = 'always'
+    router_model: Optional[Dict[str, Any]] = None
+    effort: Literal['low', 'medium', 'high', 'extra', 'max'] = 'high'
+    emit_summaries_only: bool = True
     show_analysis: bool = True
     show_critiques: bool = True
     show_refinements: bool = True

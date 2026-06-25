@@ -1025,7 +1025,8 @@ class Agent:
 
                         # Log LLM generation
                         if trace_ctx and self._observer:
-                            llm_latency = (time.time() - llm_start_time) * 1000
+                            llm_end_time = time.time()
+                            llm_latency = (llm_end_time - llm_start_time) * 1000
                             self._observer.log_generation(
                                 current_step_ctx or trace_ctx,
                                 GenerationData(
@@ -1037,6 +1038,8 @@ class Agent:
                                     usage=step.get('usage'),
                                     generation_config=generation_config,
                                     latency_ms=llm_latency,
+                                    start_time=llm_start_time,
+                                    end_time=llm_end_time,
                                 )
                             )
 
@@ -1331,7 +1334,19 @@ class Agent:
 
         # If Extended Thinking is enabled, route to thinking controller
         if thinking_config and thinking_config.mode == 'reflection':
-            async for event in self._run_with_thinking(input, session_id, thinking_config, stateless=stateless):
+            async for event in self._run_with_thinking(
+                input,
+                session_id,
+                thinking_config,
+                generation_config=generation_config,
+                context_refs=context_refs,
+                rlm=rlm,
+                observability_context=observability_context,
+                context=context,
+                stateless=stateless,
+                node_id=node_id,
+                external_run_id=external_run_id,
+            ):
                 yield event
             return
 
@@ -1568,7 +1583,8 @@ class Agent:
 
                 # Log LLM generation for observability (after streaming completes)
                 if trace_ctx and self._observer:
-                    llm_latency = (time.time() - llm_start_time) * 1000
+                    llm_end_time = time.time()
+                    llm_latency = (llm_end_time - llm_start_time) * 1000
                     self._observer.log_generation(
                         current_step_ctx or trace_ctx,
                         GenerationData(
@@ -1580,6 +1596,8 @@ class Agent:
                             usage=usage,
                             generation_config=config,
                             latency_ms=llm_latency,
+                            start_time=llm_start_time,
+                            end_time=llm_end_time,
                         )
                     )
 
@@ -1918,7 +1936,14 @@ class Agent:
         input: Dict[str, Any],
         session_id: Optional[str],
         config: Any,  # ThinkingConfig
-        stateless: bool = False
+        generation_config: Optional[Dict[str, Any]] = None,
+        context_refs: Optional[Any] = None,
+        rlm: Optional[Dict[str, Any]] = None,
+        observability_context: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        stateless: bool = False,
+        node_id: Optional[str] = None,
+        external_run_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Execute with Extended Thinking enabled.
@@ -1935,13 +1960,91 @@ class Agent:
         Yields:
             Stream protocol events
         """
-        from .thinking import ReflectionController
+        from .thinking import ReflectionController, ThinkingConfig
+        from .thinking.router import effort_overrides, route_thinking
+
+        if hasattr(config, 'to_dict'):
+            config = ThinkingConfig(**config.to_dict())
+
+        if getattr(config, 'routing', 'always') == 'never':
+            async for event in self.run_stream(
+                input,
+                session_id=session_id,
+                generation_config=generation_config,
+                context_refs=context_refs,
+                rlm=rlm,
+                thinking=ThinkingConfig(mode='none'),
+                observability_context=observability_context,
+                context=context,
+                stateless=stateless,
+                node_id=node_id,
+                external_run_id=external_run_id,
+            ):
+                yield event
+            return
+
+        question = self._extract_thinking_question(input)
+        conversation_context = input.get('messages') if isinstance(input.get('messages'), list) else None
+
+        if getattr(config, 'routing', 'always') == 'auto':
+            router_model_cfg = getattr(config, 'router_model', None)
+            router_provider = self._get_provider_for_model_config(router_model_cfg)
+            router_model = (
+                router_model_cfg.get('model', self.model_cfg['model'])
+                if router_model_cfg
+                else self.model_cfg['model']
+            )
+            try:
+                decision = await route_thinking(
+                    provider=router_provider,
+                    model=router_model,
+                    message=question,
+                    context=conversation_context,
+                    effort=getattr(config, 'effort', 'high'),
+                    confidence_threshold=getattr(config, 'router_confidence_threshold', 0.8),
+                )
+            except Exception:
+                decision = None
+            if decision is None:
+                async for event in self.run_stream(
+                    input,
+                    session_id=session_id,
+                    generation_config=generation_config,
+                    context_refs=context_refs,
+                    rlm=rlm,
+                    thinking=ThinkingConfig(mode='none'),
+                    observability_context=observability_context,
+                    context=context,
+                    stateless=stateless,
+                    node_id=node_id,
+                    external_run_id=external_run_id,
+                ):
+                    yield event
+                return
+            if decision.mode == 'direct':
+                async for event in self.run_stream(
+                    input,
+                    session_id=session_id,
+                    generation_config=generation_config,
+                    context_refs=context_refs,
+                    rlm=rlm,
+                    thinking=ThinkingConfig(mode='none'),
+                    observability_context=observability_context,
+                    context=context,
+                    stateless=stateless,
+                    node_id=node_id,
+                    external_run_id=external_run_id,
+                ):
+                    yield event
+                return
+
+        effort = getattr(config, 'effort', 'high')
+        overrides = effort_overrides(effort)
+        config.max_refinements = overrides['max_refinements']
+        config.confidence_threshold = overrides['confidence_threshold']
 
         run_id = str(uuid.uuid4())
         self.ctxmgr.set_input(run_id, input, session_id, stateless=stateless)
-
-        # Emit start event
-        yield StartEvent().to_dict()
 
         # Get provider (use thinking_model if specified)
         thinking_provider = self._get_thinking_provider(config)
@@ -1960,7 +2063,9 @@ class Agent:
             model=model,
             config=config,
             tools=tools,
-            tool_executor=self._call_tool
+            tool_executor=self._call_tool,
+            answer_provider=self._get_provider(),
+            answer_model=self.model_cfg['model'],
         )
 
         # Track accumulated content for storage
@@ -1968,11 +2073,18 @@ class Agent:
         answer_parts = []
         thinking_metadata = {}
 
-        # Extract question from input
-        question = input.get('message', str(input))
+        yield StartEvent().to_dict()
+        yield StepStartEvent().to_dict()
 
-        # Stream events from controller
-        async for event in controller.run(question):
+        answer_step_started = False
+
+        # Stream events from controller. The controller owns reasoning and final
+        # answer generation, while Agent owns the AI SDK step envelope.
+        async for event in controller.run(question, context=conversation_context):
+            if event.get('type') == 'text-start' and not answer_step_started:
+                yield StepFinishEvent().to_dict()
+                yield StepStartEvent().to_dict()
+                answer_step_started = True
             yield event
 
             # Track for storage
@@ -1996,8 +2108,53 @@ class Agent:
             session_id
         )
 
+        yield StepFinishEvent().to_dict()
+
         # Emit finish
         yield FinishEvent().to_dict()
+
+    def _extract_thinking_question(self, input: Dict[str, Any]) -> str:
+        """Extract the latest user prompt for thinking/routing."""
+        message = input.get('message')
+        if isinstance(message, str):
+            return message
+        messages = input.get('messages')
+        if isinstance(messages, list):
+            for item in reversed(messages):
+                if isinstance(item, dict) and item.get('role') == 'user':
+                    content = item.get('content', '')
+                    if isinstance(content, str):
+                        return content
+                    if isinstance(content, list):
+                        chunks = []
+                        for part in content:
+                            if isinstance(part, dict) and part.get('type') == 'text':
+                                chunks.append(str(part.get('text') or ''))
+                        return ''.join(chunks)
+        return str(input)
+
+    def _get_provider_for_model_config(self, model_config: Optional[Dict[str, Any]]):
+        """Get a provider from an optional model config, falling back to the main provider."""
+        if not model_config:
+            return self._get_provider()
+
+        provider_name = model_config.get('provider', self.model_cfg['provider'])
+        api_key = model_config.get('api_key')
+
+        if provider_name == self.model_cfg['provider'] and not api_key:
+            return self._get_provider()
+
+        from .providers import OpenAIProvider, GeminiProvider, AnthropicProvider
+
+        if api_key:
+            if provider_name == 'openai':
+                return OpenAIProvider(api_key=api_key)
+            if provider_name == 'google':
+                return GeminiProvider(api_key=api_key)
+            if provider_name == 'anthropic':
+                return AnthropicProvider(api_key=api_key)
+
+        return self.providers.get(provider_name) or self._get_provider()
 
     def _get_thinking_provider(self, config: Any):
         """
@@ -2006,32 +2163,7 @@ class Agent:
         If config.thinking_model is set and has a different provider,
         creates a new provider instance. Otherwise, uses the main provider.
         """
-        if not config.thinking_model:
-            return self._get_provider()
-
-        thinking_provider_name = config.thinking_model.get('provider', self.model_cfg['provider'])
-        thinking_api_key = config.thinking_model.get('api_key')
-
-        # If same provider and no custom API key, use main provider
-        if thinking_provider_name == self.model_cfg['provider'] and not thinking_api_key:
-            return self._get_provider()
-
-        # Create new provider instance for thinking
-        from .providers import OpenAIProvider, GeminiProvider, AnthropicProvider
-
-        if thinking_api_key:
-            if thinking_provider_name == 'openai':
-                return OpenAIProvider(api_key=thinking_api_key)
-            elif thinking_provider_name == 'google':
-                return GeminiProvider(api_key=thinking_api_key)
-            elif thinking_provider_name == 'anthropic':
-                return AnthropicProvider(api_key=thinking_api_key)
-            else:
-                # Fall back to main provider
-                return self._get_provider()
-        else:
-            # Different provider but no custom key - use registry
-            return self.providers.get(thinking_provider_name)
+        return self._get_provider_for_model_config(config.thinking_model)
 
 
 async def run_stream(agent: 'Agent', input: Dict[str, Any]):

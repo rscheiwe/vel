@@ -41,6 +41,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from .base import (
@@ -54,6 +55,63 @@ from .base import (
 )
 
 logger = logging.getLogger('vel.integrations.langfuse')
+
+
+def _timestamp_to_datetime(timestamp: Optional[float]) -> Optional[datetime]:
+    """Convert Vel's monotonic-free epoch seconds into Langfuse SDK datetimes."""
+    if timestamp is None:
+        return None
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+
+
+def _usage_value(usage: Dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = usage.get(key)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _normalize_usage_details(usage: Optional[Dict[str, Any]]) -> Optional[Dict[str, int]]:
+    """Normalize provider usage into Langfuse usage_details without dropping old key formats."""
+    if not usage:
+        return None
+
+    input_tokens = _usage_value(
+        usage,
+        'input',
+        'inputTokens',
+        'promptTokens',
+        'prompt_tokens',
+    )
+    output_tokens = _usage_value(
+        usage,
+        'output',
+        'outputTokens',
+        'completionTokens',
+        'completion_tokens',
+    )
+    total_tokens = _usage_value(
+        usage,
+        'total',
+        'totalTokens',
+        'total_tokens',
+    )
+
+    if total_tokens == 0 and (input_tokens or output_tokens):
+        total_tokens = input_tokens + output_tokens
+
+    if input_tokens == 0 and output_tokens == 0 and total_tokens == 0:
+        return None
+
+    return {
+        'input': input_tokens,
+        'output': output_tokens,
+        'total': total_tokens,
+    }
 
 
 @dataclass
@@ -509,20 +567,15 @@ class LangfuseHandler(ObservabilityHandler):
 
         try:
             # Normalize usage to Langfuse format
-            usage = None
-            if data.usage:
-                usage = {
-                    'input': data.usage.get('prompt_tokens', data.usage.get('promptTokens', 0)),
-                    'output': data.usage.get('completion_tokens', data.usage.get('completionTokens', 0)),
-                    'total': data.usage.get('total_tokens', data.usage.get('totalTokens', 0)),
-                }
+            usage_details = _normalize_usage_details(data.usage)
 
+            if usage_details:
                 # Update trace totals
                 state = self._traces.get(context.trace_id)
                 if state:
-                    state.total_tokens['input'] += usage['input']
-                    state.total_tokens['output'] += usage['output']
-                    state.total_tokens['total'] += usage['total']
+                    state.total_tokens['input'] += usage_details['input']
+                    state.total_tokens['output'] += usage_details['output']
+                    state.total_tokens['total'] += usage_details['total']
 
             # Prepare output
             output = data.response
@@ -535,14 +588,17 @@ class LangfuseHandler(ObservabilityHandler):
             # Prepare input (messages)
             gen_input = data.messages if self.config.capture_input else [{'role': 'user', 'content': '[redacted]'}]
             gen_output = output if self.config.capture_output else '[redacted]'
+            start_time = _timestamp_to_datetime(data.start_time)
+            end_time = _timestamp_to_datetime(data.end_time)
 
             # Create generation
             generation = trace.generation(
                 name=f"{data.provider}/{data.model}",
                 model=data.model,
+                start_time=start_time,
                 input=gen_input,
                 output=gen_output,
-                usage=usage,
+                usage_details=usage_details,
                 metadata={
                     'provider': data.provider,
                     'generation_config': data.generation_config,
@@ -552,7 +608,7 @@ class LangfuseHandler(ObservabilityHandler):
                 status_message=data.error,
                 parent_observation_id=context.span_id if context.span_id != context.trace_id else None,
             )
-            generation.end()
+            generation.end(end_time=end_time)
             logger.debug(f"Logged generation: {data.provider}/{data.model}")
         except Exception as e:
             logger.warning(f"Failed to log Langfuse generation: {e}")

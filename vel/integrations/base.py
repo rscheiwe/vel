@@ -65,9 +65,11 @@ class GenerationData:
     messages: List[Dict[str, Any]]
     response: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
-    usage: Optional[Dict[str, int]] = None  # {prompt_tokens, completion_tokens, total_tokens}
+    usage: Optional[Dict[str, int]] = None  # Provider usage in OpenAI, AI SDK, or Langfuse-style keys.
     generation_config: Optional[Dict[str, Any]] = None
     latency_ms: Optional[float] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
     error: Optional[str] = None
 
 
