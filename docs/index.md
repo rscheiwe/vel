@@ -129,6 +129,16 @@ if __name__ == '__main__':
     <h3><a href="12-factor-alignment">12-Factor Alignment</a></h3>
     <p>Production-ready agent principles</p>
   </div>
+
+  <div class="grid-item">
+    <h3><a href="agent-directory">Agent Directories</a></h3>
+    <p>Author an agent as a directory of files (load_agent)</p>
+  </div>
+
+  <div class="grid-item">
+    <h3><a href="channels">Channels</a></h3>
+    <p>CLI/Slack transport adapters over RunManager</p>
+  </div>
 </div>
 
 ---

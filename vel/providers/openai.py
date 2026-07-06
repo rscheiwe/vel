@@ -95,6 +95,8 @@ class OpenAIProvider(BaseProvider):
             payload['logit_bias'] = config['logit_bias']
         if 'user' in config:
             payload['user'] = config['user']
+        if 'response_format' in config:
+            payload['response_format'] = config['response_format']
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -261,6 +263,8 @@ class OpenAIProvider(BaseProvider):
             payload['logit_bias'] = config['logit_bias']
         if 'user' in config:
             payload['user'] = config['user']
+        if 'response_format' in config:
+            payload['response_format'] = config['response_format']
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             r = await client.post(

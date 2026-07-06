@@ -1,0 +1,21 @@
+# Agent-as-directory config (loaded by vel.load_agent).
+# Everything here maps onto the programmatic Agent(...) / HarnessConfig(...) API.
+
+[agent]
+id = "desk-assistant"
+
+[model]
+provider = "openai"
+model = "gpt-4o"
+
+[harness]
+enabled = true
+
+[harness.budget]
+max_steps = 20
+
+[harness.approval]
+enabled = true
+mode = "durable"
+# Gate only the consequential tool; routine ones run ungated.
+require_for_tools = ["publish_note"]

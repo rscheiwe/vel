@@ -85,3 +85,66 @@ def test_log_generation_sends_usage_details_and_observation_times():
         "output": 5,
         "total": 15,
     }
+
+
+class _FakeSpan:
+    def end(self, **kwargs):
+        self.end_kwargs = kwargs
+
+
+class _RecordingTrace:
+    def __init__(self):
+        self.generation_kwargs = None
+        self.span_kwargs = None
+        self._gen = _FakeSpan()
+        self._span = _FakeSpan()
+
+    def generation(self, **kwargs):
+        self.generation_kwargs = kwargs
+        return self._gen
+
+    def span(self, **kwargs):
+        self.span_kwargs = kwargs
+        return self._span
+
+
+def _handler_with_trace(trace):
+    handler = LangfuseHandler.__new__(LangfuseHandler)
+    handler.config = type("Config", (), {"capture_input": True, "capture_output": True, "capture_tool_io": True})()
+    handler._langfuse_traces = {"trace-1": trace}
+    handler._traces = {"trace-1": TraceState(trace_id="trace-1", agent_id="agent-1")}
+    return handler
+
+
+def test_log_generation_returns_observation_id_and_supply_is_honored():
+    from vel.integrations.base import GenerationData as _GD, SpanContext as _SC
+    trace = _RecordingTrace()
+    handler = _handler_with_trace(trace)
+    # Auto-generated id is passed to Langfuse AND returned.
+    auto_id = handler.log_generation(_SC(trace_id="trace-1", span_id="step-1"), _GD(model="m", provider="openai", messages=[]))
+    assert auto_id is not None
+    assert trace.generation_kwargs["id"] == auto_id
+    # Supplied id is honored verbatim.
+    supplied = handler.log_generation(_SC(trace_id="trace-1", span_id="step-1"), _GD(model="m", provider="openai", messages=[], observation_id="gen-fixed"))
+    assert supplied == "gen-fixed"
+    assert trace.generation_kwargs["id"] == "gen-fixed"
+
+
+def test_log_tool_returns_observation_id_and_supply_is_honored():
+    from vel.integrations.base import ToolData as _TD, SpanContext as _SC
+    trace = _RecordingTrace()
+    handler = _handler_with_trace(trace)
+    auto_id = handler.log_tool(_SC(trace_id="trace-1", span_id="step-1"), _TD(tool_name="t"))
+    assert auto_id is not None
+    assert trace.span_kwargs["id"] == auto_id
+    supplied = handler.log_tool(_SC(trace_id="trace-1", span_id="step-1"), _TD(tool_name="t", observation_id="tool-fixed"))
+    assert supplied == "tool-fixed"
+    assert trace.span_kwargs["id"] == "tool-fixed"
+
+
+def test_end_span_sends_datetime_end_time():
+    from vel.integrations.base import SpanContext as _SC
+    trace = _RecordingTrace()
+    handler = _handler_with_trace(trace)
+    handler.end_span(_SC(trace_id="trace-1", span_id="span-1"), output="done")
+    assert isinstance(trace.span_kwargs["end_time"], datetime)

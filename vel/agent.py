@@ -6,7 +6,7 @@ import time
 import warnings
 import logging
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional, Literal, Union, TYPE_CHECKING
+from typing import Any, Callable, AsyncGenerator, Dict, List, Optional, Literal, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .integrations.langfuse import ObservabilityConfig
@@ -21,7 +21,8 @@ from .core.tool_behavior import (
 from .core.guardrails import GuardrailEngine, GuardrailError
 from .core.structured_output import (
     StructuredOutputPolicy, StructuredOutputValidationError,
-    parse_structured_output, get_retry_prompt, get_json_mode_system_prompt
+    parse_structured_output, get_retry_prompt, get_json_mode_system_prompt,
+    to_strict_response_format,
 )
 from .core.hooks import (
     HookRegistry, RunStartHookEvent, RunFinallyHookEvent,
@@ -53,6 +54,7 @@ class Agent:
                  generation_config: Optional[Dict[str, Any]]=None,
                  rlm: Optional[Dict[str, Any]]=None,
                  thinking: Optional[Any]=None,  # ThinkingConfig for extended thinking
+                 harness: Optional[Any]=None,  # HarnessConfig or dict for Harness Mode (opt-in)
                  tool_context: Optional[Dict[str, Any]]=None,
                  # Guardrails
                  input_guardrails: Optional[List]=None,
@@ -261,6 +263,20 @@ class Agent:
         self.output_type = output_type
         self.structured_output_policy = structured_output_policy or StructuredOutputPolicy()
 
+        # When an output_type is set on an OpenAI model, use the provider's native
+        # Structured Outputs (response_format json_schema, strict) so the API
+        # guarantees schema-conforming JSON via constrained decoding. This removes
+        # the prompt-and-parse-and-retry failure modes (empty/non-JSON output,
+        # shape mismatches) at the source. Skipped for non-object root types and
+        # if a response_format was already provided explicitly.
+        if output_type is not None and self.model_cfg.get('provider') == 'openai' \
+                and 'response_format' not in self.generation_config:
+            # Prefer strict Structured Outputs (schema-guaranteed). When the schema
+            # can't be made strict (free-form dict fields, array root), fall back to
+            # JSON mode, which still guarantees syntactically valid JSON.
+            response_format = to_strict_response_format(output_type) or {'type': 'json_object'}
+            self.generation_config = {**self.generation_config, 'response_format': response_format}
+
         # Lifecycle hooks
         self.hooks = HookRegistry(hooks)
 
@@ -287,6 +303,15 @@ class Agent:
                 self.thinking_config = ThinkingConfig(**thinking)
             else:
                 self.thinking_config = thinking
+
+        # Harness Mode configuration (opt-in; default-off bolt-on)
+        self.harness_config = None
+        if harness:
+            from .harness import HarnessConfig
+            if isinstance(harness, dict):
+                self.harness_config = HarnessConfig(**harness)
+            else:
+                self.harness_config = harness
 
         # Scratchpad configuration
         self._scratchpad_config = None
@@ -516,7 +541,8 @@ class Agent:
         description: Optional[str] = None,
         input_schema: Optional[Dict[str, Any]] = None,
         output_schema: Optional[Dict[str, Any]] = None,
-        pass_context: bool = True
+        pass_context: bool = True,
+        durable: bool = False
     ) -> 'ToolSpec':
         """
         Expose this agent as a tool that can be used by other agents.
@@ -528,6 +554,12 @@ class Agent:
             name: Tool name (defaults to sanitized agent ID). Characters like
                 ':', '-', '.' are replaced with '_' for LLM compatibility.
             description: Tool description shown to the orchestrator LLM.
+            durable: If True AND this sub-agent has Harness Mode enabled, run it
+                through the harness (budget, compaction, sandbox, per-step
+                checkpointing) instead of the plain run() path. Approval is still
+                forced inline because a tool call must return a value (a sub-agent
+                cannot suspend the parent mid-step). Default False keeps the
+                original non-durable behavior — fully backwards compatible.
             input_schema: Custom JSON schema for tool input. Defaults to
                 {'message': string} if not provided.
             output_schema: Custom JSON schema for tool output. Defaults to
@@ -577,16 +609,22 @@ class Agent:
 
         # Capture pass_context in closure
         _pass_context = pass_context
+        _durable = durable
         _custom_input_schema = input_schema is not None
 
         # Create handler that calls this agent
         async def agent_tool_handler(input: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+            # Nesting: pull the parent trace context (if any) so this sub-agent
+            # run attaches to the parent trace instead of forking a new one.
+            _tc = ctx.get('_vel_trace_context')
             # Context passthrough: merge parent's ctx with sub-agent's tool_context
             original_context = self.tool_context
             if _pass_context:
                 merged_context = {**self.tool_context, **ctx}
             else:
                 merged_context = self.tool_context
+            # Never leak the trace-context carrier into the sub-agent's own ctx.
+            merged_context.pop('_vel_trace_context', None)
 
             self.tool_context = merged_context
 
@@ -602,8 +640,34 @@ class Agent:
                     # Default schema: extract 'message' or 'query' key
                     message = input.get('message', input.get('query', str(input)))
 
-                # Run the agent
-                result = await self.run({'message': message})
+                # A tool call must return a value, so a sub-agent can never
+                # suspend the parent mid-step: force approval.mode='inline' for
+                # the duration (spec §6.9 / §12 Q7). This applies to both the
+                # non-durable and durable paths below.
+                _saved_approval_mode = None
+                _hcfg = getattr(self, 'harness_config', None)
+                _harness_on = _hcfg is not None and getattr(_hcfg, 'enabled', False)
+                if _harness_on:
+                    _saved_approval_mode = _hcfg.approval.mode
+                    _hcfg.approval.mode = 'inline'
+
+                # Run the agent. durable=True + Harness enabled -> run through the
+                # harness loop (budget/compaction/sandbox/checkpointing) and
+                # collect the streamed text as the tool result; otherwise use the
+                # plain non-durable run() path (default, backwards compatible).
+                try:
+                    _nest_kwargs = {} if _tc is None else {'trace_context': _tc}
+                    if _durable and _harness_on:
+                        _parts: list = []
+                        async for _ev in self.run_stream({'message': message}, **_nest_kwargs):
+                            if _ev.get('type') == 'text-delta':
+                                _parts.append(_ev.get('delta', ''))
+                        result = ''.join(_parts)
+                    else:
+                        result = await self.run({'message': message}, **_nest_kwargs)
+                finally:
+                    if _saved_approval_mode is not None:
+                        _hcfg.approval.mode = _saved_approval_mode
 
                 # Return result as-is (no success wrapper for successful responses)
                 if isinstance(result, str):
@@ -649,7 +713,7 @@ class Agent:
         step = await provider.generate(messages, model=self.model_cfg['model'], tools=tool_schemas, generation_config=config)
         return step
 
-    async def _call_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _call_tool(self, tool_name: str, args: Dict[str, Any], trace_context: Optional['TraceContext'] = None) -> Dict[str, Any]:
         """Execute a tool (instance or global registry)"""
         # Get tool from instance registry or global registry
         tool = self._get_tool(tool_name)
@@ -657,8 +721,12 @@ class Agent:
         # Always validate input
         validate_io(tool.input_schema, args)
 
-        # Execute tool
-        result = await tool.run(args, ctx=self.tool_context)
+        # Execute tool. When observability is active, pass the parent trace
+        # context so a sub-agent-as-tool nests under the parent trace.
+        ctx = self.tool_context
+        if trace_context is not None:
+            ctx = {**self.tool_context, '_vel_trace_context': trace_context}
+        result = await tool.run(args, ctx=ctx)
 
         # Only validate output if schema is non-empty (flexible by default)
         if tool.output_schema:
@@ -865,10 +933,17 @@ class Agent:
         rlm: Optional[Dict[str, Any]] = None,
         observability_context: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
-        stateless: bool = False
+        stateless: bool = False,
+        trace_id: Optional[str] = None,
+        trace_context: Optional['TraceContext'] = None,
     ) -> Union[str, Dict[str, Any]]:
         """
         Non-streaming run - returns final answer or raw tool output.
+
+        trace_context: when provided (e.g. by a parent run via as_tool, or a
+            coordinator that owns the trace), this run's spans/generations nest
+            under the parent trace via the parent's handler instead of forking a
+            new trace. trace_id optionally supplies the root trace id.
 
         Returns:
             - str: Final answer from LLM (default behavior)
@@ -921,34 +996,51 @@ class Agent:
             return result['answer']
 
         run_id = str(uuid.uuid4())
+        trace_id = trace_id or run_id
         run_start_time = time.time()
         self.ctxmgr.set_input(run_id, input, session_id, stateless=stateless)
 
         # Clear any injected tools from previous runs
         self._clear_injected_tools()
 
-        # Setup observability trace
+        # Setup observability trace. When nested (trace_context given), use the
+        # PARENT's handler and open a child span under the parent trace; the child
+        # inherits the parent's sampling decision and must NOT end/flush the trace.
+        observer = trace_context.handler if trace_context else self._observer
         trace_ctx: Optional['SpanContext'] = None
         current_step_ctx: Optional['SpanContext'] = None
-        if self._observer and self._observer.should_sample():
+        if observer and (trace_context is not None or observer.should_sample()):
             from .integrations.base import SpanKind, GenerationData, ToolData
-            # Merge observability_context with config
+            # Merge observability_context with config. When nested under a parent
+            # trace, this agent may have no observability config of its own — fall
+            # back to sensible defaults so nesting still works.
             obs_config = self._observability_config
-            if observability_context:
+            if obs_config is not None and observability_context:
                 obs_config = obs_config.with_context(**observability_context)
+            _trace_name = (obs_config.trace_name if obs_config else None) or self.id
+            _capture_input = obs_config.capture_input if obs_config else True
+            _trace_input = input if _capture_input else {'message': '[redacted]'}
 
-            trace_ctx = self._observer.start_trace(
-                trace_id=run_id,
-                name=obs_config.trace_name or self.id,
-                input=input if obs_config.capture_input else {'message': '[redacted]'},
-                metadata=obs_config.metadata,
-                tags=obs_config.tags,
-                user_id=obs_config.user_id,
-                session_id=obs_config.session_id or session_id,
-            )
+            if trace_context is not None:
+                trace_ctx = observer.start_span(
+                    trace_context.span,
+                    _trace_name,
+                    SpanKind.AGENT_RUN,
+                    input=_trace_input,
+                )
+            else:
+                trace_ctx = observer.start_trace(
+                    trace_id=trace_id,
+                    name=_trace_name,
+                    input=_trace_input,
+                    metadata=obs_config.metadata if obs_config else None,
+                    tags=obs_config.tags if obs_config else None,
+                    user_id=obs_config.user_id if obs_config else None,
+                    session_id=(obs_config.session_id if obs_config else None) or session_id,
+                )
 
             # Wire up observer to ContextManager for memory operation tracing
-            self.ctxmgr.set_observer(self._observer, trace_ctx)
+            self.ctxmgr.set_observer(observer, trace_ctx)
 
             # Emit run start hook
             await self.hooks.emit('on_run_start', RunStartHookEvent(
@@ -1006,6 +1098,11 @@ class Agent:
 
         try:
             while True:
+                # Structured-output validation retries restart the LLM call but
+                # are bounded by StructuredOutputPolicy.max_retries, not the tool
+                # max_steps budget. This flag lets us skip the step increment for
+                # those retries (set in the structured-retry branch below).
+                structured_retry = False
                 state, effects = reduce(state, event)
                 for eff in effects:
                     if eff.kind == 'call_llm':
@@ -1013,9 +1110,9 @@ class Agent:
                         messages_for_obs = self.ctxmgr.messages_for_llm(run_id, session_id)
 
                         # Start step span for observability
-                        if trace_ctx and self._observer:
+                        if trace_ctx and observer:
                             from .integrations.base import SpanKind, GenerationData
-                            current_step_ctx = self._observer.start_span(
+                            current_step_ctx = observer.start_span(
                                 trace_ctx, f"step-{steps}", SpanKind.STEP,
                                 input={'messages_count': len(messages_for_obs), 'step': steps}
                             )
@@ -1024,10 +1121,10 @@ class Agent:
                         step = await self._call_llm_generate(run_id, session_id, generation_config)
 
                         # Log LLM generation
-                        if trace_ctx and self._observer:
+                        if trace_ctx and observer:
                             llm_end_time = time.time()
                             llm_latency = (llm_end_time - llm_start_time) * 1000
-                            self._observer.log_generation(
+                            gen_observation_id = observer.log_generation(
                                 current_step_ctx or trace_ctx,
                                 GenerationData(
                                     model=self.model_cfg.get('model', 'unknown'),
@@ -1042,6 +1139,13 @@ class Agent:
                                     end_time=llm_end_time,
                                 )
                             )
+                            if self.hooks.has_hook('on_llm_response'):
+                                await self.hooks.emit('on_llm_response', LLMResponseHookEvent(
+                                    run_id=run_id, trace_id=trace_id, session_id=session_id, step=steps,
+                                    response=step.get('answer'), tool_calls=[{'tool': step.get('tool'), 'args': step.get('args')}] if step.get('tool') else None,
+                                    usage=step.get('usage'), observation_id=gen_observation_id,
+                                    duration_ms=llm_latency,
+                                ))
 
                         event = {'kind':'llm_step', 'step': step}
                         break
@@ -1060,17 +1164,21 @@ class Agent:
                         # Track tool execution time
                         tool_start_time = time.time()
                         tool_error = None
+                        _tool_tc = None
+                        if trace_ctx and observer:
+                            from .integrations.base import TraceContext
+                            _tool_tc = TraceContext(handler=observer, span=current_step_ctx or trace_ctx)
                         try:
-                            result = await self._call_tool(tool_name, tool_args)
+                            result = await self._call_tool(tool_name, tool_args, trace_context=_tool_tc)
                         except Exception as e:
                             tool_error = str(e)
                             raise
                         finally:
                             # Log tool execution
-                            if trace_ctx and self._observer:
+                            if trace_ctx and observer:
                                 from .integrations.base import ToolData
                                 tool_latency = (time.time() - tool_start_time) * 1000
-                                self._observer.log_tool(
+                                tool_observation_id = observer.log_tool(
                                     current_step_ctx or trace_ctx,
                                     ToolData(
                                         tool_name=tool_name,
@@ -1080,6 +1188,13 @@ class Agent:
                                         latency_ms=tool_latency,
                                     )
                                 )
+                                if self.hooks.has_hook('on_tool_result'):
+                                    await self.hooks.emit('on_tool_result', ToolResultHookEvent(
+                                        run_id=run_id, trace_id=trace_id, session_id=session_id, step=steps,
+                                        tool_name=tool_name, result=result if not tool_error else None,
+                                        error=tool_error, observation_id=tool_observation_id,
+                                        duration_ms=tool_latency,
+                                    ))
 
                         # Process through custom handler if configured
                         directive = self._process_tool_result(
@@ -1127,8 +1242,8 @@ class Agent:
                         final_answer = eff.payload.get('final','')
 
                         # End step span
-                        if current_step_ctx and self._observer:
-                            self._observer.end_span(current_step_ctx, output=final_answer)
+                        if current_step_ctx and observer:
+                            observer.end_span(current_step_ctx, output=final_answer)
                             current_step_ctx = None
 
                         # Run output guardrails
@@ -1167,6 +1282,7 @@ class Agent:
                                 retry_prompt = get_retry_prompt(self.output_type, e)
                                 self.ctxmgr._by_run[run_id].append({'role': 'system', 'content': retry_prompt})
                                 event = {'kind': 'start'}  # Restart to call LLM again
+                                structured_retry = True
                                 break
 
                         # Add assistant response to context
@@ -1174,9 +1290,18 @@ class Agent:
                         return final_answer
 
                 # End step span if it's still open (tool loop continues)
-                if current_step_ctx and self._observer:
-                    self._observer.end_span(current_step_ctx, output={'status': 'continue', 'has_tool_call': True})
+                if current_step_ctx and observer:
+                    observer.end_span(current_step_ctx, output={
+                        'status': 'structured_retry' if structured_retry else 'continue',
+                        'has_tool_call': False if structured_retry else True,
+                    })
                     current_step_ctx = None
+
+                # A structured-output validation retry is not a tool iteration:
+                # it is bounded by StructuredOutputPolicy.max_retries and must not
+                # consume the tool max_steps budget. Restart without charging a step.
+                if structured_retry:
+                    continue
 
                 steps += 1
                 if steps > self.policies.get('max_steps', 24):
@@ -1210,10 +1335,14 @@ class Agent:
             error_type = type(e).__name__
             logger.error(f"Agent run failed: {error_type}: {str(e)}", exc_info=True)
 
-            # End observability trace with error
-            if trace_ctx and self._observer:
-                self._observer.end_trace(trace_ctx, error=str(e))
-                self._observer.flush()
+            # End observability trace with error. Nested runs close only their
+            # own span and never end/flush the parent-owned trace.
+            if trace_ctx and observer:
+                if trace_context is not None:
+                    observer.end_span(trace_ctx, error=str(e))
+                else:
+                    observer.end_trace(trace_ctx, error=str(e))
+                    observer.flush()
 
             # Emit error hook
             await self.hooks.emit('on_error', ErrorHookEvent(
@@ -1229,11 +1358,15 @@ class Agent:
             if scratchpad:
                 self._scratchpad_summary = scratchpad.get_summary()
 
-            # End observability trace if not already ended (success case)
+            # End observability trace if not already ended (success case).
+            # Nested runs close only their own span; the parent owns end/flush.
             run_duration_ms = (time.time() - run_start_time) * 1000
-            if trace_ctx and self._observer:
-                self._observer.end_trace(trace_ctx, output=final_answer)
-                self._observer.flush()
+            if trace_ctx and observer:
+                if trace_context is not None:
+                    observer.end_span(trace_ctx, output=final_answer)
+                else:
+                    observer.end_trace(trace_ctx, output=final_answer)
+                    observer.flush()
 
             # Clear observer from ContextManager
             self.ctxmgr.clear_observer()
@@ -1255,14 +1388,22 @@ class Agent:
         context_refs: Optional[Any] = None,
         rlm: Optional[Dict[str, Any]] = None,
         thinking: Optional[Any] = None,
+        harness: Optional[Any] = None,
         observability_context: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
         stateless: bool = False,
         node_id: Optional[str] = None,
-        external_run_id: Optional[str] = None
+        external_run_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        trace_context: Optional['TraceContext'] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streaming run - yields stream protocol events as they occur.
+
+        Note: full parent-trace nesting for the streaming path (threading the
+        parent handler through the stream loop) is a follow-up; the non-streaming
+        run() path is fully nested. trace_context is accepted here so callers /
+        as_tool can pass it uniformly without error.
 
         Note: If stop_on_first_tool policy is enabled (globally or per-tool), execution
         halts after tool execution. The tool-output-available event is still emitted,
@@ -1332,7 +1473,22 @@ class Agent:
         elif self.thinking_config and self.thinking_config.mode == 'reflection':
             thinking_config = self.thinking_config
 
-        # If Extended Thinking is enabled, route to thinking controller
+        # Resolve Harness Mode config early so Extended Thinking can COMPOSE with
+        # it (thinking bounded by the harness budget + traced). When absent/
+        # disabled, harness_cfg stays None and the base loop runs unchanged.
+        harness_cfg = None
+        if harness:
+            from .harness import HarnessConfig
+            harness_cfg = HarnessConfig(**harness) if isinstance(harness, dict) else harness
+        elif self.harness_config and self.harness_config.enabled:
+            harness_cfg = self.harness_config
+        if harness_cfg is not None and not harness_cfg.enabled:
+            harness_cfg = None
+
+        # Extended Thinking: route to the reflection engine. When Harness Mode is
+        # also configured, thinking composes with it — the refine loop is bounded
+        # by the harness budget (wallclock/tokens). Durable suspend/resume of a
+        # reflection run is future work.
         if thinking_config and thinking_config.mode == 'reflection':
             async for event in self._run_with_thinking(
                 input,
@@ -1346,11 +1502,29 @@ class Agent:
                 stateless=stateless,
                 node_id=node_id,
                 external_run_id=external_run_id,
+                harness_cfg=harness_cfg,
             ):
                 yield event
             return
 
-        run_id = str(uuid.uuid4())
+        # v1 does not compose Harness with RLM. If RLM was enabled but not
+        # triggered (e.g. no context_refs) and harness is on, harness wins.
+        if harness_cfg is not None and rlm_config is not None:
+            logger.warning(
+                "Harness Mode is enabled alongside RLM; for v1 Harness takes "
+                "precedence and RLM is not composed."
+            )
+
+        # When Harness Mode drives a detached run (via RunManager), the
+        # caller-supplied external_run_id IS the durable run id — the checkpoint,
+        # approval records, and event log must all share it so resume()/recover()
+        # can find the run. Outside Harness Mode the id stays an internal uuid and
+        # external_run_id remains a pure correlation tag (non-harness path
+        # unchanged).
+        if external_run_id and harness_cfg is not None:
+            run_id = external_run_id
+        else:
+            run_id = str(uuid.uuid4())
         run_start_time = time.time()
         self.ctxmgr.set_input(run_id, input, session_id, stateless=stateless)
 
@@ -1382,29 +1556,47 @@ class Agent:
                 return add_metadata(event_dict, _event_metadata)
             return event_dict
 
-        # Setup observability trace
+        # Setup observability trace. When nested (trace_context given), use the
+        # PARENT's handler and open a child span under the parent trace; the child
+        # inherits the parent's sampling decision and must NOT end/flush the trace.
+        # (Extends the run()-path nesting fix to the streaming path — closes the
+        # deferred stream-path gap in TRACE_AGENT_WORK.md §7.)
+        observer = trace_context.handler if trace_context else self._observer
         trace_ctx: Optional['SpanContext'] = None
         current_step_ctx: Optional['SpanContext'] = None
         final_answer = ''
-        if self._observer and self._observer.should_sample():
+        if observer and (trace_context is not None or observer.should_sample()):
             from .integrations.base import SpanKind, GenerationData, ToolData
-            # Merge observability_context with config
+            # Merge observability_context with config. When nested under a parent
+            # trace, this agent may have no observability config of its own — fall
+            # back to sensible defaults so nesting still works.
             obs_config = self._observability_config
-            if observability_context:
+            if obs_config is not None and observability_context:
                 obs_config = obs_config.with_context(**observability_context)
+            _trace_name = (obs_config.trace_name if obs_config else None) or self.id
+            _capture_input = obs_config.capture_input if obs_config else True
+            _trace_input = input if _capture_input else {'message': '[redacted]'}
 
-            trace_ctx = self._observer.start_trace(
-                trace_id=run_id,
-                name=obs_config.trace_name or self.id,
-                input=input if obs_config.capture_input else {'message': '[redacted]'},
-                metadata=obs_config.metadata,
-                tags=obs_config.tags,
-                user_id=obs_config.user_id,
-                session_id=obs_config.session_id or session_id,
-            )
+            if trace_context is not None:
+                trace_ctx = observer.start_span(
+                    trace_context.span,
+                    _trace_name,
+                    SpanKind.AGENT_RUN,
+                    input=_trace_input,
+                )
+            else:
+                trace_ctx = observer.start_trace(
+                    trace_id=run_id,
+                    name=_trace_name,
+                    input=_trace_input,
+                    metadata=obs_config.metadata if obs_config else None,
+                    tags=obs_config.tags if obs_config else None,
+                    user_id=obs_config.user_id if obs_config else None,
+                    session_id=(obs_config.session_id if obs_config else None) or session_id,
+                )
 
             # Wire up observer to ContextManager for memory operation tracing
-            self.ctxmgr.set_observer(self._observer, trace_ctx)
+            self.ctxmgr.set_observer(observer, trace_ctx)
 
             # Emit run start hook
             await self.hooks.emit('on_run_start', RunStartHookEvent(
@@ -1459,442 +1651,99 @@ class Agent:
         # Emit start event (V5 UI Stream Protocol)
         yield StartEvent().to_dict()
 
-        steps = 0
-        max_steps = self.policies.get('max_steps', 24)
-        structured_output_attempts = 0
+        loop_state: Dict[str, Any] = {'steps': 0, 'final_answer': final_answer}
+
+        # Harness Mode: build the controller + hooks (default-off). When
+        # harness_cfg is None all hooks are None and _step_loop is byte-identical
+        # to the legacy path (proven by tests/test_harness/test_step_loop_equivalence.py).
+        harness_controller = None
+        _hk_pre_step = _hk_prepass = _hk_resolver = _hk_budget = None
+        _hk_on_tool = None
+        _hk_max_steps = None
+        if harness_cfg is not None:
+            from .harness import HarnessController
+            from .harness.exceptions import BudgetExhausted, SuspendRun
+            harness_controller = HarnessController(agent=self, config=harness_cfg)
+            harness_controller.bind_run(run_id=run_id, session_id=session_id, context=context)
+            _hk_pre_step = harness_controller.pre_step_hook
+            _hk_prepass = harness_controller.approval_prepass
+            _hk_resolver = harness_controller.approval_resolver
+            _hk_budget = harness_controller.budget_hook
+            # Per-tool checkpoint hook only when opted in (crash recovery).
+            _hk_on_tool = (
+                harness_controller.on_tool_completed
+                if harness_cfg.checkpoint_each_tool
+                else None
+            )
+            _hk_max_steps = harness_controller.effective_max_steps
 
         try:
-            while steps < max_steps:
-                steps += 1
-
-                # Get messages and stream LLM response
-                messages = self.ctxmgr.messages_for_llm(run_id, session_id)
-
-                # Prepend system prompt if set (for prompt caching)
-                system_prompt = self._get_system_prompt(run_id, context=context)
-                if system_prompt:
-                    messages = [{'role': 'system', 'content': system_prompt}] + messages
-
-                # Start step span for observability
-                if trace_ctx and self._observer:
-                    from .integrations.base import SpanKind, GenerationData, ToolData
-                    current_step_ctx = self._observer.start_span(
-                        trace_ctx, f"step-{steps}", SpanKind.STEP,
-                        input={'messages_count': len(messages), 'step': steps}
-                    )
-
-                # Emit start-step event (V5 UI Stream Protocol for multi-step agents)
-                yield _wrap_event(StepStartEvent().to_dict())
-                messages_for_obs = messages.copy()  # Copy for observability
-                llm_start_time = time.time()
-                provider = self._get_provider()
-
-                # Merge agent-level and per-run generation configs
-                config = {**self.generation_config, **(generation_config or {})}
-
-                # Track what happened during streaming
-                full_text = []
-                tool_calls = []  # list of {tool_call_id, tool_name, input}
-                finish_reason = 'stop'
-                usage = None
-                response_metadata = None
-
-                # Initialize incremental JSON parser for structured output streaming
-                json_parser = None
-                output_mode = OutputMode.TEXT
-                if self.output_type:
-                    output_mode = detect_output_mode(self.output_type)
-                    if output_mode != OutputMode.TEXT:
-                        element_type = get_element_type(self.output_type) if output_mode == OutputMode.ARRAY else None
-                        json_parser = IncrementalJsonParser(self.output_type, element_type)
-
-                # Stream from provider and forward events
-                # Get schemas from instance tools + global registry
-                tool_schemas = self._get_tool_schemas()
-                async for event in provider.stream(messages, model=self.model_cfg['model'], tools=tool_schemas, generation_config=config):
-                    # Track metadata for finish events (don't forward finish-message)
-                    if event.type == 'finish-message':
-                        finish_reason = event.finish_reason
-                        continue  # Don't forward, consume internally
-
-                    # Track response metadata (usage, model info)
-                    elif event.type == 'response-metadata':
-                        if not response_metadata:
-                            response_metadata = {}
-                        # Update metadata (can come in multiple events)
-                        if hasattr(event, 'id') and event.id:
-                            response_metadata['id'] = event.id
-                        if hasattr(event, 'model_id') and event.model_id:
-                            response_metadata['modelId'] = event.model_id
-                        if hasattr(event, 'timestamp') and event.timestamp:
-                            response_metadata['timestamp'] = event.timestamp
-                        if hasattr(event, 'usage') and event.usage:
-                            usage = event.usage
-                        # Forward response-metadata so consumers can track usage
-                        yield _wrap_event(event.to_dict())
-                        continue
-
-                    # Forward all other stream protocol events
-                    yield _wrap_event(event.to_dict())
-
-                    # Track text content
-                    if event.type == 'text-delta':
-                        full_text.append(event.delta)
-
-                        # Feed incremental JSON parser for structured output streaming
-                        if json_parser and event.delta:
-                            for parsed in json_parser.feed(event.delta):
-                                if isinstance(parsed, StreamedElement):
-                                    # Emit data-object-element for array items
-                                    yield ObjectElementEvent(
-                                        index=parsed.index,
-                                        element=parsed.element
-                                    ).to_dict()
-                                elif isinstance(parsed, PartialObject):
-                                    # Emit data-object-partial for object updates
-                                    yield ObjectPartialEvent(
-                                        partial=parsed.partial
-                                    ).to_dict()
-
-                    # Track tool calls (V5 UI Stream Protocol)
-                    elif event.type == 'tool-input-available':
-                        tool_calls.append({
-                            'tool_call_id': event.tool_call_id,
-                            'tool_name': event.tool_name,
-                            'input': event.input
-                        })
-
-                    # Handle errors
-                    elif event.type == 'error':
-                        # Log detailed error information automatically
-                        error_context = {
-                            'error': event.error,
-                            'provider': getattr(event, 'provider', 'unknown'),
-                            'error_type': getattr(event, 'error_type', None),
-                            'error_code': getattr(event, 'error_code', None),
-                            'status_code': getattr(event, 'status_code', None)
-                        }
-                        logger.error(f"Agent error: {error_context}")
-
-                        # Yield the full error event (includes all context)
-                        yield event.to_dict()
-                        yield {'type': 'finish'}
-                        return
-
-                # Log LLM generation for observability (after streaming completes)
-                if trace_ctx and self._observer:
-                    llm_end_time = time.time()
-                    llm_latency = (llm_end_time - llm_start_time) * 1000
-                    self._observer.log_generation(
-                        current_step_ctx or trace_ctx,
-                        GenerationData(
-                            model=self.model_cfg.get('model', 'unknown'),
-                            provider=self.model_cfg.get('provider', 'unknown'),
-                            messages=messages_for_obs,
-                            response=''.join(full_text) if full_text else None,
-                            tool_calls=[{'tool': tc['tool_name'], 'args': tc['input']} for tc in tool_calls] if tool_calls else None,
-                            usage=usage,
-                            generation_config=config,
-                            latency_ms=llm_latency,
-                            start_time=llm_start_time,
-                            end_time=llm_end_time,
-                        )
-                    )
-
-                # If we got text and no tool calls, we're done
-                if full_text and not tool_calls:
-                    answer = ''.join(full_text)
-                    final_answer = answer  # Track for observability
-
-                    # Run output guardrails
-                    if self.guardrails.has_output_guardrails:
-                        ctx = {'run_id': run_id, 'session_id': session_id}
-                        passed, modified, error = await self.guardrails.check_output(answer, ctx)
-                        if not passed:
-                            error_event = ErrorEvent(error=f"Output guardrail failed: {error}")
-                            yield error_event.to_dict()
-                            yield {'type': 'finish'}
-                            return
-                        answer = modified
-
-                    # Validate structured output if output_type is set
-                    if self.output_type:
-                        try:
-                            validated_object = parse_structured_output(answer, self.output_type)
-                            # Validation passed - emit data-object-complete event
-                            yield ObjectCompleteEvent(
-                                object=validated_object,
-                                mode='array' if output_mode == OutputMode.ARRAY else 'object'
-                            ).to_dict()
-                        except Exception as e:
-                            structured_output_attempts += 1
-                            policy = self.structured_output_policy
-
-                            if structured_output_attempts > policy.max_retries:
-                                # Handle failure based on policy
-                                if policy.on_failure == "raise":
-                                    error_event = ErrorEvent(
-                                        error=f"Structured output validation failed: {e}"
-                                    )
-                                    yield error_event.to_dict()
-                                    yield {'type': 'finish'}
-                                    return
-                                # For return_raw or return_last_valid, continue with answer
-                            else:
-                                # Retry: add error message and continue loop
-                                retry_prompt = get_retry_prompt(self.output_type, e)
-                                self.ctxmgr._by_run[run_id].append({'role': 'system', 'content': retry_prompt})
-                                continue  # Go back to LLM
-
-                    self.ctxmgr.append_assistant_message(run_id, answer, session_id)
-
-                    # End step span for observability
-                    if current_step_ctx and self._observer:
-                        self._observer.end_span(current_step_ctx, output=answer)
-                        current_step_ctx = None
-
-                    # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
-                    yield _wrap_event({'type': 'finish-step'})
-
-                    # Emit finish event (AI SDK v5 spec: simple event, no fields)
-                    yield {'type': 'finish'}
-                    return
-
-                # If we got tool calls, execute them and continue
-                if tool_calls:
-                    # Add assistant's tool call to context BEFORE executing tools
-                    # This is critical - without this, LLM doesn't know it made tool calls
-                    # Use OpenAI's expected format with tool_calls array
-                    tool_calls_formatted = [
-                        {
-                            'id': tc['tool_call_id'],
-                            'type': 'function',
-                            'function': {
-                                'name': tc['tool_name'],
-                                'arguments': json.dumps(tc['input']) if isinstance(tc['input'], dict) else str(tc['input'])
-                            }
-                        }
-                        for tc in tool_calls
-                    ]
-                    self.ctxmgr.append(run_id, {
-                        'role': 'assistant',
-                        'content': None,
-                        'tool_calls': tool_calls_formatted
-                    }, session_id)
-
-                    for tc in tool_calls:
-                        try:
-                            # Get tool to check if it's streaming (instance or global)
-                            tool = self._get_tool(tc['tool_name'])
-                            tool_args = tc['input']
-                            result = None
-                            tool_error = None
-                            tool_start_time = time.time()
-
-                            # Check tool approval callback (for CLI/TUI approval flows)
-                            if self._tool_approval_callback:
-                                approved = await self._tool_approval_callback(tc['tool_name'], tool_args, tc['tool_call_id'])
-                                if not approved:
-                                    # Tool was denied - add error result and continue
-                                    error_result = {'error': f"Tool '{tc['tool_name']}' was denied by user"}
-                                    output_event = ToolOutputAvailableEvent(
-                                        tool_call_id=tc['tool_call_id'],
-                                        output=error_result
-                                    )
-                                    yield _wrap_event(output_event.to_dict())
-                                    self.ctxmgr.append_tool_result(run_id, tc['tool_name'], error_result, session_id, tool_call_id=tc['tool_call_id'])
-                                    continue  # Skip to next tool call
-
-                            # Run tool guardrails
-                            if self.guardrails.has_tool_guardrails(tc['tool_name']):
-                                ctx = {'run_id': run_id, 'session_id': session_id, 'tool_name': tc['tool_name']}
-                                passed, modified_args, error = await self.guardrails.check_tool(tc['tool_name'], tool_args, ctx)
-                                if not passed:
-                                    error_event = ErrorEvent(error=f"Tool guardrail failed: {error}")
-                                    yield error_event.to_dict()
-                                    yield {'type': 'finish'}
-                                    return
-                                tool_args = modified_args
-
-                            # Execute tool (streaming or non-streaming)
-                            # Track reasoning block ID for auto-injection
-                            _current_reasoning_id = None
-
-                            async for event in tool.run_stream(tool_args, ctx=self.tool_context):
-                                if event.get('type') == 'tool-output':
-                                    # Final output from tool
-                                    result = event['output']
-                                    # Emit tool output event (V5 UI Stream Protocol)
-                                    output_event = ToolOutputAvailableEvent(
-                                        tool_call_id=tc['tool_call_id'],
-                                        output=result
-                                    )
-                                    yield _wrap_event(output_event.to_dict())
-                                else:
-                                    # Auto-inject ID for reasoning events (Vercel AI SDK requires it)
-                                    event_type = event.get('type', '')
-                                    if event_type.startswith('reasoning-'):
-                                        # Generate or reuse reasoning block ID
-                                        if 'id' not in event:
-                                            if event_type == 'reasoning-start' or _current_reasoning_id is None:
-                                                _current_reasoning_id = str(uuid.uuid4())
-                                            event = {**event, 'id': _current_reasoning_id}
-
-                                        # Strip non-standard fields (AI SDK only allows type, id, delta)
-                                        # 'transient' is a Vel-internal hint, not part of AI SDK spec
-                                        allowed_keys = {'type', 'id', 'delta'}
-                                        event = {k: v for k, v in event.items() if k in allowed_keys}
-
-                                    # Custom artifact event (e.g., data-artifact-table-editor)
-                                    yield event
-
-                            # Validate final output (only if schema is non-empty)
-                            if result is not None and tool.output_schema:
-                                validate_io(tool.output_schema, result)
-
-                            # Log tool execution for observability
-                            if trace_ctx and self._observer:
-                                tool_latency = (time.time() - tool_start_time) * 1000
-                                self._observer.log_tool(
-                                    current_step_ctx or trace_ctx,
-                                    ToolData(
-                                        tool_name=tc['tool_name'],
-                                        tool_call_id=tc['tool_call_id'],
-                                        input=tool_args,
-                                        output=result,
-                                        latency_ms=tool_latency,
-                                    )
-                                )
-
-                            # Process inject_tools directive (dynamic tool injection)
-                            injected = self._process_inject_tools(result)
-                            if injected:
-                                logger.debug(f"Injected tools for next LLM call: {injected}")
-
-                            # Process through custom handler if configured
-                            directive = self._process_tool_result(
-                                tc['tool_name'], tool_args, result, run_id, steps, session_id
-                            )
-
-                            # Handle directive decision
-                            if directive.decision == ToolUseDecision.STOP:
-                                yield _wrap_event({'type': 'finish-step'})
-                                yield {'type': 'finish'}
-                                return
-                            elif directive.decision == ToolUseDecision.ERROR:
-                                error_event = ErrorEvent(error=f"Tool handler returned ERROR for {tc['tool_name']}")
-                                yield error_event.to_dict()
-                                yield {'type': 'finish'}
-                                return
-
-                            # Check if we should stop after this tool (non-custom behavior)
-                            if self.should_stop_after_tool(tc['tool_name']):
-                                yield _wrap_event({'type': 'finish-step'})
-                                yield {'type': 'finish'}
-                                return  # Don't add to context or continue loop
-
-                            # Handle message modifications from directive
-                            if directive.replace_messages is not None:
-                                self.ctxmgr._by_run[run_id] = directive.replace_messages
-                            elif directive.add_messages:
-                                for msg in directive.add_messages:
-                                    if msg['role'] == 'system':
-                                        self.ctxmgr._by_run[run_id].insert(0, msg)
-                                    else:
-                                        self.ctxmgr._by_run[run_id].append(msg)
-
-                            # Add to context for next iteration (with tool_call_id for proper OpenAI format)
-                            self.ctxmgr.append_tool_result(run_id, tc['tool_name'], result, session_id, tool_call_id=tc['tool_call_id'])
-
-                            # Add reset tool choice message if enabled
-                            reset_msg = self._get_reset_tool_choice_message()
-                            if reset_msg:
-                                self.ctxmgr._by_run[run_id].append(reset_msg)
-
-                        except Exception as e:
-                            # Log tool error for observability
-                            if trace_ctx and self._observer:
-                                tool_latency = (time.time() - tool_start_time) * 1000
-                                self._observer.log_tool(
-                                    current_step_ctx or trace_ctx,
-                                    ToolData(
-                                        tool_name=tc['tool_name'],
-                                        tool_call_id=tc['tool_call_id'],
-                                        input=tool_args,
-                                        error=str(e),
-                                        latency_ms=tool_latency,
-                                    )
-                                )
-                            error_event = ErrorEvent(error=f"Tool execution failed: {str(e)}")
-                            yield error_event.to_dict()
-                            yield {'type': 'finish'}
-                            return
-
-                    # End step span for observability
-                    if current_step_ctx and self._observer:
-                        self._observer.end_span(current_step_ctx, output={'status': 'continue', 'tools_executed': len(tool_calls)})
-                        current_step_ctx = None
-
-                    # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
-                    yield _wrap_event({'type': 'finish-step'})
-
-                    # Continue loop to get next LLM response
-                    continue
-
-                # If we got here with no text and no tool calls, something's wrong
-                error_event = ErrorEvent(error='No response from LLM')
-                yield error_event.to_dict()
-                yield {'type': 'finish'}
-                return
-
-            # Max steps exceeded - make one final LLM call WITHOUT tools to synthesize a response
-            # This gives the user a partial answer rather than an error
-            logger.warning(f'max steps ({max_steps}) exceeded, making final synthesis call')
-
-            # Add a system message to guide the final response
-            synthesis_msg = {
-                'role': 'user',
-                'content': 'You have reached the maximum number of steps. Please synthesize a response based on the information you have gathered so far. Do not call any more tools.'
-            }
-            self.ctxmgr.append(run_id, synthesis_msg, session_id)
-
-            # Make final LLM call without tools
-            messages = self.ctxmgr.messages_for_llm(run_id, session_id)
-            system_prompt = self._get_system_prompt(run_id, context=context)
-            if system_prompt:
-                messages = [{'role': 'system', 'content': system_prompt}] + messages
-
-            provider = self._get_provider()
-
-            # Stream the final response (no tools)
-            final_text = ''
-            async for event in provider.stream(messages, self.model_cfg.get('model', 'gpt-4o'), tools=[]):
-                event_type = event.type  # Events are objects with .type attribute, not dicts
-                if event_type in ('text-delta', 'text-start', 'text-end'):
-                    yield event
-                    if event_type == 'text-delta':
-                        final_text += getattr(event, 'delta', '')
-                elif event_type == 'finish-message':
-                    yield event
-
-            # Save final response to context
-            if final_text:
-                self.ctxmgr.append_assistant_message(run_id, final_text, session_id)
-
-            yield _wrap_event({'type': 'finish-step'})
-            yield {'type': 'finish'}
-
+            if harness_controller is not None:
+                yield harness_controller.run_started_event()
+                # Create/inject the sandbox (no-op if disabled) before the loop
+                # so sandbox tools are visible to the model on step 1 (§6.7).
+                for _sb_event in await harness_controller.ensure_sandbox():
+                    yield _sb_event
+            async for event in self._step_loop(
+                run_id=run_id,
+                session_id=session_id,
+                context=context,
+                generation_config=generation_config,
+                trace_ctx=trace_ctx,
+                observer=observer,
+                wrap_event=_wrap_event,
+                loop_state=loop_state,
+                max_steps=_hk_max_steps,
+                pre_step_hook=_hk_pre_step,
+                approval_prepass=_hk_prepass,
+                approval_resolver=_hk_resolver,
+                budget_hook=_hk_budget,
+                on_tool_completed=_hk_on_tool,
+            ):
+                if harness_controller is not None:
+                    harness_controller.observe_event(event)
+                yield event
+            if harness_controller is not None:
+                for _sb_event in await harness_controller.close_sandbox():
+                    yield _sb_event
+                harness_controller.mark_completed(run_id)
+                yield harness_controller.run_finished_event('completed')
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            # Harness Mode durable suspension: persist checkpoint + emit approval
+            # and suspended events, then return (run kept alive for resume; the
+            # sandbox is intentionally NOT closed so resume can reconnect).
+            if harness_controller is not None and isinstance(e, SuspendRun):
+                for ev in harness_controller.on_suspend(e):
+                    yield ev
+                return
+            # Harness Mode budget exhaustion: emit event + synthesize a partial
+            # answer (reuse the shared max-steps synthesis behavior).
+            if harness_controller is not None and isinstance(e, BudgetExhausted):
+                yield harness_controller.budget_exhausted_event(e)
+                async for event in self._synthesize_final(
+                    run_id, session_id, context=context, wrap_event=_wrap_event,
+                    reason=getattr(e, 'reason', str(e)),
+                ):
+                    yield event
+                for _sb_event in await harness_controller.close_sandbox():
+                    yield _sb_event
+                harness_controller.mark_completed(run_id)
+                yield harness_controller.run_finished_event('completed')
+                return
             # Ensure error message is never empty
             error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
             logger.error(f"Agent stream error: {error_msg}", exc_info=True)
 
-            # End observability trace with error
-            if trace_ctx and self._observer:
-                self._observer.end_trace(trace_ctx, error=error_msg)
-                self._observer.flush()
+            # End observability trace with error. Nested runs close only their own
+            # span; the parent owns end/flush.
+            if trace_ctx and observer:
+                if trace_context is not None:
+                    observer.end_span(trace_ctx, error=error_msg)
+                else:
+                    observer.end_trace(trace_ctx, error=error_msg)
+                    observer.flush()
 
             # Emit error hook
             await self.hooks.emit('on_error', ErrorHookEvent(
@@ -1902,22 +1751,27 @@ class Agent:
                 session_id=session_id,
                 error=e,
                 error_message=error_msg,
-                step=steps
+                step=loop_state['steps']
             ))
 
             error_event = ErrorEvent(error=error_msg)
             yield error_event.to_dict()
             raise
         finally:
+            final_answer = loop_state['final_answer']
             # Capture scratchpad summary for next run
             if scratchpad:
                 self._scratchpad_summary = scratchpad.get_summary()
 
-            # End observability trace if not already ended (success case)
+            # End observability trace if not already ended (success case). Nested
+            # runs close only their own span; the parent owns end/flush.
             run_duration_ms = (time.time() - run_start_time) * 1000
-            if trace_ctx and self._observer:
-                self._observer.end_trace(trace_ctx, output=final_answer)
-                self._observer.flush()
+            if trace_ctx and observer:
+                if trace_context is not None:
+                    observer.end_span(trace_ctx, output=final_answer)
+                else:
+                    observer.end_trace(trace_ctx, output=final_answer)
+                    observer.flush()
 
             # Clear observer from ContextManager
             self.ctxmgr.clear_observer()
@@ -1927,9 +1781,1021 @@ class Agent:
                 run_id=run_id,
                 session_id=session_id,
                 output=final_answer,
-                total_steps=steps,
+                total_steps=loop_state['steps'],
                 total_duration_ms=run_duration_ms
             ))
+
+    async def resume(
+        self,
+        run_id: str,
+        decisions: List['ApprovalDecision'],
+        *,
+        harness: Optional[Any] = None,
+        context: Optional[Dict[str, Any]] = None,
+        generation_config: Optional[Dict[str, Any]] = None,
+        force: bool = False,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Resume a suspended durable run with human approval decisions.
+
+        Loads the persisted checkpoint, applies the decisions (approve/reject),
+        re-executes the suspended step's tool calls, then continues the agent
+        loop — emitting the same stream events as ``run_stream``.
+
+        Args:
+            run_id: The suspended run to resume.
+            decisions: Approval decisions for the run's pending approvals.
+            harness: Optional HarnessConfig/dict override (defaults to the
+                agent-level config).
+            context: Optional runtime context for callable system prompts.
+            generation_config: Optional per-run generation config.
+            force: Resume even if the config hash changed (logs nothing extra;
+                use with care — model/tool changes can corrupt continuation).
+
+        Yields:
+            Stream protocol event dicts for the resumed run.
+
+        Raises:
+            ValueError: If Harness Mode is not configured, or the run is not in
+                a suspended state, or the config changed and ``force`` is False.
+        """
+        from .harness import HarnessConfig, HarnessController
+
+        harness_cfg = None
+        if harness:
+            harness_cfg = HarnessConfig(**harness) if isinstance(harness, dict) else harness
+        elif self.harness_config:
+            harness_cfg = self.harness_config
+        if harness_cfg is None or not harness_cfg.enabled:
+            raise ValueError("resume() requires Harness Mode to be enabled")
+
+        # A suspended REFLECTION run resumes its phase state machine, not the
+        # step loop. Peek at the checkpoint to dispatch.
+        from .harness.checkpoint import CheckpointStore
+        _ckpt = CheckpointStore(harness_cfg.db_path).load(run_id)
+        if _ckpt is not None and _ckpt.reflection is not None:
+            async for event in self._resume_reflection(
+                run_id, decisions, _ckpt, harness_cfg, context=context
+            ):
+                yield event
+            return
+
+        controller = HarnessController(agent=self, config=harness_cfg)
+        # Trace the resume leg (reuse the run_id trace so it continues the original
+        # execution's trace). Without this, post-suspension work is untraced.
+        observer, trace_ctx = self._begin_leg_trace(run_id)
+        try:
+            async for event in controller.resume(
+                run_id,
+                decisions,
+                context=context,
+                generation_config=generation_config,
+                force=force,
+                observer=observer,
+                trace_ctx=trace_ctx,
+            ):
+                yield event
+        finally:
+            self._end_leg_trace(observer, trace_ctx)
+
+    async def _resume_reflection(
+        self,
+        run_id: str,
+        decisions: List['ApprovalDecision'],
+        ckpt: Any,
+        harness_cfg: Any,
+        *,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Resume a suspended reflection run: apply the decision(s), rehydrate the
+        phase state, and continue the phase machine from the cursor."""
+        from .thinking import ReflectionController
+        from .harness import HarnessController
+        from .harness.exceptions import SuspendRun
+        from .harness.events import HarnessResumedEvent
+
+        config = self.thinking_config
+        if config is None:
+            raise ValueError("resume of a reflection run requires the agent's thinking config")
+
+        hc = HarnessController(agent=self, config=harness_cfg)
+        hc.bind_run(run_id=run_id, session_id=ckpt.session_id, context=context)
+        controller = ReflectionController(
+            agent=self, config=config, budget=harness_cfg.budget, harness_controller=hc
+        )
+        controller._run_id = run_id
+
+        # Record the human decisions, then rehydrate state/scratch/cursor and add
+        # approved tool NAMES so the re-run of the suspended phase runs them.
+        approval_by_id = {r.approval_id: r for r in ckpt.pending_approvals}
+        for d in decisions:
+            await hc._gate.record(d)
+        cursor = controller.restore(ckpt)
+        for d in decisions:
+            req = approval_by_id.get(d.approval_id)
+            if req is not None:
+                if d.decision == 'approve':
+                    controller._approved_tools.add(req.tool_name)
+                else:
+                    controller._denied_tools.add(req.tool_name)
+
+        hc._checkpoints.set_status(run_id, 'running')
+        yield HarnessResumedEvent(run_id=run_id).to_dict()
+        yield StartEvent().to_dict()
+        yield StepStartEvent().to_dict()
+
+        scratch_id = ckpt.reflection['scratch_id']
+        reasoning_parts: List[str] = []
+        answer_parts: List[str] = []
+        answer_step_started = False
+        suspended = False
+        observer, trace_ctx = self._begin_leg_trace(run_id)
+        try:
+            async for event in controller._drive_phases(
+                cursor, scratch_id, trace_ctx=trace_ctx, observer=observer, session_id=None
+            ):
+                if event.get('type') == 'text-start' and not answer_step_started:
+                    yield StepFinishEvent().to_dict()
+                    yield StepStartEvent().to_dict()
+                    answer_step_started = True
+                yield event
+                et = event.get('type')
+                if et == 'reasoning-delta':
+                    reasoning_parts.append(event.get('delta', ''))
+                elif et == 'text-delta':
+                    answer_parts.append(event.get('delta', ''))
+        except SuspendRun as s:
+            suspended = True
+            for ev in hc.on_suspend(s):
+                yield ev
+        finally:
+            self._end_leg_trace(observer, trace_ctx)
+            self.ctxmgr._by_run.pop(scratch_id, None)
+
+        if suspended:
+            return
+
+        # Reflection finished on resume: emit completion + persist to the real run.
+        from .events import DataEvent
+        yield DataEvent(
+            type='data-thinking-complete',
+            data={
+                'steps': cursor.get('step', 0),
+                'iterations': controller.state.iteration,
+                'final_confidence': controller.state.confidence,
+                'thinking_tokens': controller.state.total_tokens,
+                'thinking_model': controller._thinking_model or self.model_cfg.get('model'),
+            },
+            transient=False,
+        ).to_dict()
+        self.ctxmgr.append_assistant_with_reasoning(
+            run_id, ''.join(reasoning_parts), ''.join(answer_parts), {}, ckpt.session_id
+        )
+        hc._checkpoints.set_status(run_id, 'completed')
+        yield StepFinishEvent().to_dict()
+        yield FinishEvent().to_dict()
+
+    async def recover(
+        self,
+        run_id: str,
+        *,
+        harness: Optional[Any] = None,
+        context: Optional[Dict[str, Any]] = None,
+        generation_config: Optional[Dict[str, Any]] = None,
+        force: bool = False,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Recover a run that crashed while ``running`` (not suspended).
+
+        Loads the last ``running`` checkpoint, rehydrates the message window, and
+        — if the crash happened mid-step — re-executes only the tool calls that
+        had not completed (those already committed are skipped via
+        ``completed_tool_calls``), then continues the loop. Requires the run to
+        have been executed with ``harness.checkpoint_each_tool=True`` for
+        mid-step granularity; otherwise recovery restarts from the last step
+        boundary. Emits the same stream events as ``run_stream`` plus
+        ``data-harness-recovered``.
+
+        Args:
+            run_id: The run to recover.
+            harness: Optional HarnessConfig/dict override (defaults to the
+                agent-level config).
+            context: Optional runtime context for callable system prompts.
+            generation_config: Optional per-run generation config.
+            force: Recover even if the config hash changed.
+
+        Yields:
+            Stream protocol event dicts for the recovered run.
+
+        Raises:
+            ValueError: If Harness Mode is not enabled, or there is no
+                recoverable ``running`` checkpoint for ``run_id``.
+        """
+        from .harness import HarnessConfig, HarnessController
+
+        harness_cfg = None
+        if harness:
+            harness_cfg = HarnessConfig(**harness) if isinstance(harness, dict) else harness
+        elif self.harness_config:
+            harness_cfg = self.harness_config
+        if harness_cfg is None or not harness_cfg.enabled:
+            raise ValueError("recover() requires Harness Mode to be enabled")
+
+        controller = HarnessController(agent=self, config=harness_cfg)
+        observer, trace_ctx = self._begin_leg_trace(run_id)
+        try:
+            async for event in controller.recover(
+                run_id,
+                context=context,
+                generation_config=generation_config,
+                force=force,
+                observer=observer,
+                trace_ctx=trace_ctx,
+            ):
+                yield event
+        finally:
+            self._end_leg_trace(observer, trace_ctx)
+
+    def _begin_leg_trace(self, run_id: str):
+        """Open an observability trace for a resume/recover leg (reusing the
+        run_id trace so it continues the original execution's trace). Returns
+        ``(observer, trace_ctx)``; ``trace_ctx`` is None when not sampling."""
+        observer = self._observer
+        if not (observer and observer.should_sample()):
+            return observer, None
+        obs_config = self._observability_config
+        name = (obs_config.trace_name if obs_config else None) or self.id
+        trace_ctx = observer.start_trace(trace_id=run_id, name=name)
+        self.ctxmgr.set_observer(observer, trace_ctx)
+        return observer, trace_ctx
+
+    def _end_leg_trace(self, observer, trace_ctx) -> None:
+        if trace_ctx and observer:
+            observer.end_trace(trace_ctx, output=None)
+            observer.flush()
+            self.ctxmgr.clear_observer()
+
+    async def _step_loop(
+        self,
+        run_id: str,
+        session_id: Optional[str],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        generation_config: Optional[Dict[str, Any]] = None,
+        trace_ctx: Optional['SpanContext'] = None,
+        observer: Optional[Any] = None,
+        wrap_event: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        loop_state: Optional[Dict[str, Any]] = None,
+        max_steps: Optional[int] = None,
+        pre_step_hook: Optional[Callable[..., Any]] = None,
+        approval_prepass: Optional[Callable[..., Any]] = None,
+        approval_resolver: Optional[Callable[[str], bool]] = None,
+        budget_hook: Optional[Callable[..., Any]] = None,
+        on_tool_completed: Optional[Callable[..., Any]] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Core agentic step loop, extracted from run_stream (M0).
+
+        With all hooks None this is byte-for-byte identical to the legacy loop.
+        Harness Mode passes hooks to interpose budget/compaction/approval logic.
+
+        Args:
+            run_id: Active run identifier.
+            session_id: Optional session id for multi-turn context.
+            context: Runtime context dict for a callable system_prompt.
+            generation_config: Per-run generation config override.
+            trace_ctx: Observability trace span context, if sampling.
+            wrap_event: Event-metadata wrapper (Mesh/Valis); identity if None.
+            loop_state: Mutable dict the caller reads after the loop for
+                ``steps``/``final_answer`` (used by run_stream's except/finally).
+            pre_step_hook: Async generator hook run before each step (compaction).
+            approval_hook: Async predicate consulted at the tool-approval seam.
+            budget_hook: Async hook run before each step; may raise to stop.
+
+        Yields:
+            Stream protocol event dicts, identical in shape to run_stream.
+        """
+        if wrap_event is None:
+            wrap_event = lambda event_dict: event_dict
+        if loop_state is None:
+            loop_state = {'steps': 0, 'final_answer': ''}
+        # When not threaded a nesting-aware observer (e.g. harness resume/recover
+        # legs), fall back to the agent's own observer — behavior unchanged.
+        if observer is None:
+            observer = self._observer
+        current_step_ctx: Optional['SpanContext'] = None
+
+        steps = 0
+        if max_steps is None:
+            max_steps = self.policies.get('max_steps', 24)
+        structured_output_attempts = 0
+
+        while steps < max_steps:
+            steps += 1
+            loop_state['steps'] = steps
+            if budget_hook is not None:
+                await budget_hook(steps)
+            if pre_step_hook is not None:
+                async for _hook_event in pre_step_hook(run_id, session_id, steps):
+                    yield _hook_event
+
+            # Get messages and stream LLM response
+            messages = self.ctxmgr.messages_for_llm(run_id, session_id)
+
+            # Prepend system prompt if set (for prompt caching)
+            system_prompt = self._get_system_prompt(run_id, context=context)
+            if system_prompt:
+                messages = [{'role': 'system', 'content': system_prompt}] + messages
+
+            # Start step span for observability
+            if trace_ctx and observer:
+                from .integrations.base import SpanKind, GenerationData, ToolData
+                current_step_ctx = observer.start_span(
+                    trace_ctx, f"step-{steps}", SpanKind.STEP,
+                    input={'messages_count': len(messages), 'step': steps}
+                )
+
+            # Emit start-step event (V5 UI Stream Protocol for multi-step agents)
+            yield wrap_event(StepStartEvent().to_dict())
+            messages_for_obs = messages.copy()  # Copy for observability
+            llm_start_time = time.time()
+            provider = self._get_provider()
+
+            # Merge agent-level and per-run generation configs
+            config = {**self.generation_config, **(generation_config or {})}
+
+            # Track what happened during streaming
+            full_text = []
+            tool_calls = []  # list of {tool_call_id, tool_name, input}
+            finish_reason = 'stop'
+            usage = None
+            response_metadata = None
+
+            # Initialize incremental JSON parser for structured output streaming
+            json_parser = None
+            output_mode = OutputMode.TEXT
+            if self.output_type:
+                output_mode = detect_output_mode(self.output_type)
+                if output_mode != OutputMode.TEXT:
+                    element_type = get_element_type(self.output_type) if output_mode == OutputMode.ARRAY else None
+                    json_parser = IncrementalJsonParser(self.output_type, element_type)
+
+            # Stream from provider and forward events
+            # Get schemas from instance tools + global registry
+            tool_schemas = self._get_tool_schemas()
+            async for event in provider.stream(messages, model=self.model_cfg['model'], tools=tool_schemas, generation_config=config):
+                # Track metadata for finish events (don't forward finish-message)
+                if event.type == 'finish-message':
+                    finish_reason = event.finish_reason
+                    continue  # Don't forward, consume internally
+
+                # Track response metadata (usage, model info)
+                elif event.type == 'response-metadata':
+                    if not response_metadata:
+                        response_metadata = {}
+                    # Update metadata (can come in multiple events)
+                    if hasattr(event, 'id') and event.id:
+                        response_metadata['id'] = event.id
+                    if hasattr(event, 'model_id') and event.model_id:
+                        response_metadata['modelId'] = event.model_id
+                    if hasattr(event, 'timestamp') and event.timestamp:
+                        response_metadata['timestamp'] = event.timestamp
+                    if hasattr(event, 'usage') and event.usage:
+                        usage = event.usage
+                    # Forward response-metadata so consumers can track usage
+                    yield wrap_event(event.to_dict())
+                    continue
+
+                # Forward all other stream protocol events
+                yield wrap_event(event.to_dict())
+
+                # Track text content
+                if event.type == 'text-delta':
+                    full_text.append(event.delta)
+
+                    # Feed incremental JSON parser for structured output streaming
+                    if json_parser and event.delta:
+                        for parsed in json_parser.feed(event.delta):
+                            if isinstance(parsed, StreamedElement):
+                                # Emit data-object-element for array items
+                                yield ObjectElementEvent(
+                                    index=parsed.index,
+                                    element=parsed.element
+                                ).to_dict()
+                            elif isinstance(parsed, PartialObject):
+                                # Emit data-object-partial for object updates
+                                yield ObjectPartialEvent(
+                                    partial=parsed.partial
+                                ).to_dict()
+
+                # Track tool calls (V5 UI Stream Protocol)
+                elif event.type == 'tool-input-available':
+                    tool_calls.append({
+                        'tool_call_id': event.tool_call_id,
+                        'tool_name': event.tool_name,
+                        'input': event.input
+                    })
+
+                # Handle errors
+                elif event.type == 'error':
+                    # Log detailed error information automatically
+                    error_context = {
+                        'error': event.error,
+                        'provider': getattr(event, 'provider', 'unknown'),
+                        'error_type': getattr(event, 'error_type', None),
+                        'error_code': getattr(event, 'error_code', None),
+                        'status_code': getattr(event, 'status_code', None)
+                    }
+                    logger.error(f"Agent error: {error_context}")
+
+                    # Yield the full error event (includes all context)
+                    yield event.to_dict()
+                    yield {'type': 'finish'}
+                    return
+
+            # Log LLM generation for observability (after streaming completes)
+            if trace_ctx and observer:
+                llm_end_time = time.time()
+                llm_latency = (llm_end_time - llm_start_time) * 1000
+                observer.log_generation(
+                    current_step_ctx or trace_ctx,
+                    GenerationData(
+                        model=self.model_cfg.get('model', 'unknown'),
+                        provider=self.model_cfg.get('provider', 'unknown'),
+                        messages=messages_for_obs,
+                        response=''.join(full_text) if full_text else None,
+                        tool_calls=[{'tool': tc['tool_name'], 'args': tc['input']} for tc in tool_calls] if tool_calls else None,
+                        usage=usage,
+                        generation_config=config,
+                        latency_ms=llm_latency,
+                        start_time=llm_start_time,
+                        end_time=llm_end_time,
+                    )
+                )
+
+            # If we got text and no tool calls, we're done
+            if full_text and not tool_calls:
+                answer = ''.join(full_text)
+                final_answer = answer  # Track for observability
+                loop_state['final_answer'] = answer
+
+                # Run output guardrails
+                if self.guardrails.has_output_guardrails:
+                    ctx = {'run_id': run_id, 'session_id': session_id}
+                    passed, modified, error = await self.guardrails.check_output(answer, ctx)
+                    if not passed:
+                        error_event = ErrorEvent(error=f"Output guardrail failed: {error}")
+                        yield error_event.to_dict()
+                        yield {'type': 'finish'}
+                        return
+                    answer = modified
+
+                # Validate structured output if output_type is set
+                if self.output_type:
+                    try:
+                        validated_object = parse_structured_output(answer, self.output_type)
+                        # Validation passed - emit data-object-complete event
+                        yield ObjectCompleteEvent(
+                            object=validated_object,
+                            mode='array' if output_mode == OutputMode.ARRAY else 'object'
+                        ).to_dict()
+                    except Exception as e:
+                        structured_output_attempts += 1
+                        policy = self.structured_output_policy
+
+                        if structured_output_attempts > policy.max_retries:
+                            # Handle failure based on policy
+                            if policy.on_failure == "raise":
+                                error_event = ErrorEvent(
+                                    error=f"Structured output validation failed: {e}"
+                                )
+                                yield error_event.to_dict()
+                                yield {'type': 'finish'}
+                                return
+                            # For return_raw or return_last_valid, continue with answer
+                        else:
+                            # Retry: add error message and continue loop.
+                            # Structured-output retries are bounded by
+                            # StructuredOutputPolicy.max_retries, not the tool
+                            # max_steps budget — offset the loop-top increment so
+                            # this retry does not consume a tool step.
+                            retry_prompt = get_retry_prompt(self.output_type, e)
+                            self.ctxmgr._by_run[run_id].append({'role': 'system', 'content': retry_prompt})
+                            steps -= 1
+                            continue  # Go back to LLM
+
+                self.ctxmgr.append_assistant_message(run_id, answer, session_id)
+
+                # End step span for observability
+                if current_step_ctx and observer:
+                    observer.end_span(current_step_ctx, output=answer)
+                    current_step_ctx = None
+
+                # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
+                yield wrap_event({'type': 'finish-step'})
+
+                # Emit finish event (AI SDK v5 spec: simple event, no fields)
+                yield {'type': 'finish'}
+                return
+
+            # If we got tool calls, execute them and continue
+            if tool_calls:
+                # Add assistant's tool call to context BEFORE executing tools
+                # This is critical - without this, LLM doesn't know it made tool calls
+                # Use OpenAI's expected format with tool_calls array
+                tool_calls_formatted = [
+                    {
+                        'id': tc['tool_call_id'],
+                        'type': 'function',
+                        'function': {
+                            'name': tc['tool_name'],
+                            'arguments': json.dumps(tc['input']) if isinstance(tc['input'], dict) else str(tc['input'])
+                        }
+                    }
+                    for tc in tool_calls
+                ]
+                self.ctxmgr.append(run_id, {
+                    'role': 'assistant',
+                    'content': None,
+                    'tool_calls': tool_calls_formatted
+                }, session_id)
+
+                # Harness durable-approval pre-pass: may snapshot + raise
+                # SuspendRun for tools awaiting a human decision (no-op legacy).
+                if approval_prepass is not None:
+                    await approval_prepass(tool_calls, run_id, session_id, steps)
+
+                async for _tc_event in self._run_tool_calls(
+                    tool_calls,
+                    run_id,
+                    session_id,
+                    steps=steps,
+                    context=context,
+                    wrap_event=wrap_event,
+                    trace_ctx=trace_ctx,
+                    current_step_ctx=current_step_ctx,
+                    observer=observer,
+                    loop_state=loop_state,
+                    approval_resolver=approval_resolver,
+                    on_tool_completed=on_tool_completed,
+                ):
+                    yield _tc_event
+                current_step_ctx = None
+                if loop_state.get('control') == 'terminate':
+                    return
+
+                # Continue loop to get next LLM response
+                continue
+
+            # If we got here with no text and no tool calls, something's wrong
+            error_event = ErrorEvent(error='No response from LLM')
+            yield error_event.to_dict()
+            yield {'type': 'finish'}
+            return
+
+        # Max steps exceeded - synthesize a partial answer (reuse shared helper).
+        async for event in self._synthesize_final(
+            run_id,
+            session_id,
+            context=context,
+            wrap_event=wrap_event,
+            reason=f'max steps ({max_steps}) exceeded',
+        ):
+            yield event
+
+    async def _run_tool_calls(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        run_id: str,
+        session_id: Optional[str],
+        *,
+        steps: int,
+        context: Optional[Dict[str, Any]] = None,
+        wrap_event: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        trace_ctx: Optional['SpanContext'] = None,
+        current_step_ctx: Optional['SpanContext'] = None,
+        observer: Optional[Any] = None,
+        loop_state: Optional[Dict[str, Any]] = None,
+        approval_resolver: Optional[Callable[[str], bool]] = None,
+        on_tool_completed: Optional[Callable[..., Any]] = None,
+        skip_tool_call_ids: Optional[set] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Execute one step's tool calls, extracted from _step_loop (M3).
+
+        Assumes the assistant tool_calls message is already in context (the
+        caller appends it before the durable-approval pre-pass so a suspend
+        checkpoint captures it). Shared by _step_loop and Agent.resume so a
+        resumed run re-executes a suspended step without a spurious LLM call.
+
+        Sets ``loop_state['control']`` to ``'terminate'`` if a terminal event
+        sequence (finish) was already emitted, else ``'continue'``.
+
+        Args:
+            tool_calls: Collected tool calls for the step.
+            run_id: Active run id.
+            session_id: Optional session id.
+            steps: Current step number (for custom tool-result handlers).
+            context: Runtime context for callable system prompts.
+            wrap_event: Event-metadata wrapper; identity if None.
+            trace_ctx: Observability trace context.
+            current_step_ctx: Observability step span.
+            loop_state: Mutable dict; receives the control signal.
+            approval_resolver: Maps a tool_call_id to an approve/deny bool
+                (harness durable approvals). When None the inline
+                ``_tool_approval_callback`` path is used unchanged.
+            on_tool_completed: Optional async hook called after each tool result
+                is committed to context, as
+                ``on_tool_completed(run_id, session_id, steps, tool_calls,
+                completed_ids)``. The harness uses it to persist a per-tool
+                running checkpoint so a mid-step crash can recover without
+                re-running completed tools. None (default) ⇒ no extra work.
+            skip_tool_call_ids: Tool-call ids whose results are already in the
+                rehydrated message window (crash recovery / resume replay); they
+                are skipped instead of re-executed. None (default) ⇒ run all.
+
+        Yields:
+            Stream protocol event dicts for the executed tool calls.
+        """
+        from .integrations.base import ToolData
+
+        if wrap_event is None:
+            wrap_event = lambda event_dict: event_dict
+        if loop_state is None:
+            loop_state = {}
+        if observer is None:
+            observer = self._observer
+
+        completed_ids: List[str] = []
+
+        async def _mark_completed(tool_call_id: str) -> None:
+            """Record a committed tool result and fire the checkpoint hook."""
+            completed_ids.append(tool_call_id)
+            if on_tool_completed is not None:
+                await on_tool_completed(run_id, session_id, steps, tool_calls, completed_ids)
+
+        for tc in tool_calls:
+            # Replay-skip (crash recovery / resume): this tool's result is
+            # already in the rehydrated context — do not re-execute it.
+            if skip_tool_call_ids and tc['tool_call_id'] in skip_tool_call_ids:
+                completed_ids.append(tc['tool_call_id'])
+                continue
+            tool_args = tc.get('input', {})
+            tool_start_time = time.time()
+            try:
+                # Get tool to check if it's streaming (instance or global)
+                tool = self._get_tool(tc['tool_name'])
+                result = None
+                tool_error = None
+
+                # Check tool approval (harness resolver takes precedence over inline callback)
+                approved = True
+                if approval_resolver is not None:
+                    approved = approval_resolver(tc['tool_call_id'])
+                elif self._tool_approval_callback:
+                    approved = await self._tool_approval_callback(tc['tool_name'], tool_args, tc['tool_call_id'])
+                if not approved:
+                    # Tool was denied - add error result and continue
+                    error_result = {'error': f"Tool '{tc['tool_name']}' was denied by user"}
+                    output_event = ToolOutputAvailableEvent(
+                        tool_call_id=tc['tool_call_id'],
+                        output=error_result
+                    )
+                    yield wrap_event(output_event.to_dict())
+                    self.ctxmgr.append_tool_result(run_id, tc['tool_name'], error_result, session_id, tool_call_id=tc['tool_call_id'])
+                    await _mark_completed(tc['tool_call_id'])
+                    continue  # Skip to next tool call
+
+                # Run tool guardrails
+                if self.guardrails.has_tool_guardrails(tc['tool_name']):
+                    ctx = {'run_id': run_id, 'session_id': session_id, 'tool_name': tc['tool_name']}
+                    passed, modified_args, error = await self.guardrails.check_tool(tc['tool_name'], tool_args, ctx)
+                    if not passed:
+                        error_event = ErrorEvent(error=f"Tool guardrail failed: {error}")
+                        yield error_event.to_dict()
+                        yield {'type': 'finish'}
+                        loop_state['control'] = 'terminate'
+                        return
+                    tool_args = modified_args
+
+                # Execute tool (streaming or non-streaming)
+                # Track reasoning block ID for auto-injection
+                _current_reasoning_id = None
+
+                async for event in tool.run_stream(tool_args, ctx=self.tool_context):
+                    if event.get('type') == 'tool-output':
+                        # Final output from tool
+                        result = event['output']
+                        # Emit tool output event (V5 UI Stream Protocol)
+                        output_event = ToolOutputAvailableEvent(
+                            tool_call_id=tc['tool_call_id'],
+                            output=result
+                        )
+                        yield wrap_event(output_event.to_dict())
+                    else:
+                        # Auto-inject ID for reasoning events (Vercel AI SDK requires it)
+                        event_type = event.get('type', '')
+                        if event_type.startswith('reasoning-'):
+                            # Generate or reuse reasoning block ID
+                            if 'id' not in event:
+                                if event_type == 'reasoning-start' or _current_reasoning_id is None:
+                                    _current_reasoning_id = str(uuid.uuid4())
+                                event = {**event, 'id': _current_reasoning_id}
+
+                            # Strip non-standard fields (AI SDK only allows type, id, delta)
+                            # 'transient' is a Vel-internal hint, not part of AI SDK spec
+                            allowed_keys = {'type', 'id', 'delta'}
+                            event = {k: v for k, v in event.items() if k in allowed_keys}
+
+                        # Custom artifact event (e.g., data-artifact-table-editor)
+                        yield event
+
+                # Validate final output (only if schema is non-empty)
+                if result is not None and tool.output_schema:
+                    validate_io(tool.output_schema, result)
+
+                # Log tool execution for observability
+                if trace_ctx and observer:
+                    tool_latency = (time.time() - tool_start_time) * 1000
+                    observer.log_tool(
+                        current_step_ctx or trace_ctx,
+                        ToolData(
+                            tool_name=tc['tool_name'],
+                            tool_call_id=tc['tool_call_id'],
+                            input=tool_args,
+                            output=result,
+                            latency_ms=tool_latency,
+                        )
+                    )
+
+                # Process inject_tools directive (dynamic tool injection)
+                injected = self._process_inject_tools(result)
+                if injected:
+                    logger.debug(f"Injected tools for next LLM call: {injected}")
+
+                # Process through custom handler if configured
+                directive = self._process_tool_result(
+                    tc['tool_name'], tool_args, result, run_id, steps, session_id
+                )
+
+                # Handle directive decision
+                if directive.decision == ToolUseDecision.STOP:
+                    yield wrap_event({'type': 'finish-step'})
+                    yield {'type': 'finish'}
+                    loop_state['control'] = 'terminate'
+                    return
+                elif directive.decision == ToolUseDecision.ERROR:
+                    error_event = ErrorEvent(error=f"Tool handler returned ERROR for {tc['tool_name']}")
+                    yield error_event.to_dict()
+                    yield {'type': 'finish'}
+                    loop_state['control'] = 'terminate'
+                    return
+
+                # Check if we should stop after this tool (non-custom behavior)
+                if self.should_stop_after_tool(tc['tool_name']):
+                    yield wrap_event({'type': 'finish-step'})
+                    yield {'type': 'finish'}
+                    return  # Don't add to context or continue loop
+
+                # Handle message modifications from directive
+                if directive.replace_messages is not None:
+                    self.ctxmgr._by_run[run_id] = directive.replace_messages
+                elif directive.add_messages:
+                    for msg in directive.add_messages:
+                        if msg['role'] == 'system':
+                            self.ctxmgr._by_run[run_id].insert(0, msg)
+                        else:
+                            self.ctxmgr._by_run[run_id].append(msg)
+
+                # Add to context for next iteration (with tool_call_id for proper OpenAI format)
+                self.ctxmgr.append_tool_result(run_id, tc['tool_name'], result, session_id, tool_call_id=tc['tool_call_id'])
+
+                # Add reset tool choice message if enabled
+                reset_msg = self._get_reset_tool_choice_message()
+                if reset_msg:
+                    self.ctxmgr._by_run[run_id].append(reset_msg)
+
+                # Per-tool durable checkpoint (harness crash recovery; no-op when
+                # the hook is unset, i.e. the non-harness path).
+                await _mark_completed(tc['tool_call_id'])
+
+            except Exception as e:
+                failed_tool_args = locals().get('tool_args', tc.get('input', {}))
+                tool_error_text = f"Tool execution failed: {str(e)}"
+                # Log tool error for observability
+                if trace_ctx and observer:
+                    tool_latency = (time.time() - tool_start_time) * 1000
+                    observer.log_tool(
+                        current_step_ctx or trace_ctx,
+                        ToolData(
+                            tool_name=tc['tool_name'],
+                            tool_call_id=tc['tool_call_id'],
+                            input=failed_tool_args,
+                            error=str(e),
+                            latency_ms=tool_latency,
+                        )
+                    )
+                error_event = ErrorEvent(
+                    error=tool_error_text,
+                    error_type='tool',
+                    details={
+                        'toolCallId': tc.get('tool_call_id'),
+                        'toolName': tc.get('tool_name'),
+                        'input': failed_tool_args,
+                    },
+                )
+                yield error_event.to_dict()
+                yield {'type': 'finish'}
+                loop_state['control'] = 'terminate'
+                return
+
+        # End step span for observability
+        if current_step_ctx and observer:
+            observer.end_span(current_step_ctx, output={'status': 'continue', 'tools_executed': len(tool_calls)})
+            current_step_ctx = None
+
+        # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
+        yield wrap_event({'type': 'finish-step'})
+
+        loop_state['control'] = 'continue'
+
+    async def _stream_llm_call(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        out: Dict[str, Any],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        emit_as: str = 'text',
+        reasoning_block_id: Optional[str] = None,
+        generation_config: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
+        provider: Optional[Any] = None,
+        wrap_event: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        trace_ctx: Optional['SpanContext'] = None,
+        current_step_ctx: Optional['SpanContext'] = None,
+        observer: Optional[Any] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """One LLM streaming call — the shared 'turn atom' for the loop engine.
+
+        Streams a single provider call and forwards normalized stream events,
+        optionally re-tagging the model's text output as ``reasoning-*`` for a
+        thinking phase (``emit_as='reasoning'``). Because async generators cannot
+        return values, results are reported via the mutable ``out`` dict:
+        ``out['text']``, ``out['tool_calls']`` (``[{tool_call_id, tool_name,
+        input}]``), ``out['usage']``, ``out['finish_reason']``,
+        ``out['reasoning_block_id']``.
+
+        This is deliberately NOT wired into ``_step_loop`` — the base loop keeps
+        its battle-tested inline streaming (structured-output parsing, etc.). The
+        atom exists so the reflection/loop engine can stop reimplementing a
+        lower-fidelity LLM+event path and instead share this + the real
+        ``_run_tool_calls``.
+        """
+        from .events import ReasoningStartEvent, ReasoningDeltaEvent, ReasoningEndEvent
+        if wrap_event is None:
+            wrap_event = lambda e: e
+        if observer is None:
+            observer = self._observer
+        as_reasoning = emit_as == 'reasoning'
+        rbid = reasoning_block_id or str(uuid.uuid4())
+
+        provider = provider or self._get_provider()
+        model = model or self.model_cfg['model']
+        config = {**self.generation_config, **(generation_config or {})}
+
+        full_text: List[str] = []
+        tool_calls: List[Dict[str, Any]] = []
+        usage = None
+        finish_reason = 'stop'
+        messages_for_obs = list(messages)
+        llm_start = time.time()
+        reasoning_open = False
+
+        async for event in provider.stream(messages, model=model, tools=tools, generation_config=config):
+            etype = event.type
+            if etype == 'finish-message':
+                finish_reason = event.finish_reason
+                continue
+            if etype == 'response-metadata':
+                if getattr(event, 'usage', None):
+                    usage = event.usage
+                yield wrap_event(event.to_dict())
+                continue
+            if as_reasoning and etype in ('text-start', 'text-delta', 'text-end'):
+                # Re-tag the model's text as reasoning for a thinking phase.
+                if etype == 'text-delta':
+                    if not reasoning_open:
+                        reasoning_open = True
+                        yield wrap_event(ReasoningStartEvent(block_id=rbid).to_dict())
+                    full_text.append(event.delta)
+                    yield wrap_event(ReasoningDeltaEvent(block_id=rbid, delta=event.delta).to_dict())
+                elif etype == 'text-start':
+                    if not reasoning_open:
+                        reasoning_open = True
+                        yield wrap_event(ReasoningStartEvent(block_id=rbid).to_dict())
+                else:  # text-end
+                    if reasoning_open:
+                        reasoning_open = False
+                        yield wrap_event(ReasoningEndEvent(block_id=rbid).to_dict())
+                continue
+            # Default: forward the event as-is and track content/tool calls.
+            yield wrap_event(event.to_dict())
+            if etype == 'text-delta':
+                full_text.append(event.delta)
+            elif etype == 'tool-input-available':
+                tool_calls.append({
+                    'tool_call_id': event.tool_call_id,
+                    'tool_name': event.tool_name,
+                    'input': event.input,
+                })
+
+        # Close a reasoning block the provider left open (defensive).
+        if reasoning_open:
+            yield wrap_event(ReasoningEndEvent(block_id=rbid).to_dict())
+
+        out['text'] = ''.join(full_text)
+        out['tool_calls'] = tool_calls
+        out['usage'] = usage
+        out['finish_reason'] = finish_reason
+        out['reasoning_block_id'] = rbid
+
+        # Log the generation under the step span (nesting-aware observer).
+        if trace_ctx and observer:
+            from .integrations.base import GenerationData
+            observer.log_generation(
+                current_step_ctx or trace_ctx,
+                GenerationData(
+                    model=model,
+                    provider=self.model_cfg.get('provider', 'unknown'),
+                    messages=messages_for_obs,
+                    response=out['text'] or None,
+                    tool_calls=[{'tool': tc['tool_name'], 'args': tc['input']} for tc in tool_calls] if tool_calls else None,
+                    usage=usage,
+                    latency_ms=(time.time() - llm_start) * 1000,
+                ),
+            )
+
+    async def _synthesize_final(
+        self,
+        run_id: str,
+        session_id: Optional[str],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        wrap_event: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        reason: str = 'max steps exceeded',
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Make one final tool-less LLM call to synthesize a partial answer.
+
+        Shared by the legacy max-steps-exceeded path and Harness Mode budget
+        exhaustion, so users always get a partial response instead of an error.
+
+        Args:
+            run_id: Active run identifier.
+            session_id: Optional session id.
+            context: Runtime context for a callable system_prompt.
+            wrap_event: Event-metadata wrapper; identity if None.
+            reason: Human-readable reason logged for the synthesis call.
+
+        Yields:
+            Stream protocol events for the final synthesized response.
+        """
+        if wrap_event is None:
+            wrap_event = lambda event_dict: event_dict
+
+        # This gives the user a partial answer rather than an error
+        logger.warning(f'{reason}, making final synthesis call')
+
+        # Add a system message to guide the final response
+        synthesis_msg = {
+            'role': 'user',
+            'content': 'You have reached the maximum number of steps. Please synthesize a response based on the information you have gathered so far. Do not call any more tools.'
+        }
+        self.ctxmgr.append(run_id, synthesis_msg, session_id)
+
+        # Make final LLM call without tools
+        messages = self.ctxmgr.messages_for_llm(run_id, session_id)
+        system_prompt = self._get_system_prompt(run_id, context=context)
+        if system_prompt:
+            messages = [{'role': 'system', 'content': system_prompt}] + messages
+
+        provider = self._get_provider()
+
+        # Stream the final response (no tools). Normalize provider event objects
+        # to dicts so the synthesized output matches every other run_stream yield
+        # (consumers/SSE receive dicts, never raw event objects).
+        final_text = ''
+        async for event in provider.stream(messages, self.model_cfg.get('model', 'gpt-4o'), tools=[]):
+            event_type = event.type  # Events are objects with .type attribute, not dicts
+            if event_type in ('text-delta', 'text-start', 'text-end'):
+                yield event.to_dict() if hasattr(event, 'to_dict') else event
+                if event_type == 'text-delta':
+                    final_text += getattr(event, 'delta', '')
+            elif event_type == 'finish-message':
+                yield event.to_dict() if hasattr(event, 'to_dict') else event
+
+        # Save final response to context
+        if final_text:
+            self.ctxmgr.append_assistant_message(run_id, final_text, session_id)
+
+        yield wrap_event({'type': 'finish-step'})
+        yield {'type': 'finish'}
+
 
     async def _run_with_thinking(
         self,
@@ -1943,7 +2809,8 @@ class Agent:
         context: Optional[Dict[str, Any]] = None,
         stateless: bool = False,
         node_id: Optional[str] = None,
-        external_run_id: Optional[str] = None
+        external_run_id: Optional[str] = None,
+        harness_cfg: Optional[Any] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Execute with Extended Thinking enabled.
@@ -2046,26 +2913,20 @@ class Agent:
         run_id = str(uuid.uuid4())
         self.ctxmgr.set_input(run_id, input, session_id, stateless=stateless)
 
-        # Get provider (use thinking_model if specified)
-        thinking_provider = self._get_thinking_provider(config)
-        model = (
-            config.thinking_model.get('model', self.model_cfg['model'])
-            if config.thinking_model
-            else self.model_cfg['model']
-        )
-
-        # Get tool schemas if thinking_tools enabled
-        tools = self._get_tool_schemas() if config.thinking_tools else None
-
-        # Create controller
+        # The unified reflection engine drives phases over the shared turn atom
+        # (_stream_llm_call) + real tool round (_run_tool_calls), all nested under
+        # one trace. Compose with Harness Mode: bound the refine loop by the
+        # harness budget, and (when durable approval is on) suspend the whole
+        # reflection run when a phase tool needs a human decision.
+        from .harness.exceptions import SuspendRun
+        budget = harness_cfg.budget if harness_cfg is not None else None
+        harness_controller = None
+        if harness_cfg is not None and harness_cfg.approval.enabled and harness_cfg.approval.mode == 'durable':
+            from .harness import HarnessController
+            harness_controller = HarnessController(agent=self, config=harness_cfg)
+            harness_controller.bind_run(run_id=run_id, session_id=session_id, context=context)
         controller = ReflectionController(
-            provider=thinking_provider,
-            model=model,
-            config=config,
-            tools=tools,
-            tool_executor=self._call_tool,
-            answer_provider=self._get_provider(),
-            answer_model=self.model_cfg['model'],
+            agent=self, config=config, budget=budget, harness_controller=harness_controller
         )
 
         # Track accumulated content for storage
@@ -2078,23 +2939,43 @@ class Agent:
 
         answer_step_started = False
 
-        # Stream events from controller. The controller owns reasoning and final
-        # answer generation, while Agent owns the AI SDK step envelope.
-        async for event in controller.run(question, context=conversation_context):
-            if event.get('type') == 'text-start' and not answer_step_started:
-                yield StepFinishEvent().to_dict()
-                yield StepStartEvent().to_dict()
-                answer_step_started = True
-            yield event
+        # Trace the whole reasoning run under one owned trace (phases nest as
+        # THINKING spans). Fixes reflection being off the trace graph entirely.
+        observer, trace_ctx = self._begin_leg_trace(run_id)
+        suspended = False
+        try:
+            async for event in controller.run(
+                question,
+                context=conversation_context,
+                trace_ctx=trace_ctx,
+                observer=observer,
+                parent_run_id=run_id,
+                run_id=run_id,
+            ):
+                if event.get('type') == 'text-start' and not answer_step_started:
+                    yield StepFinishEvent().to_dict()
+                    yield StepStartEvent().to_dict()
+                    answer_step_started = True
+                yield event
 
-            # Track for storage
-            event_type = event.get('type')
-            if event_type == 'reasoning-delta':
-                reasoning_parts.append(event.get('delta', ''))
-            elif event_type == 'text-delta':
-                answer_parts.append(event.get('delta', ''))
-            elif event_type == 'data-thinking-complete':
-                thinking_metadata = event.get('data', {})
+                # Track for storage
+                event_type = event.get('type')
+                if event_type == 'reasoning-delta':
+                    reasoning_parts.append(event.get('delta', ''))
+                elif event_type == 'text-delta':
+                    answer_parts.append(event.get('delta', ''))
+                elif event_type == 'data-thinking-complete':
+                    thinking_metadata = event.get('data', {})
+        except SuspendRun as s:
+            # A gated tool during a phase suspended the reflection run durably.
+            suspended = True
+            for ev in harness_controller.on_suspend(s):
+                yield ev
+        finally:
+            self._end_leg_trace(observer, trace_ctx)
+
+        if suspended:
+            return
 
         # Save to context with multi-part message
         full_reasoning = ''.join(reasoning_parts)
@@ -2155,16 +3036,6 @@ class Agent:
                 return AnthropicProvider(api_key=api_key)
 
         return self.providers.get(provider_name) or self._get_provider()
-
-    def _get_thinking_provider(self, config: Any):
-        """
-        Get provider for thinking steps.
-
-        If config.thinking_model is set and has a different provider,
-        creates a new provider instance. Otherwise, uses the main provider.
-        """
-        return self._get_provider_for_model_config(config.thinking_model)
-
 
 async def run_stream(agent: 'Agent', input: Dict[str, Any]):
     """Helper function for streaming"""

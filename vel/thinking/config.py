@@ -67,6 +67,20 @@ class ThinkingConfig:
     confidence_threshold: float = 0.8
     """Stop early if confidence >= this (0-1). Default 0.8 = 80%."""
 
+    convergence_threshold: float = 0.98
+    """Stop refining when a refinement is at least this similar (0-1) to the
+    previous one — no-progress / convergence detection (2026 convention favors
+    verifiable stops over pure self-assessment)."""
+
+    verify: Any = 'none'
+    """Termination verifier: 'none' (model self-reported confidence), 'judge'
+    (external LLM-as-judge via vel.memory.judge.LLMJudge), or a callable
+    ``(question, reasoning) -> float`` in [0,1]. External verification is the
+    industry-convention-preferred stop signal over self-assessment."""
+
+    verify_model: Optional[Dict[str, Any]] = None
+    """Optional model/JudgeConfig kwargs for the 'judge' verifier."""
+
     thinking_timeout: float = 120.0
     """Maximum seconds for entire thinking process."""
 

@@ -163,6 +163,86 @@ def parse_structured_output(raw_output: str, output_type: Type) -> Any:
     return _validate_single(data, output_type)
 
 
+def _ensure_strict(node: Any) -> Any:
+    """Recursively make a JSON schema OpenAI Structured-Outputs strict-compatible.
+
+    OpenAI strict mode requires every object to declare additionalProperties:false
+    and list all of its properties in `required`. This walks the whole schema —
+    including $defs and anyOf/allOf/oneOf — and enforces that, overriding any
+    additionalProperties:true (e.g. from pydantic extra="allow").
+    """
+    if not isinstance(node, dict):
+        return node
+    for defs_key in ("$defs", "definitions"):
+        defs = node.get(defs_key)
+        if isinstance(defs, dict):
+            for sub in defs.values():
+                _ensure_strict(sub)
+    props = node.get("properties")
+    if isinstance(props, dict):
+        node["additionalProperties"] = False
+        node["required"] = list(props.keys())
+        for sub in props.values():
+            _ensure_strict(sub)
+    items = node.get("items")
+    if isinstance(items, dict):
+        _ensure_strict(items)
+    for combinator in ("anyOf", "allOf", "oneOf"):
+        members = node.get(combinator)
+        if isinstance(members, list):
+            for sub in members:
+                _ensure_strict(sub)
+    return node
+
+
+def _has_freeform_object(node: Any) -> bool:
+    """Detect a free-form object (e.g. dict[str, Any]) anywhere in the schema.
+
+    OpenAI strict json_schema cannot represent objects without an explicit,
+    closed property set, so such schemas can't use strict mode.
+    """
+    if not isinstance(node, dict):
+        return False
+    is_object = node.get("type") == "object" or "properties" in node
+    if is_object and not isinstance(node.get("properties"), dict):
+        return True  # object with no declared properties → free-form
+    for key in ("properties", "$defs", "definitions"):
+        sub = node.get(key)
+        if isinstance(sub, dict) and any(_has_freeform_object(v) for v in sub.values()):
+            return True
+    if isinstance(node.get("items"), dict) and _has_freeform_object(node["items"]):
+        return True
+    for combinator in ("anyOf", "allOf", "oneOf"):
+        members = node.get(combinator)
+        if isinstance(members, list) and any(_has_freeform_object(m) for m in members):
+            return True
+    return False
+
+
+def to_strict_response_format(output_type: Type) -> Optional[dict]:
+    """Build an OpenAI `response_format` (json_schema, strict) from an output type.
+
+    Returns None when OpenAI strict json_schema cannot represent the type — a bare
+    array root, or any free-form object (dict[str, Any]) field. The caller should
+    then fall back to JSON mode (response_format={"type": "json_object"}), which
+    still guarantees syntactically valid JSON.
+    """
+    import copy
+
+    schema = _get_schema_for_type(output_type)
+    if not isinstance(schema, dict) or schema.get("type") == "array":
+        return None
+    if _has_freeform_object(schema):
+        return None
+    schema = _ensure_strict(copy.deepcopy(schema))
+    raw_name = _get_type_name(output_type)
+    name = "".join(ch if (ch.isalnum() or ch in "_-") else "_" for ch in raw_name) or "output"
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name[:64], "schema": schema, "strict": True},
+    }
+
+
 def get_retry_prompt(output_type: Type, error: Exception) -> str:
     """
     Generate a system prompt for retrying after validation failure.
