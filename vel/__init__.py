@@ -1,4 +1,5 @@
 from .agent import Agent, run_stream
+from .loader import load_agent
 from .tools import ToolSpec, register_tool
 from .utils import MessageReducer
 from .providers import (
@@ -54,9 +55,44 @@ from .rlm import (
     ContextStore
 )
 
+# Harness Mode (opt-in, default-off). Soft-guarded so a missing optional
+# dependency can never break `import vel` (backwards-compat contract §8.5).
+_HARNESS_EXPORTS: list = []
+try:
+    from .harness import (
+        HarnessConfig,
+        CompactionConfig,
+        ApprovalConfig,
+        SandboxConfig,
+        HarnessBudgetConfig,
+        Skill,
+        SkillRegistry,
+        SkillRef,
+        ApprovalRequest,
+        ApprovalDecision,
+        RunCheckpoint,
+        CheckpointStore,
+        RunManager,
+        SQLiteEventLogStore,
+        PostgresEventLogStore,
+        PubSub,
+        InProcessPubSub,
+        RedisPubSub,
+    )
+    _HARNESS_EXPORTS = [
+        'HarnessConfig', 'CompactionConfig', 'ApprovalConfig', 'SandboxConfig',
+        'HarnessBudgetConfig', 'Skill', 'SkillRegistry', 'SkillRef',
+        'ApprovalRequest', 'ApprovalDecision', 'RunCheckpoint', 'CheckpointStore',
+        'RunManager', 'SQLiteEventLogStore', 'PostgresEventLogStore',
+        'PubSub', 'InProcessPubSub', 'RedisPubSub',
+    ]
+except ImportError:  # pragma: no cover - harness optional deps absent
+    pass
+
 __all__ = [
     'Agent',
     'run_stream',
+    'load_agent',
     'ToolSpec',
     'register_tool',
     'MessageReducer',
@@ -110,5 +146,5 @@ __all__ = [
     'Scratchpad',
     'Note',
     'Budget',
-    'ContextStore'
-]
+    'ContextStore',
+] + _HARNESS_EXPORTS

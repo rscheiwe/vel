@@ -41,6 +41,8 @@ htmlcov/
 # Environment variables
 .env
 .env.local
+examples/.env
+!examples/.env.example
 
 # IDEs
 .vscode/
@@ -102,3 +104,8 @@ CLAUDE.md
 # Analysis and feature documentation
 features/
 traces/
+WORK/
+
+# Agent Message Queue
+.agent-mail/
+.amqrc

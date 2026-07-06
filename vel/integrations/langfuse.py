@@ -470,10 +470,12 @@ class LangfuseHandler(ObservabilityHandler):
         kind: SpanKind,
         input: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        observation_id: Optional[str] = None,
     ) -> SpanContext:
-        """Start a child span within a trace."""
+        """Start a child span within a trace. observation_id may be supplied to
+        force the span id (for deterministic Supabase join keys)."""
         state = self._traces.get(context.trace_id)
-        span_id = str(uuid.uuid4())
+        span_id = observation_id or str(uuid.uuid4())
 
         # Create internal state
         span_state = SpanState(
@@ -540,7 +542,7 @@ class LangfuseHandler(ObservabilityHandler):
         if trace:
             try:
                 span_output = output if self.config.capture_output else None
-                end_data = {'end_time': time.time()}
+                end_data = {'end_time': _timestamp_to_datetime(time.time())}
                 if span_output is not None:
                     end_data['output'] = span_output
                 if metadata:
@@ -559,12 +561,13 @@ class LangfuseHandler(ObservabilityHandler):
         self,
         context: SpanContext,
         data: GenerationData,
-    ) -> None:
-        """Log an LLM generation."""
+    ) -> Optional[str]:
+        """Log an LLM generation. Returns the observation id."""
         trace = self._langfuse_traces.get(context.trace_id)
         if not trace:
-            return
+            return data.observation_id
 
+        gen_id = data.observation_id or str(uuid.uuid4())
         try:
             # Normalize usage to Langfuse format
             usage_details = _normalize_usage_details(data.usage)
@@ -593,6 +596,7 @@ class LangfuseHandler(ObservabilityHandler):
 
             # Create generation
             generation = trace.generation(
+                id=gen_id,
                 name=f"{data.provider}/{data.model}",
                 model=data.model,
                 start_time=start_time,
@@ -610,24 +614,28 @@ class LangfuseHandler(ObservabilityHandler):
             )
             generation.end(end_time=end_time)
             logger.debug(f"Logged generation: {data.provider}/{data.model}")
+            return gen_id
         except Exception as e:
             logger.warning(f"Failed to log Langfuse generation: {e}")
+            return gen_id
 
     def log_tool(
         self,
         context: SpanContext,
         data: ToolData,
-    ) -> None:
-        """Log a tool execution."""
+    ) -> Optional[str]:
+        """Log a tool execution. Returns the observation id."""
         trace = self._langfuse_traces.get(context.trace_id)
         if not trace:
-            return
+            return data.observation_id
 
+        tool_id = data.observation_id or str(uuid.uuid4())
         try:
             tool_input = data.input if self.config.capture_tool_io else {'args': '[redacted]'}
             tool_output = data.output if self.config.capture_tool_io else '[redacted]'
 
             span = trace.span(
+                id=tool_id,
                 name=f"tool:{data.tool_name}",
                 input=tool_input,
                 output=tool_output,
@@ -641,8 +649,10 @@ class LangfuseHandler(ObservabilityHandler):
             )
             span.end()
             logger.debug(f"Logged tool: {data.tool_name}")
+            return tool_id
         except Exception as e:
             logger.warning(f"Failed to log Langfuse tool span: {e}")
+            return tool_id
 
     def log_memory(
         self,

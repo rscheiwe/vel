@@ -12,6 +12,13 @@ Complete guide to managing multi-turn conversations in Vel.
 
 Sessions enable the agent to remember context across multiple calls, creating natural multi-turn conversations. Without sessions, each call is independent.
 
+> **Long-horizon / durable runs:** Sessions persist conversation context across
+> calls. For a *single* run that must survive disconnects, suspend for human
+> approval, auto-compact a growing context window, or resume after a process
+> restart, see [Harness Mode](./harness) — its checkpoints live alongside session
+> state (SQLite `.vel/vel.db` by default, or Postgres). A harness `sandbox` with
+> `lifecycle="per_session"` also reuses one workspace across a session's runs.
+
 ## Basic Usage
 
 ```python

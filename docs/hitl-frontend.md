@@ -957,7 +957,40 @@ function ApprovalHistory({ approvals }) {
 3. Submit decisions via REST endpoint that unblocks the async tool handler
 4. Use existing ai-elements (`<Tool>`, `<ToolHeader>`, etc.) for consistent styling
 
+## Durable approval (Harness Mode)
+
+The pattern above uses an **in-process** approval callback: the async tool
+handler blocks until a REST decision unblocks it. That requires the request /
+process to stay alive for the whole wait.
+
+[Harness Mode](./harness) adds a **durable** variant for long waits, browser
+round-trips, and process restarts. Instead of blocking, the run **suspends**:
+
+1. The model calls an approval-required tool (named in
+   `approval.require_for_tools`, or any tool with `requires_confirmation=True`).
+2. The harness snapshots a checkpoint (messages + pending approvals + budget),
+   emits the usual `tool-input-available` (so the existing approval card still
+   renders) **plus** an additive `data-harness-approval-required`
+   (`{approval_id, run_id, tool_call_id, tool_name, reason}`), then a
+   `data-harness-suspended`, and returns. The run is now persisted.
+3. The browser can disconnect. Whenever the human decides, the host calls:
+
+   ```python
+   from vel.harness import ApprovalDecision
+   async for event in agent.resume(run_id, [ApprovalDecision(approval_id, "approve")]):
+       ...   # approved tools execute; rejected tools get a deny result; loop continues
+   ```
+
+   — or `POST /runs/{run_id}/approvals` against the
+   [`RunManager` reference server](../examples/harness/fastapi_server.py).
+
+The decision survives a process restart (persisted in `vel_approvals` /
+`vel_checkpoints`), so `resume()` works from a brand-new `Agent` instance.
+`approval.mode="inline"` keeps the legacy blocking-callback behavior above.
+See [Harness Mode → Durable HITL approval](./harness#durable-hitl-approval).
+
 **See also:**
 - [Factor 7: Contact Humans](./12-factor/factor-07)
 - [Stream Protocol](./stream-protocol)
 - [Tools](./tools)
+- [Harness Mode](./harness)

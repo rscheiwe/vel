@@ -267,15 +267,10 @@ class TestReflectionController:
         )
 
     @pytest.fixture
-    def controller(self, mock_provider, config):
-        """Create controller instance."""
-        return ReflectionController(
-            provider=mock_provider,
-            model='test-model',
-            config=config,
-            tools=None,
-            tool_executor=None
-        )
+    def controller(self, config):
+        """Create controller instance (agent-based engine)."""
+        agent = Agent(id='t', model={'provider': 'fake', 'model': 'test-model'})
+        return ReflectionController(agent=agent, config=config)
 
     def test_confidence_extraction(self, controller):
         """Test confidence extraction from response text."""
@@ -315,10 +310,10 @@ Confidence: 85%"""
         # Refine shown by default
         assert controller._should_show_phase(ThinkingPhase.REFINE) is True
 
-        # Conclude never shown (goes to text, not reasoning)
-        assert controller._should_show_phase(ThinkingPhase.CONCLUDE) is False
+        # Conclude streams as text (final answer), not hidden reasoning
+        assert controller._should_show_phase(ThinkingPhase.CONCLUDE) is True
 
-    def test_should_show_phase_disabled(self, mock_provider):
+    def test_should_show_phase_disabled(self):
         """Test phase visibility when disabled."""
         config = ThinkingConfig(
             mode='reflection',
@@ -326,13 +321,8 @@ Confidence: 85%"""
             show_critiques=False,
             show_refinements=False
         )
-        controller = ReflectionController(
-            provider=mock_provider,
-            model='test-model',
-            config=config,
-            tools=None,
-            tool_executor=None
-        )
+        agent = Agent(id='t', model={'provider': 'fake', 'model': 'test-model'})
+        controller = ReflectionController(agent=agent, config=config)
 
         assert controller._should_show_phase(ThinkingPhase.ANALYZE) is False
         assert controller._should_show_phase(ThinkingPhase.CRITIQUE) is False
@@ -340,200 +330,175 @@ Confidence: 85%"""
 
     def test_stage_event(self, controller):
         """Test stage event generation."""
-        state = ThinkingState(question='Test')
-        state.iteration = 1
-        state.confidence = 0.65
+        controller.state = ThinkingState(question='Test')
+        controller.state.iteration = 1
+        controller.state.confidence = 0.65
 
         # Analyze stage
-        event = controller._stage_event(ThinkingPhase.ANALYZE, step=1, state=state)
+        event = controller._stage_event(ThinkingPhase.ANALYZE, step=1)
         assert event['type'] == 'data-thinking-stage'
         assert event['data']['stage'] == 'analyzing'
         assert event['data']['step'] == 1
         assert event['transient'] is True
 
         # Refine stage includes iteration and confidence
-        event = controller._stage_event(ThinkingPhase.REFINE, step=3, state=state)
+        event = controller._stage_event(ThinkingPhase.REFINE, step=3)
         assert event['data']['stage'] == 'refining'
         assert event['data']['iteration'] == 1
         assert event['data']['confidence'] == 0.65
 
-    def test_build_phase_messages(self, controller):
-        """Test message building for different phases."""
-        state = ThinkingState(question='What is Python?')
-        state.analysis = 'Python is a programming language...'
-        state.critiques = 'Consider mentioning its use cases...'
-
-        # Analyze
-        msgs = controller._build_phase_messages(ThinkingPhase.ANALYZE, state)
-        assert len(msgs) == 1
-        assert 'What is Python?' in msgs[0]['content']
-
-        # Critique
-        msgs = controller._build_phase_messages(ThinkingPhase.CRITIQUE, state)
-        assert 'Python is a programming language' in msgs[0]['content']
-
-        # Refine
-        msgs = controller._build_phase_messages(ThinkingPhase.REFINE, state)
-        assert 'What is Python?' in msgs[0]['content']
-        assert 'Consider mentioning' in msgs[0]['content']
-
-    def test_update_state(self, controller):
-        """Test state updates for different phases."""
-        state = ThinkingState(question='Test')
-
-        # Update analysis
-        controller._update_state(ThinkingPhase.ANALYZE, state, 'Analysis content')
-        assert state.analysis == 'Analysis content'
-
-        # Update critiques
-        controller._update_state(ThinkingPhase.CRITIQUE, state, 'Critique content')
-        assert state.critiques == 'Critique content'
-
-        # Update refine (with confidence)
-        controller._update_state(
-            ThinkingPhase.REFINE,
-            state,
-            'Refined content\n\nConfidence: 75%'
-        )
-        assert 'Refined content' in state.refined
-        assert state.confidence == 0.75
-
 
 class TestReflectionControllerIntegration:
-    """Integration tests for ReflectionController with mocked LLM."""
+    """Integration: reflection over the shared loop machinery (agent-based)."""
 
-    @pytest.fixture
-    def mock_stream_events(self):
-        """Create mock stream events generator."""
-        async def make_stream(content: str):
-            """Generate mock text-delta events."""
-            yield MagicMock(type='text-start', block_id='test')
-            for i in range(0, len(content), 10):
-                chunk = content[i:i+10]
-                event = MagicMock(type='text-delta', delta=chunk)
-                yield event
-            yield MagicMock(type='text-end', block_id='test')
-            yield MagicMock(type='finish-message', finish_reason='stop')
-
-        return make_stream
+    def _agent(self, responses):
+        agent = Agent(id='t', model={'provider': 'fake', 'model': 'test-model'})
+        agent.providers.register(FakeProvider(responses))
+        return agent
 
     @pytest.mark.asyncio
-    async def test_full_flow_high_confidence(self, mock_stream_events):
-        """Test full reflection flow with high confidence (early exit)."""
-        mock_provider = MagicMock()
+    async def test_full_flow_high_confidence(self):
+        """Full reflection flow with high confidence (early exit)."""
+        agent = self._agent([
+            'This is my analysis of the problem...',      # Analyze
+            'The analysis has one minor gap...',          # Critique
+            'Addressing the gap...\n\nConfidence: 95%',   # Refine (high confidence)
+            'The final answer is...',                     # Conclude
+        ])
+        config = ThinkingConfig(mode='reflection', max_refinements=3,
+                                confidence_threshold=0.9, thinking_tools=False)
+        controller = ReflectionController(agent=agent, config=config)
 
-        # Mock responses for each phase
-        responses = [
-            'This is my analysis of the problem...',  # Analyze
-            'The analysis has one minor gap...',       # Critique
-            'Addressing the gap...\n\nConfidence: 95%',  # Refine (high confidence)
-            'The final answer is...'                   # Conclude
-        ]
-        response_idx = 0
+        events = [e async for e in controller.run('What is 2+2?')]
+        types = [e.get('type') for e in events]
 
-        async def mock_stream(*args, **kwargs):
-            nonlocal response_idx
-            content = responses[response_idx]
-            response_idx += 1
-            async for event in mock_stream_events(content):
-                yield event
+        # Per-phase reasoning blocks (analyze/critique/refine stream as reasoning).
+        assert 'reasoning-start' in types
+        assert any(e.get('type') == 'reasoning-delta' for e in events)
+        assert 'reasoning-end' in types
+        # Conclude streams as the final answer text.
+        assert 'text-start' in types and 'text-delta' in types and 'text-end' in types
+        assert 'data-thinking-complete' in types
 
-        mock_provider.stream = mock_stream
-
-        config = ThinkingConfig(
-            mode='reflection',
-            max_refinements=3,
-            confidence_threshold=0.9,
-            thinking_tools=False
-        )
-
-        controller = ReflectionController(
-            provider=mock_provider,
-            model='test-model',
-            config=config,
-            tools=None,
-            tool_executor=None
-        )
-
-        events = []
-        async for event in controller.run('What is 2+2?'):
-            events.append(event)
-
-        # Verify event sequence
-        event_types = [e.get('type') for e in events]
-
-        # Should have reasoning-start at beginning
-        assert 'reasoning-start' in event_types
-
-        # Should have reasoning-delta events
-        reasoning_deltas = [e for e in events if e.get('type') == 'reasoning-delta']
-        assert len(reasoning_deltas) > 0
-
-        # Should have reasoning-end
-        assert 'reasoning-end' in event_types
-
-        # Should have text events for final answer
-        assert 'text-start' in event_types
-        assert 'text-delta' in event_types
-        assert 'text-end' in event_types
-
-        # Should have completion metadata
-        assert 'data-thinking-complete' in event_types
-
-        # Find completion event and verify
-        complete_event = next(e for e in events if e.get('type') == 'data-thinking-complete')
-        assert complete_event['data']['final_confidence'] >= 0.9
-        assert complete_event['data']['iterations'] == 1  # High confidence, single iteration
+        complete = next(e for e in events if e.get('type') == 'data-thinking-complete')
+        assert complete['data']['final_confidence'] >= 0.9
+        assert complete['data']['iterations'] == 1
 
     @pytest.mark.asyncio
-    async def test_adaptive_refinement(self, mock_stream_events):
-        """Test adaptive refinement loop with low confidence."""
-        mock_provider = MagicMock()
-
-        # Responses with increasing confidence
-        responses = [
+    async def test_adaptive_refinement(self):
+        """Adaptive refinement loop: low confidence triggers a second pass."""
+        agent = self._agent([
             'Initial analysis...',
             'First critique...',
-            'First refinement...\nConfidence: 50%',  # Low confidence
+            'First refinement...\nConfidence: 50%',   # low -> re-critique
             'Second critique...',
-            'Better refinement...\nConfidence: 85%',  # High enough
-            'Final answer...'
-        ]
-        response_idx = 0
+            'Better refinement...\nConfidence: 85%',  # high enough -> stop
+            'Final answer...',
+        ])
+        config = ThinkingConfig(mode='reflection', max_refinements=3,
+                                confidence_threshold=0.8, thinking_tools=False)
+        controller = ReflectionController(agent=agent, config=config)
 
-        async def mock_stream(*args, **kwargs):
-            nonlocal response_idx
-            content = responses[min(response_idx, len(responses)-1)]
-            response_idx += 1
-            async for event in mock_stream_events(content):
-                yield event
+        events = [e async for e in controller.run('Complex question')]
+        complete = next(e for e in events if e.get('type') == 'data-thinking-complete')
+        assert complete['data']['iterations'] >= 2
 
-        mock_provider.stream = mock_stream
+    @pytest.mark.asyncio
+    async def test_convergence_stops_refinement(self):
+        """No-progress convergence: identical refinements stop the loop early
+        even when self-reported confidence stays low."""
+        # Same refinement text repeated -> converges; low confidence would
+        # otherwise run to max_refinements=5.
+        same = 'The same refinement.\nConfidence: 10%'
+        agent = self._agent(['analysis', 'critique', same, 'critique2', same,
+                             same, same, same, same, same])
+        config = ThinkingConfig(mode='reflection', max_refinements=5,
+                                confidence_threshold=0.9, thinking_tools=False)
+        controller = ReflectionController(agent=agent, config=config)
+        events = [e async for e in controller.run('q')]
+        complete = next(e for e in events if e.get('type') == 'data-thinking-complete')
+        assert complete['data']['iterations'] < 5
+        assert any(e.get('type') == 'data-thinking-verify' and e['data'].get('converged')
+                   for e in events)
 
-        config = ThinkingConfig(
-            mode='reflection',
-            max_refinements=3,
-            confidence_threshold=0.8,
-            thinking_tools=False
-        )
+    @pytest.mark.asyncio
+    async def test_custom_verifier_drives_termination(self):
+        """A custom verify callable replaces self-reported confidence as the
+        stop signal."""
+        calls = {'n': 0}
 
+        def verifier(question, reasoning):
+            calls['n'] += 1
+            return 0.95  # immediately 'good enough' -> stop after one refine
+
+        agent = self._agent(['analysis', 'critique', 'refine (no confidence line)',
+                             'critique2', 'more', 'answer'])
+        config = ThinkingConfig(mode='reflection', max_refinements=5,
+                                confidence_threshold=0.9, thinking_tools=False,
+                                verify=verifier)
+        controller = ReflectionController(agent=agent, config=config)
+        events = [e async for e in controller.run('q')]
+        complete = next(e for e in events if e.get('type') == 'data-thinking-complete')
+        assert calls['n'] >= 1
+        assert complete['data']['iterations'] == 1  # verifier said done immediately
+        verify_ev = next(e for e in events if e.get('type') == 'data-thinking-verify')
+        assert verify_ev['data']['method'] == 'callable'
+        assert verify_ev['data']['confidence'] == 0.95
+
+    @pytest.mark.asyncio
+    async def test_composes_with_harness_budget(self):
+        """Thinking + Harness compose: the harness token budget bounds the
+        refine loop even when confidence stays low (no more mutual exclusion)."""
+        from vel.harness import HarnessBudgetConfig
+
+        class UsageProvider(BaseProvider):
+            name = 'fake'
+
+            def __init__(self, responses):
+                self._r = list(responses)
+
+            async def stream(self, messages, model, tools, generation_config=None):
+                c = self._r.pop(0) if self._r else 'Confidence: 10%'
+                yield TextStartEvent(block_id='b')
+                yield TextDeltaEvent(block_id='b', delta=c)
+                yield TextEndEvent(block_id='b')
+                yield ResponseMetadataEvent(usage={'totalTokens': 100})
+                yield FinishMessageEvent(finish_reason='stop')
+
+            async def generate(self, messages, model, tools, generation_config=None):
+                return {}
+
+        agent = Agent(id='t', model={'provider': 'fake', 'model': 'test-model'})
+        # Always low confidence -> would refine to max_refinements=5 without a budget.
+        agent.providers.register(UsageProvider(['low\nConfidence: 10%'] * 20))
+        config = ThinkingConfig(mode='reflection', max_refinements=5,
+                                confidence_threshold=0.9, thinking_tools=False)
+        # Tiny token budget: exhausts after a couple of phases -> refine stops early.
         controller = ReflectionController(
-            provider=mock_provider,
-            model='test-model',
-            config=config,
-            tools=None,
-            tool_executor=None
+            agent=agent, config=config, budget=HarnessBudgetConfig(max_tokens=250)
         )
+        events = [e async for e in controller.run('q')]
+        complete = next(e for e in events if e.get('type') == 'data-thinking-complete')
+        assert complete['data']['iterations'] < 5  # budget cut it short
 
-        events = []
-        async for event in controller.run('Complex question'):
-            events.append(event)
 
-        # Find completion event
-        complete_event = next(e for e in events if e.get('type') == 'data-thinking-complete')
-
-        # Should have multiple iterations (low confidence first, then high)
-        assert complete_event['data']['iterations'] >= 2
+@pytest.mark.asyncio
+async def test_thinking_and_harness_compose_no_warning(caplog):
+    """run_stream with both thinking and harness set no longer warns about
+    non-composition and completes a reasoning answer."""
+    provider = FakeProvider([
+        'Analysis.', 'Critique.', 'Refined.\nConfidence: 95%', 'Final answer.',
+    ])
+    agent = Agent(id='both', model={'provider': 'fake', 'model': 'm'})
+    agent.providers.register(provider)
+    events = [e async for e in agent.run_stream(
+        {'message': 'q'},
+        thinking=ThinkingConfig(mode='reflection', confidence_threshold=0.9, thinking_tools=False),
+        harness={'enabled': True, 'budget': {'max_wallclock_seconds': 60}},
+    )]
+    types = [e.get('type') for e in events]
+    assert 'text-delta' in types and 'data-thinking-complete' in types
+    assert 'not composed' not in caplog.text
 
 
 class TestAgentExtendedThinking:

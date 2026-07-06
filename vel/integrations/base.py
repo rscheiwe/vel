@@ -53,6 +53,20 @@ class SpanContext:
 
 
 @dataclass
+class TraceContext:
+    """Carrier for nesting a child agent run under a parent trace.
+
+    Threaded from a parent run into a nested ``run()``/``run_stream()`` (e.g. via
+    ``Agent.as_tool``) so the child's spans/generations attach to the parent
+    trace instead of forking a new one. Carries the parent's *handler* (the child
+    agent has its own handler instance whose trace map does not contain the
+    parent's live trace) plus the span to parent under.
+    """
+    handler: "ObservabilityHandler"
+    span: SpanContext
+
+
+@dataclass
 class GenerationData:
     """
     Data for LLM generation spans.
@@ -71,6 +85,7 @@ class GenerationData:
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     error: Optional[str] = None
+    observation_id: Optional[str] = None  # supply to force the Langfuse id; else auto-generated + returned
 
 
 @dataclass
@@ -87,6 +102,7 @@ class ToolData:
     output: Optional[Any] = None
     error: Optional[str] = None
     latency_ms: Optional[float] = None
+    observation_id: Optional[str] = None  # supply to force the Langfuse id; else auto-generated + returned
 
 
 @dataclass
@@ -191,6 +207,7 @@ class ObservabilityHandler(ABC):
         kind: SpanKind,
         input: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        observation_id: Optional[str] = None,
     ) -> SpanContext:
         """
         Start a child span within a trace.
@@ -201,6 +218,7 @@ class ObservabilityHandler(ABC):
             kind: Semantic type of span
             input: Input data for this span
             metadata: Additional metadata
+            observation_id: Optional supplied span id (deterministic join keys)
 
         Returns:
             SpanContext for the new span
@@ -231,7 +249,7 @@ class ObservabilityHandler(ABC):
         self,
         context: SpanContext,
         data: GenerationData,
-    ) -> None:
+    ) -> Optional[str]:
         """
         Log an LLM generation.
 
@@ -241,6 +259,9 @@ class ObservabilityHandler(ABC):
         Args:
             context: Parent SpanContext (typically a step span)
             data: GenerationData with all LLM call details
+
+        Returns:
+            The observation id assigned to the generation (for join keys), if any.
         """
         ...
 
@@ -249,7 +270,7 @@ class ObservabilityHandler(ABC):
         self,
         context: SpanContext,
         data: ToolData,
-    ) -> None:
+    ) -> Optional[str]:
         """
         Log a tool execution.
 
@@ -354,7 +375,7 @@ class NoOpHandler(ObservabilityHandler):
         import uuid
         return SpanContext(
             trace_id=context.trace_id,
-            span_id=str(uuid.uuid4()),
+            span_id=kwargs.get('observation_id') or str(uuid.uuid4()),
             parent_span_id=context.span_id,
             name=name,
             kind=kind,
@@ -363,8 +384,8 @@ class NoOpHandler(ObservabilityHandler):
     def end_span(self, context, **kwargs) -> None:
         pass
 
-    def log_generation(self, context, data) -> None:
-        pass
+    def log_generation(self, context, data) -> Optional[str]:
+        return getattr(data, "observation_id", None)
 
-    def log_tool(self, context, data) -> None:
-        pass
+    def log_tool(self, context, data) -> Optional[str]:
+        return getattr(data, "observation_id", None)

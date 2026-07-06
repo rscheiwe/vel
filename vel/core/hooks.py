@@ -48,8 +48,11 @@ class ToolResultHookEvent(HookEvent):
     tool_name: str = ""
     args: Dict[str, Any] = field(default_factory=dict)
     result: Any = None
+    error: Optional[str] = None
     duration_ms: float = 0
     step: int = 0
+    tool_call_id: Optional[str] = None
+    observation_id: Optional[str] = None  # Langfuse observation id for this tool span
 
 
 @dataclass
@@ -64,9 +67,11 @@ class LLMRequestHookEvent(HookEvent):
 class LLMResponseHookEvent(HookEvent):
     """Emitted after LLM responds."""
     response: Any = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
     duration_ms: float = 0
     step: int = 0
     usage: Optional[Dict[str, int]] = None
+    observation_id: Optional[str] = None  # Langfuse observation id for this generation
 
 
 @dataclass
@@ -156,8 +161,10 @@ class HookRegistry:
         """
         handler = self._hooks.get(hook_name)
         if handler:
-            # Set trace_id on event
-            event.trace_id = self._trace_id
+            # Preserve a real trace_id set by the run; only fall back to the
+            # registry's own id when the event did not carry one.
+            if event.trace_id is None:
+                event.trace_id = self._trace_id
 
             try:
                 if asyncio.iscoroutinefunction(handler):

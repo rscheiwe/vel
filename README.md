@@ -11,6 +11,7 @@
 
 | Feature | Description |
 |---------|-------------|
+| **Harness Mode** | Opt-in durable long-horizon execution: checkpointable suspend/resume, durable human-in-the-loop approval, auto context compaction, run budgets, sandbox-as-tool, and skills. Default-off bolt-on. See [`docs/harness.md`](docs/harness.md) |
 | **Langfuse Observability** | Built-in tracing with Langfuse: LLM generations, tool executions, memory operations, nested spans. Non-blocking with sampling support. `pip install vel-ai[langfuse]` |
 | **Agents-as-Tools** | Enhanced `as_tool()` with custom schemas and context passthrough for hierarchical agent composition |
 | **ReasoningBank Phase 2** | Full auto-learning pipeline: TrajectoryStore, LLM-as-Judge, StrategyExtractor, MemoryConsolidator |
