@@ -284,18 +284,23 @@ class ErrorEvent(StreamEvent):
     details: Optional[Dict[str, Any]] = None  # Additional error details from provider
 
     def to_dict(self) -> Dict[str, Any]:
-        d = {**super().to_dict(), 'errorText': self.error}
-        if self.error_code:
-            d['errorCode'] = self.error_code
-        if self.error_type:
-            d['errorType'] = self.error_type
-        if self.status_code:
-            d['statusCode'] = self.status_code
-        if self.provider:
-            d['provider'] = self.provider
-        if self.details:
-            d['details'] = self.details
-        return d
+        # The AI SDK UI Message Stream error part is STRICT — {type, errorText}.
+        # Extra top-level keys (statusCode/provider/errorCode/details/…) make the
+        # client's Zod union reject the whole chunk (unrecognized_keys ->
+        # invalid_union), so a transient provider error (e.g. an OpenAI 429)
+        # surfaces as a cryptic "Type validation failed" instead of a clean error
+        # message. Keep the rich fields on the dataclass for logging/observability
+        # (read via attributes, not the wire), but emit only the conformant part —
+        # folding provider/status into errorText so the context survives for humans.
+        text = self.error or ''
+        tags = []
+        if self.provider and self.provider.lower() not in text.lower():
+            tags.append(self.provider)
+        if self.status_code and str(self.status_code) not in text:
+            tags.append(f"HTTP {self.status_code}")
+        if tags:
+            text = f"[{' '.join(tags)}] {text}".rstrip()
+        return {**super().to_dict(), 'errorText': text}
 
 @dataclass
 class ResponseMetadataEvent(StreamEvent):
