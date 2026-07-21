@@ -181,6 +181,15 @@ class OpenAIAPITranslator:
                 if 'reasoning_tokens' in details:
                     usage_dict['reasoningTokens'] = details['reasoning_tokens']
 
+            # Add cached prompt tokens if present. OpenAI auto-caches the stable prefix of a
+            # prompt over ~1024 tokens and reports how much came back cached here — but this
+            # translator was dropping it, so nothing downstream could see the cache hit rate.
+            # Symmetric with reasoning_tokens above: preserve a field the provider already sent.
+            if 'prompt_tokens_details' in usage:
+                prompt_details = usage['prompt_tokens_details']
+                if 'cached_tokens' in prompt_details:
+                    usage_dict['cachedInputTokens'] = prompt_details['cached_tokens']
+
             # Build response metadata event
             return ResponseMetadataEvent(
                 id=self._message_id or chunk.get('id'),

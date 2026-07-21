@@ -101,17 +101,36 @@ def _normalize_usage_details(usage: Optional[Dict[str, Any]]) -> Optional[Dict[s
         'total_tokens',
     )
 
+    total_tokens = total_tokens or 0
     if total_tokens == 0 and (input_tokens or output_tokens):
         total_tokens = input_tokens + output_tokens
 
     if input_tokens == 0 and output_tokens == 0 and total_tokens == 0:
         return None
 
-    return {
+    details = {
         'input': input_tokens,
         'output': output_tokens,
         'total': total_tokens,
     }
+
+    # Cached prompt tokens, when the provider reports them. Langfuse understands a
+    # "cache_read_input_tokens" key and prices it at the cached rate, so surfacing it here
+    # makes the cost dashboard reflect the discount instead of billing every input token at
+    # full price. Without this the whole cache saving is invisible in the trace.
+    cached = _usage_value(
+        usage,
+        'cachedInputTokens',
+        'cache_read_input_tokens',
+        'cached_tokens',
+    )
+    if cached:
+        details['cache_read_input_tokens'] = cached
+        # Langfuse sums the components into total; keep the plain input as the UNCACHED
+        # portion so input + cache_read + output does not double-count the prompt.
+        details['input'] = max(input_tokens - cached, 0)
+
+    return details
 
 
 @dataclass

@@ -10,6 +10,21 @@ import logging
 
 logger = logging.getLogger('vel.providers.openai')
 
+def _max_tokens_param(model: str) -> str:
+    """Which cap parameter this model accepts.
+
+    OpenAI's newer families (gpt-5*, o1/o3/o4 reasoning models) REJECT `max_tokens`
+    outright — "Unsupported parameter: 'max_tokens' is not supported with this model.
+    Use 'max_completion_tokens' instead." — and return HTTP 400. The older chat models
+    accept only `max_tokens`. Sending the wrong one is a hard failure, not a warning, so
+    pick per model rather than guessing.
+    """
+    name = (model or "").lower()
+    if name.startswith(("gpt-5", "o1", "o3", "o4")):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
 class OpenAIProvider(BaseProvider):
     """OpenAI provider implementing stream protocol"""
     name = 'openai'
@@ -80,7 +95,7 @@ class OpenAIProvider(BaseProvider):
         if 'temperature' in config:
             payload['temperature'] = config['temperature']
         if 'max_tokens' in config:
-            payload['max_tokens'] = config['max_tokens']
+            payload[_max_tokens_param(model)] = config['max_tokens']
         if 'top_p' in config:
             payload['top_p'] = config['top_p']
         if 'presence_penalty' in config:
@@ -248,7 +263,7 @@ class OpenAIProvider(BaseProvider):
         if 'temperature' in config:
             payload['temperature'] = config['temperature']
         if 'max_tokens' in config:
-            payload['max_tokens'] = config['max_tokens']
+            payload[_max_tokens_param(model)] = config['max_tokens']
         if 'top_p' in config:
             payload['top_p'] = config['top_p']
         if 'presence_penalty' in config:
@@ -557,7 +572,7 @@ class OpenAIResponsesProvider(BaseProvider):
         if 'temperature' in config:
             payload['temperature'] = config['temperature']
         if 'max_tokens' in config:
-            payload['max_tokens'] = config['max_tokens']
+            payload[_max_tokens_param(model)] = config['max_tokens']
         if 'top_p' in config:
             payload['top_p'] = config['top_p']
 

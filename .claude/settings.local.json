@@ -35,7 +35,8 @@
       "Read(//Users/richard.s/llm-platform/src/components/layout/MosaicChat/components/Chat/**)",
       "Read(//Users/richard.s/llm-platform/src/components/layout/MosaicChat/components/AiChat/**)",
       "Bash(PYTHONPATH=/Users/richard.s/vel:$PYTHONPATH python -m pytest:*)",
-      "WebFetch(domain:langfuse.com)"
+      "WebFetch(domain:langfuse.com)",
+      "Bash(amq --help)"
     ],
     "deny": [],
     "ask": []
