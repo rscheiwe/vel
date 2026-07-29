@@ -63,7 +63,8 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
 | `source` | `SourceEvent` | ✅ Web/file citations |
 | `start-step` | `StepStartEvent` | ✅ Multi-step agents |
 | `finish-step` | `StepFinishEvent` | ✅ Step completion |
-| `finish-message` | `FinishMessageEvent` | ✅ Message completion |
+| `finish-message` | `FinishMessageEvent` | Internal provider event; consumed before the client stream |
+| `abort` | `AbortEvent` | ✅ Cancelled run marker; strict `{type}` or `{type, reason}` shape |
 | `finish` | `FinishEvent` | ✅ Generation complete |
 | `error` | `ErrorEvent` | ✅ Enhanced error context |
 | `data-*` | `DataEvent` | ✅ Custom data streaming |
@@ -291,7 +292,7 @@ The user will provide a golden trace test harness to verify parity. The approach
 3. **Relaxed comparison**:
    - Match event types and order
    - Compare final text (not per-chunk boundaries)
-   - Treat `finish-message` as optional
+   - Assert `finish-message` is not forwarded on the client stream
    - Allow metadata re-emission
 
 ### Test Scenarios
@@ -400,10 +401,10 @@ Vel includes enhancements beyond AI SDK baseline:
 
 ### Minor Variations
 
-1. **finish-message timing**
-   - Vel: Always emits `finish-message`
-   - AI SDK: May skip in some codepaths
-   - Impact: None (golden trace comparator treats as optional)
+1. **finish-message**
+   - Vel providers use `finish-message` internally to carry finish reason
+   - Client streams consume it and terminate with `finish`
+   - Impact: strict AI SDK clients never see a non-union `finish-message` chunk
 
 2. **Metadata emission count**
    - Vel: May emit 1-2 metadata events (early + usage)
@@ -500,8 +501,7 @@ Vel covers the core Vercel AI SDK V5 UI Stream Protocol through:
 ✅ **Reasoning normalization** (all variants)
 ✅ **Metadata timing** (early + updates)
 
-Tracked gaps include `tool-output-denied`, `abort`, and `message-metadata`
-events.
+Tracked gaps include `tool-output-denied` and `message-metadata` events.
 ✅ **Robust error handling** (malformed responses)
 ✅ **Backwards compatible** (no breaking changes)
 

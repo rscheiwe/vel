@@ -283,7 +283,9 @@ Vel uses the [Vercel AI SDK V5 UI Stream Protocol](https://ai-sdk.dev/docs/ai-sd
 - `response-metadata` - Token usage and model info
 - `source` - Citations and grounding (Gemini)
 - `file` - Inline file attachments
-- `error`, `finish-message` - Error handling and completion
+- `tool-output-error` - Recoverable tool execution errors
+- `abort` - Cancelled run marker
+- `error`, `finish` - Whole-run failure and completion
 
 **Frontend Compatible:** Works seamlessly with React's `useChat()`, `useCompletion()`, and other Vercel AI SDK frontend components. Each provider translates native events into V5-compatible standardized events.
 
@@ -729,6 +731,8 @@ Vel includes comprehensive examples demonstrating various patterns:
 - `examples/message_reducer_example.py` - MessageReducer for message aggregation
 - `examples/custom_data_events.py` - Custom data-* events with transient flag
 - `examples/tool_error_recovery.py` - Recover from a raised tool error and continue the answer
+- `examples/parallel_tools.py` - Opt-in parallel tool execution with timing comparison
+- `examples/cancellation.py` - Cooperative cancellation with a well-formed abort stream
 - `examples/context_modes.py` - Different context management strategies
 - `examples/generation_config_example.py` - Model parameter control
 - `examples/prompt_templates.py` - Prompt template system

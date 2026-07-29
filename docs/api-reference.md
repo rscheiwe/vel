@@ -335,7 +335,8 @@ Streaming execution - yields stream protocol events in real-time.
 async def run_stream(
     input: Dict[str, Any],
     session_id: Optional[str] = None,
-    generation_config: Optional[Dict[str, Any]] = None
+    generation_config: Optional[Dict[str, Any]] = None,
+    cancel_token: Optional[asyncio.Event] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]
 ```
 
@@ -359,10 +360,17 @@ async def run_stream(
 - Example: `{'temperature': 0.9, 'max_tokens': 1000}`
 - See Agent constructor for supported parameters
 
+**cancel_token**
+- Type: `Optional[asyncio.Event]`
+- Default: `None`
+- Set the event to cooperatively cancel the stream. Vel closes open blocks and
+  emits `abort` followed by terminal `finish`.
+
 **Yields:**
 - Type: `Dict[str, Any]`
 - Stream protocol events as they occur
-- Event types: `text-delta`, `tool-input-available`, `finish-message`, etc.
+- Event types: `text-delta`, `tool-input-available`, `tool-output-error`,
+  `abort`, `finish`, etc.
 
 **Example:**
 
@@ -371,7 +379,7 @@ async def run_stream(
 async for event in agent.run_stream({'message': 'Tell me a joke'}):
     if event['type'] == 'text-delta':
         print(event['delta'], end='', flush=True)
-    elif event['type'] == 'finish-message':
+    elif event['type'] == 'finish':
         print()  # Newline
         break
 
@@ -786,8 +794,10 @@ All stream events have a `type` field and extend the base `StreamEvent` class.
 | `tool-input-delta` | `toolCallId`, `inputTextDelta` |
 | `tool-input-available` | `toolCallId`, `toolName`, `input` (object) |
 | `tool-output-available` | `toolCallId`, `output` (any) |
-| `finish-message` | `finishReason` |
-| `error` | `error` (string) |
+| `tool-output-error` | `toolCallId`, `errorText` |
+| `abort` | `reason` (optional) |
+| `finish` | `finishReason` (optional) |
+| `error` | `errorText` (string) |
 
 See [Stream Protocol](stream-protocol.md) for complete event documentation.
 

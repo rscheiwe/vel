@@ -24,11 +24,12 @@ agent = Agent(
 )
 
 # Launch
-async def launch_agent(user_input: str, session_id: str):
+async def launch_agent(user_input: str, session_id: str, cancel_token: asyncio.Event | None = None):
     """Start agent execution"""
     async for event in agent.run_stream(
         {'message': user_input},
-        session_id=session_id
+        session_id=session_id,
+        cancel_token=cancel_token,
     ):
         if event['type'] == 'tool-input-available':
             # Pause for approval if needed
@@ -58,16 +59,27 @@ async def resume_agent(approval: dict, session_id: str):
     ):
         yield event
 
-# Stop consuming a stream by closing the client connection. Full run-level
-# cancellation is a tracked runtime gap and should not be modeled as a bare
-# task.cancel() in application code.
+# Cancellation support
+cancel_token = asyncio.Event()
+task = asyncio.create_task(launch_agent(input, session_id, cancel_token=cancel_token))
+# ... later
+cancel_token.set()  # Vel closes open blocks, emits abort, then finish
 ```
+
+For detached harness runs, use `RunManager.cancel(run_id)` instead of cancelling
+the asyncio task yourself. `RunManager.cancel()` sets the cooperative token,
+waits for the run to close the stream, records status `cancelled`, wakes stream
+subscribers, and settles the checkpoint so recovery will not restart it.
+
+Cancelled streams remain well formed: open text/reasoning blocks are closed,
+in-flight tools receive `tool-output-error`, any open step receives
+`finish-step`, then Vel emits `abort` followed by the terminal `finish`.
 
 ## Benefits
 
 - ✓ Streaming enables real-time pause/resume
 - ✓ Database persistence enables resume after restart
-- ✓ Async streaming over simple Python APIs
+- ✓ Cooperative cancellation with well-formed terminal streams
 - ✓ Session context preserved across interruptions
 
 **See:** [Getting Started - Streaming Mode](../getting-started#streaming-mode)

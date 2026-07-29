@@ -153,6 +153,10 @@ them behind approval. Without `checkpoint_each_tool`, recovery restarts from the
 last step boundary. Example:
 [`examples/harness/crash_recovery.py`](../examples/harness/crash_recovery.py).
 
+Parallel tool execution makes the same idempotency rule load-bearing even
+without a crash. Only mark a tool `parallel_safe=True` when it can run beside
+other tools in the same step without observing or corrupting shared state.
+
 ## Auto-compaction
 
 When estimated prompt tokens exceed `compaction.trigger_token_ratio` of the

@@ -45,6 +45,7 @@ All events have a `type` field identifying the event:
 | `finish-step` | Agent step finished (multi-step agents) |
 | `data-*` | Custom application data (e.g., `data-notification`, `data-progress`) |
 | `finish-message` | Provider signalled end of response — **internal, never sent to clients** |
+| `abort` | Run cancelled |
 | `finish` | Generation complete (V5 UI Stream Protocol) |
 | `error` | Error occurred |
 
@@ -514,6 +515,32 @@ async for event in agent.run_stream({'message': 'Latest weather news'}):
 
 ---
 
+### abort
+
+**When:** A run is cancelled by the caller, client, or run manager
+
+**Fields:**
+- `type`: `"abort"`
+- `reason` (optional): Human-readable cancellation reason
+
+**Example:**
+```json
+{
+  "type": "abort",
+  "reason": "Run cancelled"
+}
+```
+
+`abort` is not the terminal event. It is emitted after open text, reasoning,
+tool, and step parts are closed, and before the terminal `finish` event.
+Cancellation is distinct from failure: `abort` means someone stopped the run;
+`error` means the run failed. Clients should render those states differently.
+
+Wire shape is `{type}` or `{type, reason}` only. Strict AI SDK clients reject
+unknown sibling keys.
+
+---
+
 ### data-* (Custom Data Events)
 
 **When:** Application-specific data needs to be streamed
@@ -975,6 +1002,36 @@ const { messages } = useChat({
 `error` is reserved for whole-run failures. Tool handler exceptions are
 recoverable tool failures and use `tool-output-error` instead.
 
+### Cancelled Run
+
+Captured cancelled streams close open blocks, close the step, emit `abort`, and
+then emit the terminal `finish` event:
+
+```
+1. start
+2. start-step
+3. text-start
+4. text-delta (partial)
+5. text-end
+6. finish-step
+7. abort
+8. finish
+```
+
+**Example:**
+```json
+{"type": "start"}
+{"type": "start-step"}
+{"type": "text-start", "id": "t0"}
+{"type": "text-delta", "id": "t0", "delta": "e"}
+{"type": "text-delta", "id": "t0", "delta": "c"}
+{"type": "text-delta", "id": "t0", "delta": "h"}
+{"type": "text-end", "id": "t0"}
+{"type": "finish-step"}
+{"type": "abort", "reason": "Run cancelled"}
+{"type": "finish"}
+```
+
 ### Tool Failure with Recovery
 
 ```
@@ -998,7 +1055,8 @@ recoverable tool failures and use `tool-output-error` instead.
 {"type": "text-start", "id": "block_1"}
 {"type": "text-delta", "id": "block_1", "delta": "I could not look up that order because the id is invalid."}
 {"type": "text-end", "id": "block_1"}
-{"type": "finish", "finishReason": "stop"}
+{"type": "finish-step"}
+{"type": "finish"}
 ```
 
 ## Handling Events
@@ -1011,7 +1069,7 @@ async def stream_text(agent, message):
     async for event in agent.run_stream({'message': message}):
         if event['type'] == 'text-delta':
             print(event['delta'], end='', flush=True)
-        elif event['type'] == 'finish-message':
+        elif event['type'] == 'finish':
             print()  # Newline
             break
 ```
@@ -1401,7 +1459,7 @@ class MessageReducer:
 - `tool-input-available` → Creates tool-call part
 - `tool-output-available` → Creates tool-result part
 - `start-step` → Creates start-step part
-- `finish-message` → Flushes accumulated text to parts array
+- `finish` → Marks the stream complete
 
 **See also:** `examples/message_reducer_example.py` for comprehensive usage examples.
 
@@ -1468,7 +1526,7 @@ async function streamResponse(message: string) {
           case 'tool-input-available':
             showToolCall(event.toolName, event.input);
             break;
-          case 'finish-message':
+          case 'finish':
             onComplete();
             break;
         }
@@ -1568,7 +1626,7 @@ async for event in agent.run_stream({'message': msg}):
         handle_tool_result(event)
     elif event_type == 'error':
         handle_error(event)
-    elif event_type == 'finish-message':
+    elif event_type == 'finish':
         handle_finish(event)
 ```
 

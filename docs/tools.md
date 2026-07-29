@@ -74,6 +74,7 @@ class ToolSpec:
     input_schema: Dict[str, Any] # JSON Schema for input validation
     output_schema: Dict[str, Any] # JSON Schema for output validation
     handler: Callable            # Function to execute (sync or async)
+    parallel_safe: bool          # Opt in to concurrent execution (default: False)
 ```
 
 ### Parameters
@@ -104,6 +105,13 @@ class ToolSpec:
 - Function that executes the tool logic
 - Signature: `(input: dict, ctx: dict) -> dict`
 - Can be sync or async (auto-detected)
+
+**parallel_safe** (optional)
+- Default: `False`
+- Marks the tool as eligible for concurrent execution when the agent also sets
+  `policies={'tool_execution': 'parallel'}`
+- Use only for idempotent tools that do not share mutable state with other
+  tools in the same step
 
 ## Creating Tools
 
@@ -1081,6 +1089,46 @@ tool = ToolSpec(
 These fields are reserved policy metadata in the current release. Runtime
 enforcement of timeout/retry/fallback behavior is tracked separately; handler
 code should still implement any required timeout or retry behavior directly.
+
+### Parallel-Safe Tools
+
+`parallel_safe` is implemented runtime behavior, not just stored metadata. It
+opts a tool into concurrent execution when the agent also enables parallel tool
+execution:
+
+```python
+tool = ToolSpec.from_function(
+    search_catalog,
+    parallel_safe=True,
+)
+
+agent = Agent(
+    id='parallel-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o-mini'},
+    tools=[tool],
+    policies={'tool_execution': 'parallel'},
+)
+```
+
+Both levels are required:
+
+- The tool must declare `parallel_safe=True`.
+- The agent/run policy must set `tool_execution` to `"parallel"`.
+- The whole batch runs concurrently only if every tool call in that batch
+  qualifies. One unsafe call makes the entire batch run serially.
+
+A tool is not eligible for concurrent execution when it needs human approval,
+has a guardrail that can rewrite arguments, is an async generator, or is being
+replayed after a crash. Async generator tools remain serial because their
+interstitial events do not carry a `toolCallId`, so concurrent output would be
+unattributable.
+
+Mark a tool `parallel_safe` only when it is idempotent and does not read or
+write shared mutable state that another tool in the same step might touch. This
+includes files, database rows, in-memory objects, remote resources, and rate
+limited client sessions. Under parallel execution, handler calls overlap, but
+Vel still emits post-execution events in call order; outputs appear together
+once the slowest eligible tool finishes, not one by one as each handler returns.
 
 ## Tool Organization & Imports
 
