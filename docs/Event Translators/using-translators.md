@@ -157,9 +157,15 @@ async def stream_with_orchestration(prompt: str):
 # FastAPI endpoint
 @app.post('/api/chat')
 async def chat_endpoint(request: ChatRequest):
+    async def event_source():
+        async for event in stream_with_orchestration(request.message):
+            yield f"data: {json.dumps(event)}\n\n"
+        yield "data: [DONE]\n\n"
+
     return StreamingResponse(
-        stream_with_orchestration(request.message),
-        media_type='text/event-stream'
+        event_source(),
+        media_type='text/event-stream',
+        headers={'x-vercel-ai-ui-message-stream': 'v1'},
     )
 ```
 

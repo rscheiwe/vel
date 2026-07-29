@@ -575,14 +575,31 @@ def translate_to_anthropic(messages: List[Dict[str, Any]]) -> Tuple[Optional[str
                     # Convert OpenAI format to Anthropic format
                     tool_call_id = msg['tool_call_id']
                     result_content = content if isinstance(content, str) else json.dumps(content) if isinstance(content, dict) else str(content)
-                    anthropic_messages.append({
-                        'role': 'user',
-                        'content': [{
-                            'type': 'tool_result',
-                            'tool_use_id': tool_call_id,
-                            'content': result_content
-                        }]
-                    })
+                    block = {
+                        'type': 'tool_result',
+                        'tool_use_id': tool_call_id,
+                        'content': result_content
+                    }
+                    # Anthropic requires EVERY tool_result for one assistant turn
+                    # in a SINGLE user message. Emitting one message per result
+                    # — which is what this did — makes any step with two or more
+                    # tool calls a malformed request. It was already wrong; the
+                    # opt-in parallel path just makes multi-tool steps routine.
+                    #
+                    # Merging into the previous message rather than buffering
+                    # keeps this a local change and naturally handles the
+                    # interleaved case, where a system message splits the run.
+                    previous = anthropic_messages[-1] if anthropic_messages else None
+                    if (
+                        previous is not None
+                        and previous.get('role') == 'user'
+                        and isinstance(previous.get('content'), list)
+                        and previous['content']
+                        and all(b.get('type') == 'tool_result' for b in previous['content'])
+                    ):
+                        previous['content'].append(block)
+                    else:
+                        anthropic_messages.append({'role': 'user', 'content': [block]})
                     continue
 
                 # Handle None content

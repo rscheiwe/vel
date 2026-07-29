@@ -29,14 +29,23 @@ class OpenAIProvider(BaseProvider):
     """OpenAI provider implementing stream protocol"""
     name = 'openai'
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         """
         Initialize OpenAI provider.
 
         Args:
             api_key: Optional API key. If not provided, falls back to OPENAI_API_KEY environment variable.
+            base_url: Optional API base. If not provided, falls back to OPENAI_API_BASE,
+                then to OpenAI itself.
+
+                Per-agent rather than only per-process. `OPENAI_API_BASE` is read
+                once, and the registry constructs every provider eagerly, so the
+                env var is latched at import time — which made it impossible for
+                one process to talk to OpenAI and an OpenAI-compatible gateway
+                (OpenRouter, vLLM, Together) at the same time. Passing it here
+                mirrors the existing per-agent `api_key` path.
         """
-        self.base = os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
+        self.base = base_url or os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
         self.translator = OpenAIAPITranslator()
 
         # Use provided API key or fall back to environment variable
@@ -112,6 +121,16 @@ class OpenAIProvider(BaseProvider):
             payload['user'] = config['user']
         if 'response_format' in config:
             payload['response_format'] = config['response_format']
+
+        # Reasoning controls. The whitelist above is closed — there is no
+        # `**config` spread — so these were dropped silently, which is the worst
+        # failure mode available: a caller asking for reasoning got a normal 200
+        # with no trace and no diagnostic. Spellings differ by endpoint
+        # (`reasoning_effort` on OpenAI, `reasoning` / `include_reasoning` on
+        # OpenRouter), so each is passed through as given rather than translated.
+        for key in ('reasoning', 'reasoning_effort', 'include_reasoning'):
+            if key in config:
+                payload[key] = config[key]
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -281,6 +300,16 @@ class OpenAIProvider(BaseProvider):
         if 'response_format' in config:
             payload['response_format'] = config['response_format']
 
+        # Reasoning controls. The whitelist above is closed — there is no
+        # `**config` spread — so these were dropped silently, which is the worst
+        # failure mode available: a caller asking for reasoning got a normal 200
+        # with no trace and no diagnostic. Spellings differ by endpoint
+        # (`reasoning_effort` on OpenAI, `reasoning` / `include_reasoning` on
+        # OpenRouter), so each is passed through as given rather than translated.
+        for key in ('reasoning', 'reasoning_effort', 'include_reasoning'):
+            if key in config:
+                payload[key] = config[key]
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             r = await client.post(
                 f"{self.base}/chat/completions",
@@ -317,14 +346,16 @@ class OpenAIResponsesProvider(BaseProvider):
     """
     name = 'openai-responses'
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         """
         Initialize OpenAI Responses API provider.
 
         Args:
             api_key: Optional API key. If not provided, falls back to OPENAI_API_KEY environment variable.
+            base_url: Optional API base. Falls back to OPENAI_API_BASE, then OpenAI.
+                See OpenAIProvider for why this is per-agent and not only per-process.
         """
-        self.base = os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
+        self.base = base_url or os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
         self.translator = OpenAIResponsesAPITranslator()
 
         # Use provided API key or fall back to environment variable

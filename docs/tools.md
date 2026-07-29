@@ -74,6 +74,7 @@ class ToolSpec:
     input_schema: Dict[str, Any] # JSON Schema for input validation
     output_schema: Dict[str, Any] # JSON Schema for output validation
     handler: Callable            # Function to execute (sync or async)
+    parallel_safe: bool          # Opt in to concurrent execution (default: False)
 ```
 
 ### Parameters
@@ -104,6 +105,13 @@ class ToolSpec:
 - Function that executes the tool logic
 - Signature: `(input: dict, ctx: dict) -> dict`
 - Can be sync or async (auto-detected)
+
+**parallel_safe** (optional)
+- Default: `False`
+- Marks the tool as eligible for concurrent execution when the agent also sets
+  `policies={'tool_execution': 'parallel'}`
+- Use only for idempotent tools that do not share mutable state with other
+  tools in the same step
 
 ## Creating Tools
 
@@ -692,6 +700,14 @@ return {'success': True, 'message': 'OK'}  # ✓ Valid
 
 ### Tool Execution Errors
 
+Tool handlers may either return an error-shaped value themselves or raise an
+exception. Raised exceptions become recoverable tool failures: Vel emits a
+`tool-output-error` event for the client and feeds the failure back to the model
+as a tool result so the agent can retry or explain.
+
+Use explicit `try`/`except` when you want to control the exact model-visible
+message or keep a domain error inside your declared output schema:
+
 ```python
 def safe_divide_handler(input: dict, ctx: dict) -> dict:
     try:
@@ -712,6 +728,17 @@ output_schema={
         'error': {'type': 'string'}
     }
 }
+```
+
+If the handler raises instead, Vel handles the protocol closure:
+
+```python
+def safe_divide_handler(input: dict, ctx: dict) -> dict:
+    a = input['a']
+    b = input['b']
+    if b == 0:
+        raise ValueError("Division by zero")
+    return {'result': a / b}
 ```
 
 ### Validation Errors
@@ -1043,9 +1070,9 @@ agent = Agent(
 
 When `enabled` returns `False`, the tool is omitted from the schema sent to the LLM.
 
-### Per-Tool Policies
+### Per-Tool Policy Metadata
 
-Configure timeout, retries, and fallback per tool:
+`ToolSpec` can store timeout, retries, and fallback metadata:
 
 ```python
 tool = ToolSpec(
@@ -1053,16 +1080,55 @@ tool = ToolSpec(
     input_schema={...},
     output_schema={...},
     handler=slow_handler,
-    timeout=5.0,           # Cancel after 5 seconds
-    retries=2,             # Retry up to 2 times
-    fallback='return_error'  # What to do when all retries fail
+    timeout=5.0,             # Stored policy metadata
+    retries=2,               # Stored policy metadata
+    fallback='return_error'  # Stored policy metadata
 )
 ```
 
-**Fallback Options:**
-- `'return_error'` - Return error to LLM
-- `'call_other_tool'` - Try alternative tool (future)
-- Custom handler (future)
+These fields are reserved policy metadata in the current release. Runtime
+enforcement of timeout/retry/fallback behavior is tracked separately; handler
+code should still implement any required timeout or retry behavior directly.
+
+### Parallel-Safe Tools
+
+`parallel_safe` is implemented runtime behavior, not just stored metadata. It
+opts a tool into concurrent execution when the agent also enables parallel tool
+execution:
+
+```python
+tool = ToolSpec.from_function(
+    search_catalog,
+    parallel_safe=True,
+)
+
+agent = Agent(
+    id='parallel-agent',
+    model={'provider': 'openai', 'model': 'gpt-4o-mini'},
+    tools=[tool],
+    policies={'tool_execution': 'parallel'},
+)
+```
+
+Both levels are required:
+
+- The tool must declare `parallel_safe=True`.
+- The agent/run policy must set `tool_execution` to `"parallel"`.
+- The whole batch runs concurrently only if every tool call in that batch
+  qualifies. One unsafe call makes the entire batch run serially.
+
+A tool is not eligible for concurrent execution when it needs human approval,
+has a guardrail that can rewrite arguments, is an async generator, or is being
+replayed after a crash. Async generator tools remain serial because their
+interstitial events do not carry a `toolCallId`, so concurrent output would be
+unattributable.
+
+Mark a tool `parallel_safe` only when it is idempotent and does not read or
+write shared mutable state that another tool in the same step might touch. This
+includes files, database rows, in-memory objects, remote resources, and rate
+limited client sessions. Under parallel execution, handler calls overlap, but
+Vel still emits post-execution events in call order; outputs appear together
+once the slowest eligible tool finishes, not one by one as each handler returns.
 
 ## Tool Organization & Imports
 

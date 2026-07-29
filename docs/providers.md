@@ -84,6 +84,29 @@ OPENAI_API_KEY=your-api-key
 - OpenAI-compatible local models (LM Studio, Ollama with OpenAI adapter)
 - Proxy services
 
+You can also configure an endpoint per agent instead of relying on the
+process-wide `OPENAI_API_BASE` value:
+
+```python
+agent = Agent(
+    id='gateway-agent',
+    model={
+        'provider': 'openai',
+        'model': 'deepseek/deepseek-v4-pro',
+        'api_key': os.getenv('OPENROUTER_API_KEY'),
+        'base_url': 'https://openrouter.ai/api/v1',
+    },
+    generation_config={
+        'include_reasoning': True,
+        'reasoning_effort': 'high',
+    },
+)
+```
+
+OpenAI-compatible endpoints can expose visible reasoning as
+`reasoning_content`, `reasoning`, or `reasoning_details`; Vel normalizes all
+three spellings into reasoning stream events.
+
 ### Features
 
 **Streaming:**

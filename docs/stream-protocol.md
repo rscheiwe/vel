@@ -35,6 +35,7 @@ All events have a `type` field identifying the event:
 | `tool-input-delta` | Tool argument chunk (streaming) |
 | `tool-input-available` | Tool arguments complete |
 | `tool-output-available` | Tool execution result |
+| `tool-output-error` | Tool execution error |
 | `reasoning-start` | Reasoning block started |
 | `reasoning-delta` | Reasoning chunk received |
 | `reasoning-end` | Reasoning block ended |
@@ -43,7 +44,8 @@ All events have a `type` field identifying the event:
 | `start-step` | Agent step started (multi-step agents) |
 | `finish-step` | Agent step finished (multi-step agents) |
 | `data-*` | Custom application data (e.g., `data-notification`, `data-progress`) |
-| `finish-message` | Message generation complete |
+| `finish-message` | Provider signalled end of response — **internal, never sent to clients** |
+| `abort` | Run cancelled |
 | `finish` | Generation complete (V5 UI Stream Protocol) |
 | `error` | Error occurred |
 
@@ -225,6 +227,30 @@ async for event in agent.run_stream({'message': 'Weather in NYC?'}):
 }
 ```
 
+---
+
+### tool-output-error
+
+**When:** Tool execution raises an error that the agent can feed back to the model
+
+**Fields:**
+- `type`: `"tool-output-error"`
+- `toolCallId`: Tool call identifier
+- `errorText`: Error message (string)
+
+**Example:**
+```json
+{
+  "type": "tool-output-error",
+  "toolCallId": "call_abc123",
+  "errorText": "Tool failed: upstream service returned 503"
+}
+```
+
+`toolName` is intentionally omitted. The matching `tool-input-available` event
+already carries `toolName`, and strict AI SDK client schemas reject extra sibling
+keys on `tool-output-error`.
+
 **Provider-Executed Tools:**
 
 OpenAI Responses API supports provider-executed tools (`web_search_call`, `computer_call`) that are executed by OpenAI's servers. These emit `tool-output-available` with special metadata:
@@ -296,7 +322,10 @@ OpenAI Responses API supports provider-executed tools (`web_search_call`, `compu
 }
 ```
 
-**Note:** OpenAI encrypts reasoning content for o1/o3 models, so `delta` will be empty. Claude's extended thinking is visible.
+**Note:** OpenAI encrypts reasoning content for o1/o3 models, so `delta` may be
+empty. OpenAI-compatible gateways can send visible reasoning using
+`reasoning_content`, `reasoning`, or `reasoning_details`; Vel normalizes these
+spellings into `reasoning-delta`. Claude's extended thinking is visible.
 
 **Usage:**
 ```python
@@ -436,7 +465,16 @@ async for event in agent.run_stream({'message': 'Latest weather news'}):
 
 ### finish-message
 
-**When:** Message generation complete
+> **Internal only — never appears on the wire.** Providers emit this so Vel can
+> learn the finish reason; every stream path consumes it and does not forward
+> it. It is documented here because you will see it if you write a provider or a
+> translator, not because a client will receive it.
+>
+> Do not forward it from a custom integration. `finish-message` is not a member
+> of the AI SDK UI Message Stream union, so a strict client rejects the chunk
+> with `unrecognized_keys → invalid_union` and discards the whole stream.
+
+**When:** A provider signals the end of a model response
 
 **Fields:**
 - `type`: `"finish-message"`
@@ -465,15 +503,41 @@ async for event in agent.run_stream({'message': 'Latest weather news'}):
 
 **Fields:**
 - `type`: `"error"`
-- `error`: Error message (string)
+- `errorText`: Error message (string)
 
 **Example:**
 ```json
 {
   "type": "error",
-  "error": "Rate limit exceeded"
+  "errorText": "Rate limit exceeded"
 }
 ```
+
+---
+
+### abort
+
+**When:** A run is cancelled by the caller, client, or run manager
+
+**Fields:**
+- `type`: `"abort"`
+- `reason` (optional): Human-readable cancellation reason
+
+**Example:**
+```json
+{
+  "type": "abort",
+  "reason": "Run cancelled"
+}
+```
+
+`abort` is not the terminal event. It is emitted after open text, reasoning,
+tool, and step parts are closed, and before the terminal `finish` event.
+Cancellation is distinct from failure: `abort` means someone stopped the run;
+`error` means the run failed. Clients should render those states differently.
+
+Wire shape is `{type}` or `{type, reason}` only. Strict AI SDK clients reject
+unknown sibling keys.
 
 ---
 
@@ -870,7 +934,6 @@ const { messages } = useChat({
 1. text-start
 2. text-delta (multiple)
 3. text-end
-4. finish-message
 ```
 
 **Example:**
@@ -879,7 +942,6 @@ const { messages } = useChat({
 {"type": "text-delta", "id": "block_1", "delta": "Hello"}
 {"type": "text-delta", "id": "block_1", "delta": " world"}
 {"type": "text-end", "id": "block_1"}
-{"type": "finish-message", "finishReason": "stop"}
 ```
 
 ### Tool Call (Single)
@@ -892,7 +954,8 @@ const { messages } = useChat({
 5. text-start
 6. text-delta (multiple)
 7. text-end
-8. finish-message
+8. finish-step
+9. finish
 ```
 
 **Example:**
@@ -905,7 +968,6 @@ const { messages } = useChat({
 {"type": "text-start", "id": "block_1"}
 {"type": "text-delta", "id": "block_1", "delta": "The weather in NYC is cloudy, 65°F"}
 {"type": "text-end", "id": "block_1"}
-{"type": "finish-message", "finishReason": "stop"}
 ```
 
 ### Multiple Tool Calls
@@ -920,7 +982,6 @@ const { messages } = useChat({
 7. text-start
 8. text-delta (multiple)
 9. text-end
-10. finish-message
 ```
 
 ### Error During Generation
@@ -935,7 +996,67 @@ const { messages } = useChat({
 ```json
 {"type": "text-start", "id": "block_1"}
 {"type": "text-delta", "id": "block_1", "delta": "Let me"}
-{"type": "error", "error": "Rate limit exceeded"}
+{"type": "error", "errorText": "Rate limit exceeded"}
+```
+
+`error` is reserved for whole-run failures. Tool handler exceptions are
+recoverable tool failures and use `tool-output-error` instead.
+
+### Cancelled Run
+
+Captured cancelled streams close open blocks, close the step, emit `abort`, and
+then emit the terminal `finish` event:
+
+```
+1. start
+2. start-step
+3. text-start
+4. text-delta (partial)
+5. text-end
+6. finish-step
+7. abort
+8. finish
+```
+
+**Example:**
+```json
+{"type": "start"}
+{"type": "start-step"}
+{"type": "text-start", "id": "t0"}
+{"type": "text-delta", "id": "t0", "delta": "e"}
+{"type": "text-delta", "id": "t0", "delta": "c"}
+{"type": "text-delta", "id": "t0", "delta": "h"}
+{"type": "text-end", "id": "t0"}
+{"type": "finish-step"}
+{"type": "abort", "reason": "Run cancelled"}
+{"type": "finish"}
+```
+
+### Tool Failure with Recovery
+
+```
+1. tool-input-available
+2. tool-output-error
+3. finish-step
+4. start-step
+5. text-start
+6. text-delta (multiple)
+7. text-end
+8. finish-step
+9. finish
+```
+
+**Example:**
+```json
+{"type": "tool-input-available", "toolCallId": "call_1", "toolName": "lookup_order", "input": {"order_id": "bad"}}
+{"type": "tool-output-error", "toolCallId": "call_1", "errorText": "Order id must be numeric"}
+{"type": "finish-step", "finishReason": "tool-calls"}
+{"type": "start-step"}
+{"type": "text-start", "id": "block_1"}
+{"type": "text-delta", "id": "block_1", "delta": "I could not look up that order because the id is invalid."}
+{"type": "text-end", "id": "block_1"}
+{"type": "finish-step"}
+{"type": "finish"}
 ```
 
 ## Handling Events
@@ -948,7 +1069,7 @@ async def stream_text(agent, message):
     async for event in agent.run_stream({'message': message}):
         if event['type'] == 'text-delta':
             print(event['delta'], end='', flush=True)
-        elif event['type'] == 'finish-message':
+        elif event['type'] == 'finish':
             print()  # Newline
             break
 ```
@@ -1338,7 +1459,7 @@ class MessageReducer:
 - `tool-input-available` → Creates tool-call part
 - `tool-output-available` → Creates tool-result part
 - `start-step` → Creates start-step part
-- `finish-message` → Flushes accumulated text to parts array
+- `finish` → Marks the stream complete
 
 **See also:** `examples/message_reducer_example.py` for comprehensive usage examples.
 
@@ -1365,10 +1486,12 @@ async def stream_response(message: str):
         async for event in agent.run_stream({'message': message}):
             # SSE format: data: {json}\n\n
             yield f"data: {json.dumps(event)}\n\n"
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         event_generator(),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
+        headers={"x-vercel-ai-ui-message-stream": "v1"},
     )
 ```
 
@@ -1403,7 +1526,7 @@ async function streamResponse(message: string) {
           case 'tool-input-available':
             showToolCall(event.toolName, event.input);
             break;
-          case 'finish-message':
+          case 'finish':
             onComplete();
             break;
         }
@@ -1503,7 +1626,7 @@ async for event in agent.run_stream({'message': msg}):
         handle_tool_result(event)
     elif event_type == 'error':
         handle_error(event)
-    elif event_type == 'finish-message':
+    elif event_type == 'finish':
         handle_finish(event)
 ```
 

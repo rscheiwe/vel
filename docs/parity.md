@@ -6,14 +6,14 @@ nav_order: 11
 
 # Vercel AI SDK V5 Stream Protocol Parity
 
-Complete reference for Vel's parity with the Vercel AI SDK V5 UI Stream Protocol.
+Reference for Vel's compatibility with the Vercel AI SDK V5 UI Stream Protocol.
 
 ## Overview
 
-Vel implements **100% event-level parity** with the Vercel AI SDK V5 UI Stream Protocol, ensuring seamless frontend integration with AI SDK components like `useChat` and `useCompletion`.
+Vel implements the core Vercel AI SDK V5 UI Stream Protocol used by frontend components like `useChat` and `useCompletion`. Some protocol events remain tracked gaps and are called out below.
 
-**Key Achievement:**
-- ✅ All stream protocol events match AI SDK V5 specification
+**Implemented coverage:**
+- ✅ Core stream protocol events match AI SDK V5 naming and payload conventions
 - ✅ Provider-executed tools support (OpenAI web_search, computer)
 - ✅ Source/citation events for RAG and grounding
 - ✅ Early metadata emission with usage updates
@@ -55,6 +55,7 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
 | `tool-input-delta` | `ToolInputDeltaEvent` | ✅ Streaming tool arguments |
 | `tool-input-available` | `ToolInputAvailableEvent` | ✅ Complete tool arguments |
 | `tool-output-available` | `ToolOutputAvailableEvent` | ✅ Tool execution results |
+| `tool-output-error` | `ToolOutputErrorEvent` | ✅ Recoverable tool execution errors; strict `{type, toolCallId, errorText}` shape |
 | `reasoning-start` | `ReasoningStartEvent` | ✅ Reasoning block start |
 | `reasoning-delta` | `ReasoningDeltaEvent` | ✅ Reasoning chunks |
 | `reasoning-end` | `ReasoningEndEvent` | ✅ Reasoning completion |
@@ -62,7 +63,8 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
 | `source` | `SourceEvent` | ✅ Web/file citations |
 | `start-step` | `StepStartEvent` | ✅ Multi-step agents |
 | `finish-step` | `StepFinishEvent` | ✅ Step completion |
-| `finish-message` | `FinishMessageEvent` | ✅ Message completion |
+| `finish-message` | `FinishMessageEvent` | Internal provider event; consumed before the client stream |
+| `abort` | `AbortEvent` | ✅ Cancelled run marker; strict `{type}` or `{type, reason}` shape |
 | `finish` | `FinishEvent` | ✅ Generation complete |
 | `error` | `ErrorEvent` | ✅ Enhanced error context |
 | `data-*` | `DataEvent` | ✅ Custom data streaming |
@@ -89,7 +91,13 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
    - Solution: `finalize_tool_calls()` ensures emission even without deltas
    - Tracks `input_available_emitted` flag to prevent duplicates
 
-**Parity Status:** ✅ **100% Complete**
+3. **Reasoning field aliases**
+   - Supports OpenAI-compatible `reasoning_content`, `reasoning`, and
+     `reasoning_details`
+   - Chunks that carry both content and reasoning emit both event streams
+   - Reasoning blocks close before answer text starts
+
+**Parity Status:** ✅ Core compatible, with remaining tracked events listed in the summary.
 
 ---
 
@@ -135,7 +143,7 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
    - Updates with usage data on `response.completed`
    - Follows AI SDK pattern: early metadata → usage update
 
-**Parity Status:** ✅ **100% Complete**
+**Parity Status:** ✅ Core compatible, with remaining tracked events listed in the summary.
 
 ---
 
@@ -156,7 +164,7 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
    - Maps Anthropic `thinking` content blocks to `reasoning-*` events
    - Fully visible reasoning (unlike OpenAI's encrypted reasoning)
 
-**Parity Status:** ✅ **100% Complete**
+**Parity Status:** ✅ Core compatible, with remaining tracked events listed in the summary.
 
 ---
 
@@ -178,7 +186,7 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
    - Maps to `SourceEvent` with web citation structure
    - Deduplicates sources by URL
 
-**Parity Status:** ✅ **100% Complete**
+**Parity Status:** ✅ Core compatible, with remaining tracked events listed in the summary.
 
 ---
 
@@ -284,7 +292,7 @@ The user will provide a golden trace test harness to verify parity. The approach
 3. **Relaxed comparison**:
    - Match event types and order
    - Compare final text (not per-chunk boundaries)
-   - Treat `finish-message` as optional
+   - Assert `finish-message` is not forwarded on the client stream
    - Allow metadata re-emission
 
 ### Test Scenarios
@@ -393,10 +401,10 @@ Vel includes enhancements beyond AI SDK baseline:
 
 ### Minor Variations
 
-1. **finish-message timing**
-   - Vel: Always emits `finish-message`
-   - AI SDK: May skip in some codepaths
-   - Impact: None (golden trace comparator treats as optional)
+1. **finish-message**
+   - Vel providers use `finish-message` internally to carry finish reason
+   - Client streams consume it and terminate with `finish`
+   - Impact: strict AI SDK clients never see a non-union `finish-message` chunk
 
 2. **Metadata emission count**
    - Vel: May emit 1-2 metadata events (early + usage)
@@ -486,13 +494,14 @@ const { messages } = useChat({
 
 ## Summary
 
-Vel achieves **complete event-level parity** with Vercel AI SDK V5 UI Stream Protocol through:
+Vel covers the core Vercel AI SDK V5 UI Stream Protocol through:
 
-✅ **All gaps addressed** (6 of 6 from gap analysis)
 ✅ **Provider-executed tools** (web_search, computer)
 ✅ **Sources/citations** (web, file)
 ✅ **Reasoning normalization** (all variants)
 ✅ **Metadata timing** (early + updates)
+
+Tracked gaps include `tool-output-denied` and `message-metadata` events.
 ✅ **Robust error handling** (malformed responses)
 ✅ **Backwards compatible** (no breaking changes)
 

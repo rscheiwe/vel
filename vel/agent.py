@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+from contextlib import aclosing
 import json
 import re
 import time
@@ -33,6 +34,8 @@ from .providers import ProviderRegistry
 from .tools import ToolRegistry, ToolSpec, validate_io
 from .events import (
     StreamEvent, StartEvent, FinishEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
+    ToolOutputErrorEvent, AbortEvent,
+    TextEndEvent, ReasoningEndEvent,
     ErrorEvent, FinishMessageEvent, StepStartEvent, StepFinishEvent,
     ObjectElementEvent, ObjectPartialEvent, ObjectCompleteEvent,
     EventMetadata, add_metadata
@@ -42,6 +45,90 @@ from .core.json_stream_parser import (
     StreamedElement, PartialObject
 )
 from .prompts import PromptContextManager, PromptTemplate
+
+class _OpenStreamState:
+    """Tracks what a run has left open, so a cancelled run can still be closed.
+
+    A cancelled stream must remain well-formed. Cancelling mid-answer leaves a
+    text block open; mid-thought leaves a reasoning block open; mid-tool leaves
+    a tool call that a client will render as a spinner forever. Clients balance
+    strictly by id, so every one of those has to be closed before the terminal
+    event or the UI is stuck on a run that has already stopped.
+
+    Observing the emitted events is the only reliable place to know this — the
+    inner layers each know about their own blocks, but nothing else sees all of
+    them in one place.
+    """
+
+    def __init__(self) -> None:
+        self.text: List[str] = []
+        self.reasoning: List[str] = []
+        self.tools: List[str] = []
+        self.open_steps = 0
+
+    def observe(self, event: Dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+        etype = event.get('type')
+        if etype == 'text-start':
+            self.text.append(event.get('id'))
+        elif etype == 'text-end':
+            self._drop(self.text, event.get('id'))
+        elif etype == 'reasoning-start':
+            self.reasoning.append(event.get('id'))
+        elif etype == 'reasoning-end':
+            self._drop(self.reasoning, event.get('id'))
+        elif etype in ('tool-input-available', 'tool-input-start'):
+            tid = event.get('toolCallId')
+            if tid is not None and tid not in self.tools:
+                self.tools.append(tid)
+        elif etype in ('tool-output-available', 'tool-output-error'):
+            self._drop(self.tools, event.get('toolCallId'))
+        elif etype == 'start-step':
+            self.open_steps += 1
+        elif etype == 'finish-step':
+            self.open_steps = max(0, self.open_steps - 1)
+
+    @staticmethod
+    def _drop(bucket: List[str], value: Any) -> None:
+        if value in bucket:
+            bucket.remove(value)
+
+    def closing_events(self, reason: Optional[str] = None) -> List[Dict[str, Any]]:
+        """The terminal sequence for a cancelled run, in the required order.
+
+        Blocks first, then any in-flight tool, then the step, then `abort`, then
+        `finish`. A cancelled tool is reported as `tool-output-error` rather than
+        left dangling — the client needs a terminal event keyed to the same id,
+        and inventing a successful output would be a lie.
+        """
+        events: List[Dict[str, Any]] = []
+        for block_id in list(self.text):
+            events.append(TextEndEvent(block_id=block_id).to_dict())
+        for block_id in list(self.reasoning):
+            events.append(ReasoningEndEvent(block_id=block_id).to_dict())
+        for tool_call_id in list(self.tools):
+            events.append(ToolOutputErrorEvent(
+                tool_call_id=tool_call_id,
+                error_text=reason or 'Run cancelled before this tool returned',
+            ).to_dict())
+        for _ in range(self.open_steps):
+            events.append({'type': 'finish-step'})
+        events.append(AbortEvent(reason=reason).to_dict())
+        events.append({'type': 'finish'})
+
+        self.text.clear()
+        self.reasoning.clear()
+        self.tools.clear()
+        self.open_steps = 0
+        return events
+
+
+async def _empty_async_iter():
+    """Yields nothing. Lets the prefetched branch reuse the same `async for`."""
+    return
+    yield  # pragma: no cover - unreachable, marks this an async generator
+
 
 class Agent:
     def __init__(self, id: str, model: Dict[str, Any], prompt_env: str='prod',
@@ -364,25 +451,35 @@ class Agent:
         self.providers = ProviderRegistry.default()
         self._custom_provider = None
 
-        # Check if model config has api_key - if so, create custom provider instance
-        if 'api_key' in self.model_cfg:
+        # Check if model config has api_key or base_url - if so, create custom
+        # provider instance. `base_url` is honored for the OpenAI-shaped
+        # providers only, since it is what lets one process reach an
+        # OpenAI-compatible gateway without hijacking OPENAI_API_BASE for every
+        # other agent in the same process.
+        if 'api_key' in self.model_cfg or 'base_url' in self.model_cfg:
             provider_name = self.model_cfg['provider']
-            api_key = self.model_cfg['api_key']
+            api_key = self.model_cfg.get('api_key')
+            base_url = self.model_cfg.get('base_url')
 
             # Import provider classes
             from .providers import OpenAIProvider, OpenAIResponsesProvider, GeminiProvider, AnthropicProvider
 
             # Create provider instance with API key
             if provider_name == 'openai':
-                self._custom_provider = OpenAIProvider(api_key=api_key)
+                self._custom_provider = OpenAIProvider(api_key=api_key, base_url=base_url)
             elif provider_name == 'openai-responses':
-                self._custom_provider = OpenAIResponsesProvider(api_key=api_key)
+                self._custom_provider = OpenAIResponsesProvider(api_key=api_key, base_url=base_url)
             elif provider_name == 'google':
                 self._custom_provider = GeminiProvider(api_key=api_key)
             elif provider_name == 'anthropic':
                 self._custom_provider = AnthropicProvider(api_key=api_key)
             else:
                 raise ValueError(f"Unknown provider: {provider_name}. Cannot create instance with custom API key.")
+
+            if base_url and provider_name not in ('openai', 'openai-responses'):
+                raise ValueError(
+                    f"base_url is only supported for OpenAI-compatible providers, not '{provider_name}'."
+                )
 
         self.toolreg = ToolRegistry.default()
 
@@ -1396,9 +1493,19 @@ class Agent:
         external_run_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         trace_context: Optional['TraceContext'] = None,
+        cancel_token: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streaming run - yields stream protocol events as they occur.
+
+        Cancellation: pass an ``asyncio.Event`` as ``cancel_token`` and set it to
+        stop the run. It is checked after each emitted event, so cancellation
+        takes effect at the next event boundary rather than mid-write, and the
+        run closes every block it left open before emitting ``abort`` then
+        ``finish`` — a cancelled stream stays well-formed.
+
+        Cancelling is not an error. A caller who stops a run, or a client that
+        goes away, gets ``abort``; ``error`` continues to mean the run failed.
 
         Note: full parent-trace nesting for the streaming path (threading the
         parent handler through the stream loop) is a follow-up; the non-streaming
@@ -1684,7 +1791,13 @@ class Agent:
                 # so sandbox tools are visible to the model on step 1 (§6.7).
                 for _sb_event in await harness_controller.ensure_sandbox():
                     yield _sb_event
-            async for event in self._step_loop(
+            # Every emitted event passes through here, which makes this the one
+            # place that knows what the run has left open. `aclosing` shuts the
+            # inner generator down deterministically on cancel rather than
+            # leaving it to the garbage collector.
+            _open = _OpenStreamState()
+            _cancelled = False
+            async with aclosing(self._step_loop(
                 run_id=run_id,
                 session_id=session_id,
                 context=context,
@@ -1699,10 +1812,31 @@ class Agent:
                 approval_resolver=_hk_resolver,
                 budget_hook=_hk_budget,
                 on_tool_completed=_hk_on_tool,
-            ):
+            )) as _steps:
+                async for event in _steps:
+                    if harness_controller is not None:
+                        harness_controller.observe_event(event)
+                    _open.observe(event)
+                    yield event
+
+                    # Checked after the event rather than before, so a cancel
+                    # never truncates a delta that was already produced.
+                    if cancel_token is not None and cancel_token.is_set():
+                        _cancelled = True
+                        break
+
+            if _cancelled:
+                for _close in _open.closing_events('Run cancelled'):
+                    if harness_controller is not None:
+                        harness_controller.observe_event(_close)
+                    yield _close
                 if harness_controller is not None:
-                    harness_controller.observe_event(event)
-                yield event
+                    for _sb_event in await harness_controller.close_sandbox():
+                        yield _sb_event
+                    harness_controller.mark_cancelled(run_id)
+                    yield harness_controller.run_finished_event('cancelled')
+                return
+
             if harness_controller is not None:
                 for _sb_event in await harness_controller.close_sandbox():
                     yield _sb_event
@@ -2360,6 +2494,90 @@ class Agent:
         ):
             yield event
 
+    def _parallel_batch_eligible(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        *,
+        approval_resolver: Optional[Callable[[str], bool]] = None,
+        skip_tool_call_ids: Optional[set] = None,
+    ) -> bool:
+        """Whether this whole batch may run concurrently.
+
+        All-or-nothing per batch. Partitioning a batch into a parallel group and
+        a serial one is harder to reason about than it looks — the serial tools
+        would still observe the parallel ones' side effects at an unpredictable
+        point — so a single non-eligible call makes the entire step serial.
+
+        Everything below is a reason a tool cannot safely overlap with another:
+
+        - the policy is off (the default), or there is only one call
+        - the tool has not opted in via ``parallel_safe``
+        - the handler is an async generator: its interstitial events are
+          stripped to ``{type, id, delta}`` with no tool_call_id, so a consumer
+          could not tell two concurrent tools' events apart
+        - the tool needs confirmation, or an approval hook is installed: a
+          decision has to be made before the side effect happens, not after
+        - a tool guardrail applies: it can rewrite the arguments, which has to
+          happen before execution
+        - the batch is being replayed after a crash, where results already exist
+        """
+        if self.policies.get('tool_execution') != 'parallel':
+            return False
+        if len(tool_calls) < 2:
+            return False
+        if skip_tool_call_ids:
+            return False
+        if approval_resolver is not None or self._tool_approval_callback:
+            return False
+
+        for tc in tool_calls:
+            try:
+                tool = self._get_tool(tc['tool_name'])
+            except Exception:
+                return False
+            if not getattr(tool, 'parallel_safe', False):
+                return False
+            if getattr(tool, '_is_async_generator', False):
+                return False
+            if getattr(tool, 'requires_confirmation', False):
+                return False
+            if self.guardrails.has_tool_guardrails(tc['tool_name']):
+                return False
+
+        return True
+
+    async def _prefetch_parallel_tools(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        *,
+        approval_resolver: Optional[Callable[[str], bool]] = None,
+        skip_tool_call_ids: Optional[set] = None,
+    ) -> Dict[str, Any]:
+        """Run an eligible batch's handlers concurrently, keyed by tool_call_id.
+
+        Returns an empty dict when the batch is not eligible, which leaves the
+        caller on its normal serial path. Failures come back as exception
+        objects rather than raising, so each one can be re-raised at the point
+        in the loop where that tool would have run and take the ordinary
+        error path.
+        """
+        if not self._parallel_batch_eligible(
+            tool_calls,
+            approval_resolver=approval_resolver,
+            skip_tool_call_ids=skip_tool_call_ids,
+        ):
+            return {}
+
+        ids = [tc['tool_call_id'] for tc in tool_calls]
+        results = await asyncio.gather(
+            *(
+                self._get_tool(tc['tool_name']).run(tc.get('input', {}), self.tool_context)
+                for tc in tool_calls
+            ),
+            return_exceptions=True,
+        )
+        return dict(zip(ids, results))
+
     async def _run_tool_calls(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -2430,6 +2648,22 @@ class Agent:
             if on_tool_completed is not None:
                 await on_tool_completed(run_id, session_id, steps, tool_calls, completed_ids)
 
+        # Opt-in concurrency. Only the handler calls overlap; every branch below
+        # (approval, guardrails, directives, context appends, control
+        # resolution) still runs in call order against the finished results, so
+        # the emitted event sequence is identical either way and only the
+        # wall-clock changes. That is deliberate: it buys the latency win —
+        # measured 62.4s -> 31.1s on two 31s tools — without introducing a
+        # second, concurrent copy of a hundred lines of branching.
+        #
+        # The visible trade-off, stated plainly: outputs appear together once
+        # the slowest tool finishes, rather than each as it completes.
+        prefetched = await self._prefetch_parallel_tools(
+            tool_calls,
+            approval_resolver=approval_resolver,
+            skip_tool_call_ids=skip_tool_call_ids,
+        )
+
         for tc in tool_calls:
             # Replay-skip (crash recovery / resume): this tool's result is
             # already in the rehydrated context — do not re-execute it.
@@ -2478,7 +2712,27 @@ class Agent:
                 # Track reasoning block ID for auto-injection
                 _current_reasoning_id = None
 
-                async for event in tool.run_stream(tool_args, ctx=self.tool_context):
+                if tc['tool_call_id'] in prefetched:
+                    # Already executed concurrently above. Re-raising the stored
+                    # exception here rather than handling it separately means a
+                    # parallel failure takes exactly the same path as a serial
+                    # one — the except branch below turns it into a
+                    # tool-output-error the model can recover from.
+                    outcome = prefetched[tc['tool_call_id']]
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+                    result = outcome
+                    yield wrap_event(
+                        ToolOutputAvailableEvent(
+                            tool_call_id=tc['tool_call_id'],
+                            output=result,
+                        ).to_dict()
+                    )
+                    tool_events = _empty_async_iter()
+                else:
+                    tool_events = tool.run_stream(tool_args, ctx=self.tool_context)
+
+                async for event in tool_events:
                     if event.get('type') == 'tool-output':
                         # Final output from tool
                         result = event['output']
@@ -2551,6 +2805,14 @@ class Agent:
                 if self.should_stop_after_tool(tc['tool_name']):
                     yield wrap_event({'type': 'finish-step'})
                     yield {'type': 'finish'}
+                    # Every other terminal branch sets this, and the docstring
+                    # above promises it. Without it `_step_loop` reads
+                    # loop_state.get('control') as None, falls through to
+                    # `continue`, and issues another LLM call — after `finish`
+                    # has already gone out. On the harness resume/recover paths
+                    # it is worse: 'control' is pre-seeded 'continue', so the
+                    # run could never terminate here at all.
+                    loop_state['control'] = 'terminate'
                     return  # Don't add to context or continue loop
 
                 # Handle message modifications from directive
@@ -2591,19 +2853,39 @@ class Agent:
                             latency_ms=tool_latency,
                         )
                     )
-                error_event = ErrorEvent(
-                    error=tool_error_text,
-                    error_type='tool',
-                    details={
-                        'toolCallId': tc.get('tool_call_id'),
-                        'toolName': tc.get('tool_name'),
-                        'input': failed_tool_args,
-                    },
+                # A raised tool is a recoverable outcome, not the end of the run.
+                #
+                # This used to emit a global `error` and terminate. Two things
+                # went wrong with that. The tool call never reached a terminal
+                # event, so every client left the tool part open — a spinner
+                # that never resolves, made worse by ErrorEvent.to_dict()
+                # stripping `details` so the toolCallId never reached the wire
+                # at all. And the model never saw the failure, so it could not
+                # retry, choose another approach, or explain the limitation.
+                #
+                # Both halves are needed and they solve different problems:
+                # `tool-output-error` closes the visible tool part, and the
+                # tool-result message lets the loop continue. This mirrors the
+                # user-denial path above, which already did the right thing.
+                #
+                # An explicitly returned ToolUseDecision.ERROR stays terminal —
+                # that is a deliberate directive, not a crash.
+                error_result = {'error': tool_error_text}
+                yield wrap_event(
+                    ToolOutputErrorEvent(
+                        tool_call_id=tc['tool_call_id'],
+                        error_text=tool_error_text,
+                    ).to_dict()
                 )
-                yield error_event.to_dict()
-                yield {'type': 'finish'}
-                loop_state['control'] = 'terminate'
-                return
+                # Without this the assistant message announcing the tool call is
+                # left with no matching `role: 'tool'` reply, which both OpenAI
+                # and Anthropic reject if the transcript is ever resumed.
+                self.ctxmgr.append_tool_result(
+                    run_id, tc['tool_name'], error_result, session_id,
+                    tool_call_id=tc['tool_call_id'],
+                )
+                await _mark_completed(tc['tool_call_id'])
+                continue
 
         # End step span for observability
         if current_step_ctx and observer:
@@ -2776,6 +3058,13 @@ class Agent:
 
         provider = self._get_provider()
 
+        # The synthesis call is a step like any other, so it opens one. Without
+        # this the function still emitted `finish-step` at the end, leaving the
+        # run with one more close than open — a client tracking step boundaries
+        # sees a step end that never began, and groups the synthesized answer
+        # into the previous step.
+        yield wrap_event({'type': 'start-step'})
+
         # Stream the final response (no tools). Normalize provider event objects
         # to dicts so the synthesized output matches every other run_stream yield
         # (consumers/SSE receive dicts, never raw event objects).
@@ -2787,7 +3076,16 @@ class Agent:
                 if event_type == 'text-delta':
                     final_text += getattr(event, 'delta', '')
             elif event_type == 'finish-message':
-                yield event.to_dict() if hasattr(event, 'to_dict') else event
+                # Consumed, never forwarded — matching every other stream path
+                # (`_step_loop` and `_stream_llm_call` both `continue` here).
+                #
+                # This one used to yield it, so a run that exhausted max_steps
+                # emitted a part no other run does. `finish-message` is not in
+                # the AI SDK UI Message Stream union at all, so a strict client
+                # rejects it with unrecognized_keys -> invalid_union and throws
+                # away the whole stream — the max-steps path, and only that
+                # path, broke the browser.
+                continue
 
         # Save final response to context
         if final_text:

@@ -4,8 +4,19 @@ Test to debug tool calling behavior.
 This test checks if tools are being called more than expected.
 """
 import asyncio
+import os
+
 import pytest
 from vel import Agent, ToolSpec
+
+# These drive a real gpt-4o through the loop — no fake provider is injected — so
+# they need a live key and network. Skipping without one is honest: the run was
+# never attempted. Failing instead (which is what happened) buries genuine
+# regressions in noise that every contributor without a key sees.
+pytestmark = pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"),
+    reason="needs a live OPENAI_API_KEY; these call the real API",
+)
 
 
 # Simple mock tool that tracks how many times it's called

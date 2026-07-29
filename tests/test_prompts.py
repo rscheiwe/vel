@@ -22,6 +22,27 @@ from vel.prompts import (
     MarkdownFormatter,
     ContextCompactor
 )
+import re
+
+
+def _has_element(text: str, tag: str, content: str) -> bool:
+    """Whether `text` contains <tag> wrapping `content`, ignoring whitespace.
+
+    The XML formatter pretty-prints, so an element spans several lines:
+
+        <company>
+          Acme Corp
+        </company>
+
+    Asserting the single-line form pinned a shape the formatter has never
+    produced — these assertions failed at the commit that introduced them
+    (bd1443e) and stayed failing because the repo had no CI. What the tests mean
+    to check is that the element is present with that content, so that is what
+    they check now; indentation is the formatter's business.
+    """
+    pattern = rf"<{re.escape(tag)}>\s*{re.escape(content)}\s*</{re.escape(tag)}>"
+    return re.search(pattern, text) is not None
+
 
 
 # ================================================================================
@@ -185,7 +206,7 @@ class TestSystemPromptBuilder:
         builder.add_context("company", "Acme Corp")
         prompt = builder.build()
         assert "<context>" in prompt
-        assert "<company>Acme Corp</company>" in prompt
+        assert _has_element(prompt, "company", "Acme Corp")
 
     def test_custom_section(self):
         """Test adding custom sections"""
@@ -424,8 +445,8 @@ class TestXMLFormatter:
 
         formatted = XMLFormatter.format_conversation_history(messages)
         assert '<conversation_history>' in formatted
-        assert '<user>Hello</user>' in formatted
-        assert '<assistant>Hi there</assistant>' in formatted
+        assert _has_element(formatted, 'user', 'Hello')
+        assert _has_element(formatted, 'assistant', 'Hi there')
 
     def test_format_context_section(self):
         """Test formatting context section"""
@@ -437,7 +458,7 @@ class TestXMLFormatter:
 
         assert '<background>' in formatted
         assert 'Main content' in formatted
-        assert '<detail>Detailed info</detail>' in formatted
+        assert _has_element(formatted, 'detail', 'Detailed info')
 
     def test_format_list(self):
         """Test formatting lists"""

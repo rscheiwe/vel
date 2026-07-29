@@ -29,8 +29,8 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 - **Multiple LLM Providers**: OpenAI, Google Gemini, and Anthropic Claude with plug-and-play architecture
 - **RLM (Recursive Language Model)**: Handle 5MB+ documents through iterative reasoning, context probing, and budget-controlled execution
 - **Generation Configuration**: Full control over model parameters (temperature, max_tokens, top_p, etc.) with per-run override support - matches Vercel AI SDK flexibility
-- **Stream Protocol**: Vercel AI SDK **V5 UI Stream Protocol** compatible - works seamlessly with React `useChat()` and frontend components (100% parity)
-  - Exact event naming (`tool-call`, `tool-result`, etc.)
+- **Stream Protocol**: Vercel AI SDK **V5 UI Stream Protocol** compatible - works with React `useChat()` and frontend components; see the parity page for currently tracked gaps
+  - V5 tool event naming (`tool-input-available`, `tool-output-available`, etc.)
   - Custom `data-*` events with transient flag for RAG citations, progress tracking, and analytics
   - Response metadata (token usage tracking)
   - Source events (citations and grounding)
@@ -119,7 +119,7 @@ response = await agent.run({'messages': messages})
 - [Memory System](https://rscheiwe.github.io/vel/memory) - Optional memory with Fact Store and ReasoningBank
 - [API Reference](https://rscheiwe.github.io/vel/api-reference) - Complete API docs
 - [12-Factor Alignment](https://rscheiwe.github.io/vel/12-factor-alignment) - Production-ready agent principles
-- [Stream Protocol Parity](PARITY_STATUS.md) - Vercel AI SDK V5 UI Stream Protocol compatibility status (100% parity)
+- [Stream Protocol Parity](https://rscheiwe.github.io/vel/parity) - Vercel AI SDK V5 UI Stream Protocol compatibility status
 
 ## Project Structure
 
@@ -283,7 +283,9 @@ Vel uses the [Vercel AI SDK V5 UI Stream Protocol](https://ai-sdk.dev/docs/ai-sd
 - `response-metadata` - Token usage and model info
 - `source` - Citations and grounding (Gemini)
 - `file` - Inline file attachments
-- `error`, `finish-message` - Error handling and completion
+- `tool-output-error` - Recoverable tool execution errors
+- `abort` - Cancelled run marker
+- `error`, `finish` - Whole-run failure and completion
 
 **Frontend Compatible:** Works seamlessly with React's `useChat()`, `useCompletion()`, and other Vercel AI SDK frontend components. Each provider translates native events into V5-compatible standardized events.
 
@@ -454,7 +456,7 @@ async for event in agent.run_stream({'message': 'Solve: sqrt(169)'}):
 3. `reasoning-end` - Reasoning block ends
 4. `text-start` → `text-delta`* → `text-end` - Final answer
 
-**Note**: OpenAI encrypts reasoning content for o1/o3 models in most cases. You'll receive `reasoning-start` and `reasoning-end` events to indicate reasoning occurred, but `reasoning-delta` events may be empty. This matches the AI SDK behavior.
+**Note**: OpenAI encrypts reasoning content for o1/o3 models in most cases. You'll receive `reasoning-start` and `reasoning-end` events to indicate reasoning occurred, but `reasoning-delta` events may be empty. OpenAI-compatible gateways can send visible reasoning, and Vel normalizes `reasoning_content`, `reasoning`, and `reasoning_details` fields.
 
 **See**: [examples/responses_api.py](examples/responses_api.py) for Responses API examples, [examples/reasoning_o1.py](examples/reasoning_o1.py) for Chat Completions API
 
@@ -570,6 +572,7 @@ async for event in agent.run_stream(
 - `frequency_penalty` - Penalize repeated tokens (-2 to 2)
 - `seed` - Reproducibility seed (integer)
 - `logit_bias` - Token probability adjustments (dict)
+- `reasoning`, `reasoning_effort`, `include_reasoning` - Reasoning controls for OpenAI-compatible endpoints
 
 #### Anthropic
 - `top_k` - Top-K sampling (integer)
@@ -727,6 +730,9 @@ Vel includes comprehensive examples demonstrating various patterns:
 - `examples/rlm_basic.py` - RLM for long contexts (5MB+ documents)
 - `examples/message_reducer_example.py` - MessageReducer for message aggregation
 - `examples/custom_data_events.py` - Custom data-* events with transient flag
+- `examples/tool_error_recovery.py` - Recover from a raised tool error and continue the answer
+- `examples/parallel_tools.py` - Opt-in parallel tool execution with timing comparison
+- `examples/cancellation.py` - Cooperative cancellation with a well-formed abort stream
 - `examples/context_modes.py` - Different context management strategies
 - `examples/generation_config_example.py` - Model parameter control
 - `examples/prompt_templates.py` - Prompt template system
