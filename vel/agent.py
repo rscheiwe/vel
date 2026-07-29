@@ -33,6 +33,7 @@ from .providers import ProviderRegistry
 from .tools import ToolRegistry, ToolSpec, validate_io
 from .events import (
     StreamEvent, StartEvent, FinishEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
+    ToolOutputErrorEvent,
     ErrorEvent, FinishMessageEvent, StepStartEvent, StepFinishEvent,
     ObjectElementEvent, ObjectPartialEvent, ObjectCompleteEvent,
     EventMetadata, add_metadata
@@ -2601,19 +2602,39 @@ class Agent:
                             latency_ms=tool_latency,
                         )
                     )
-                error_event = ErrorEvent(
-                    error=tool_error_text,
-                    error_type='tool',
-                    details={
-                        'toolCallId': tc.get('tool_call_id'),
-                        'toolName': tc.get('tool_name'),
-                        'input': failed_tool_args,
-                    },
+                # A raised tool is a recoverable outcome, not the end of the run.
+                #
+                # This used to emit a global `error` and terminate. Two things
+                # went wrong with that. The tool call never reached a terminal
+                # event, so every client left the tool part open — a spinner
+                # that never resolves, made worse by ErrorEvent.to_dict()
+                # stripping `details` so the toolCallId never reached the wire
+                # at all. And the model never saw the failure, so it could not
+                # retry, choose another approach, or explain the limitation.
+                #
+                # Both halves are needed and they solve different problems:
+                # `tool-output-error` closes the visible tool part, and the
+                # tool-result message lets the loop continue. This mirrors the
+                # user-denial path above, which already did the right thing.
+                #
+                # An explicitly returned ToolUseDecision.ERROR stays terminal —
+                # that is a deliberate directive, not a crash.
+                error_result = {'error': tool_error_text}
+                yield wrap_event(
+                    ToolOutputErrorEvent(
+                        tool_call_id=tc['tool_call_id'],
+                        error_text=tool_error_text,
+                    ).to_dict()
                 )
-                yield error_event.to_dict()
-                yield {'type': 'finish'}
-                loop_state['control'] = 'terminate'
-                return
+                # Without this the assistant message announcing the tool call is
+                # left with no matching `role: 'tool'` reply, which both OpenAI
+                # and Anthropic reject if the transcript is ever resumed.
+                self.ctxmgr.append_tool_result(
+                    run_id, tc['tool_name'], error_result, session_id,
+                    tool_call_id=tc['tool_call_id'],
+                )
+                await _mark_completed(tc['tool_call_id'])
+                continue
 
         # End step span for observability
         if current_step_ctx and observer:

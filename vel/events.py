@@ -72,6 +72,7 @@ EventType = Literal[
     'tool-input-delta',
     'tool-input-available',  # V5 UI Stream Protocol
     'tool-output-available',  # V5 UI Stream Protocol
+    'tool-output-error',  # V5 UI Stream Protocol
     'response-metadata',
     'source',
     'file',
@@ -222,6 +223,30 @@ class ToolOutputAvailableEvent(StreamEvent):
 
     def to_dict(self) -> Dict[str, Any]:
         return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'output': self.output}
+
+@dataclass
+class ToolOutputErrorEvent(StreamEvent):
+    """Tool execution failed — the terminal event for a tool call that raised.
+
+    A tool call that was announced MUST reach exactly one terminal event. Before
+    this existed, a raising tool emitted a global `error` instead, so the tool
+    part stayed open forever and every client rendered a spinner that never
+    resolved. `errorText` is what the reader sees; the recovery path also feeds
+    the failure back to the model as a tool result so the run can continue.
+
+    The wire shape is deliberately minimal, for the reason documented on
+    ErrorEvent: the AI SDK's UI Message Stream is a strict Zod union, so extra
+    top-level keys (toolName, input, details…) fail with unrecognized_keys ->
+    invalid_union and the client shows "Type validation failed" instead of the
+    error. `toolName` in particular is tempting and wrong — the preceding
+    `tool-input-available` already carries it.
+    """
+    type: Literal['tool-output-error'] = 'tool-output-error'
+    tool_call_id: str = ''
+    error_text: str = ''
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'errorText': self.error_text}
 
 @dataclass
 class StepStartEvent(StreamEvent):
