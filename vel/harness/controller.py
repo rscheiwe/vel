@@ -338,6 +338,19 @@ class HarnessController:
         if self._checkpoints.load(run_id) is not None:
             self._checkpoints.set_status(run_id, 'completed')
 
+    def mark_cancelled(self, run_id: str) -> None:
+        """Mark a run's checkpoint cancelled.
+
+        Distinct from `mark_completed`, and not cosmetic: `recover()` restarts
+        runs whose checkpoint is still 'running', so a cancelled run left in
+        that state would be picked back up and re-executed — the opposite of
+        what the caller asked for.
+        """
+        if not self.config.durable:
+            return
+        if self._checkpoints.load(run_id) is not None:
+            self._checkpoints.set_status(run_id, 'cancelled')
+
     def _approval_memory_store(self) -> ApprovalMemoryStore:
         if self._approval_memory is None:
             self._approval_memory = ApprovalMemoryStore(self.config.db_path)

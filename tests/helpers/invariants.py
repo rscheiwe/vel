@@ -13,7 +13,12 @@ from typing import Any, Iterable, Mapping, Sequence
 
 Event = Mapping[str, Any]
 
-TERMINAL_EVENTS = {"finish", "error", "abort"}
+# `abort` is NOT terminal — it is a marker that PRECEDES the terminal event.
+# A cancelled run ends `... abort, finish`, which is what pi emits and what
+# harness-agent's own checker accepts. Counting abort as terminal made every
+# correctly-cancelled stream look like it had two endings.
+TERMINAL_EVENTS = {"finish", "error"}
+ABORT_EVENTS = {"abort"}
 TEXT_START_EVENTS = {"text-start", "text_start"}
 TEXT_END_EVENTS = {"text-end", "text_end"}
 REASONING_START_EVENTS = {"reasoning-start", "reasoning_start"}
@@ -85,6 +90,12 @@ def check_stream_invariants(events: Iterable[Event]) -> StreamInvariantResult:
         label="reasoning",
         errors=errors,
     )
+    aborts = [idx for idx, event in enumerate(items) if _event_type(event) in ABORT_EVENTS]
+    if len(aborts) > 1:
+        errors.append(f"expected at most one abort event, saw {len(aborts)}")
+    if aborts and terminal_indexes and aborts[0] > terminal_indexes[0]:
+        errors.append("abort appeared after the terminal event")
+
     _check_tools(items, errors)
     _check_steps(items, errors)
 

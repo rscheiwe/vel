@@ -218,6 +218,7 @@ class RunManager:
         self.store = event_store or self._make_store(store_backend, db_path=db_path, dsn=dsn)
         self.pubsub = pubsub or InProcessPubSub()
         self._tasks: Dict[str, asyncio.Task] = {}
+        self._cancels: Dict[str, asyncio.Event] = {}
         self._agents: Dict[str, Any] = {}
         self._harness: Dict[str, Any] = {}
         self._resume_kwargs: Dict[str, Dict[str, Any]] = {}
@@ -247,19 +248,72 @@ class RunManager:
             for key, value in kw.items()
             if key in {'context', 'generation_config'}
         }
+        cancel_token = asyncio.Event()
+        self._cancels[run_id] = cancel_token
         task = asyncio.create_task(
-            self._drive(agent, run_id, input=input, session_id=session_id, harness=harness, **kw)
+            self._drive(
+                agent, run_id, input=input, session_id=session_id, harness=harness,
+                cancel_token=cancel_token, **kw
+            )
         )
         self._tasks[run_id] = task
         return run_id
 
-    async def _drive(self, agent, run_id: str, *, input, session_id=None, harness=None, **kw) -> None:
+    async def cancel(self, run_id: str, *, reason: Optional[str] = None) -> bool:
+        """Stop a detached run and settle it as cancelled.
+
+        Cooperative first: setting the token lets the run close its open blocks
+        and emit `abort` + `finish`, so subscribers see a well-formed ending
+        instead of a stream that just stops. `task.cancel()` is the fallback for
+        a run wedged somewhere that never reaches an event boundary — it cannot
+        emit anything, so it is a last resort rather than the mechanism.
+
+        Five things have to move together or a cancelled run is not really
+        cancelled: the task stops, the run status says so, a terminal event
+        reaches the durable log, subscribers are woken (otherwise `stream()`
+        blocks forever on the queue), and the checkpoint is settled so
+        `recover()` does not restart it later.
+        """
+        token = self._cancels.get(run_id)
+        task = self._tasks.get(run_id)
+        if token is None and task is None:
+            return False
+
+        if token is not None:
+            token.set()
+
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+            except asyncio.TimeoutError:
+                # Never reached an event boundary — stop it the hard way. No
+                # abort event is possible in this path; the status and sentinel
+                # below are what tell subscribers the run is over.
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except Exception:
+                pass
+
+        if self.store.get_run_status(run_id) not in TERMINAL_STATUSES:
+            self.store.set_run_status(run_id, 'cancelled')
+        self._wake_subscribers(run_id)
+        self._cancels.pop(run_id, None)
+        return True
+
+    async def _drive(
+        self, agent, run_id: str, *, input, session_id=None, harness=None,
+        cancel_token: Optional[asyncio.Event] = None, **kw
+    ) -> None:
         try:
             async for event in agent.run_stream(
                 input,
                 session_id=session_id,
                 harness=harness,
                 external_run_id=run_id,
+                cancel_token=cancel_token,
                 **kw,
             ):
                 await self._record_event(run_id, event)

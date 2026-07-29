@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+from contextlib import aclosing
 import json
 import re
 import time
@@ -33,7 +34,8 @@ from .providers import ProviderRegistry
 from .tools import ToolRegistry, ToolSpec, validate_io
 from .events import (
     StreamEvent, StartEvent, FinishEvent, ToolInputAvailableEvent, ToolOutputAvailableEvent,
-    ToolOutputErrorEvent,
+    ToolOutputErrorEvent, AbortEvent,
+    TextEndEvent, ReasoningEndEvent,
     ErrorEvent, FinishMessageEvent, StepStartEvent, StepFinishEvent,
     ObjectElementEvent, ObjectPartialEvent, ObjectCompleteEvent,
     EventMetadata, add_metadata
@@ -43,6 +45,84 @@ from .core.json_stream_parser import (
     StreamedElement, PartialObject
 )
 from .prompts import PromptContextManager, PromptTemplate
+
+class _OpenStreamState:
+    """Tracks what a run has left open, so a cancelled run can still be closed.
+
+    A cancelled stream must remain well-formed. Cancelling mid-answer leaves a
+    text block open; mid-thought leaves a reasoning block open; mid-tool leaves
+    a tool call that a client will render as a spinner forever. Clients balance
+    strictly by id, so every one of those has to be closed before the terminal
+    event or the UI is stuck on a run that has already stopped.
+
+    Observing the emitted events is the only reliable place to know this — the
+    inner layers each know about their own blocks, but nothing else sees all of
+    them in one place.
+    """
+
+    def __init__(self) -> None:
+        self.text: List[str] = []
+        self.reasoning: List[str] = []
+        self.tools: List[str] = []
+        self.open_steps = 0
+
+    def observe(self, event: Dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+        etype = event.get('type')
+        if etype == 'text-start':
+            self.text.append(event.get('id'))
+        elif etype == 'text-end':
+            self._drop(self.text, event.get('id'))
+        elif etype == 'reasoning-start':
+            self.reasoning.append(event.get('id'))
+        elif etype == 'reasoning-end':
+            self._drop(self.reasoning, event.get('id'))
+        elif etype in ('tool-input-available', 'tool-input-start'):
+            tid = event.get('toolCallId')
+            if tid is not None and tid not in self.tools:
+                self.tools.append(tid)
+        elif etype in ('tool-output-available', 'tool-output-error'):
+            self._drop(self.tools, event.get('toolCallId'))
+        elif etype == 'start-step':
+            self.open_steps += 1
+        elif etype == 'finish-step':
+            self.open_steps = max(0, self.open_steps - 1)
+
+    @staticmethod
+    def _drop(bucket: List[str], value: Any) -> None:
+        if value in bucket:
+            bucket.remove(value)
+
+    def closing_events(self, reason: Optional[str] = None) -> List[Dict[str, Any]]:
+        """The terminal sequence for a cancelled run, in the required order.
+
+        Blocks first, then any in-flight tool, then the step, then `abort`, then
+        `finish`. A cancelled tool is reported as `tool-output-error` rather than
+        left dangling — the client needs a terminal event keyed to the same id,
+        and inventing a successful output would be a lie.
+        """
+        events: List[Dict[str, Any]] = []
+        for block_id in list(self.text):
+            events.append(TextEndEvent(block_id=block_id).to_dict())
+        for block_id in list(self.reasoning):
+            events.append(ReasoningEndEvent(block_id=block_id).to_dict())
+        for tool_call_id in list(self.tools):
+            events.append(ToolOutputErrorEvent(
+                tool_call_id=tool_call_id,
+                error_text=reason or 'Run cancelled before this tool returned',
+            ).to_dict())
+        for _ in range(self.open_steps):
+            events.append({'type': 'finish-step'})
+        events.append(AbortEvent(reason=reason).to_dict())
+        events.append({'type': 'finish'})
+
+        self.text.clear()
+        self.reasoning.clear()
+        self.tools.clear()
+        self.open_steps = 0
+        return events
+
 
 async def _empty_async_iter():
     """Yields nothing. Lets the prefetched branch reuse the same `async for`."""
@@ -1413,9 +1493,19 @@ class Agent:
         external_run_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         trace_context: Optional['TraceContext'] = None,
+        cancel_token: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streaming run - yields stream protocol events as they occur.
+
+        Cancellation: pass an ``asyncio.Event`` as ``cancel_token`` and set it to
+        stop the run. It is checked after each emitted event, so cancellation
+        takes effect at the next event boundary rather than mid-write, and the
+        run closes every block it left open before emitting ``abort`` then
+        ``finish`` — a cancelled stream stays well-formed.
+
+        Cancelling is not an error. A caller who stops a run, or a client that
+        goes away, gets ``abort``; ``error`` continues to mean the run failed.
 
         Note: full parent-trace nesting for the streaming path (threading the
         parent handler through the stream loop) is a follow-up; the non-streaming
@@ -1701,7 +1791,13 @@ class Agent:
                 # so sandbox tools are visible to the model on step 1 (§6.7).
                 for _sb_event in await harness_controller.ensure_sandbox():
                     yield _sb_event
-            async for event in self._step_loop(
+            # Every emitted event passes through here, which makes this the one
+            # place that knows what the run has left open. `aclosing` shuts the
+            # inner generator down deterministically on cancel rather than
+            # leaving it to the garbage collector.
+            _open = _OpenStreamState()
+            _cancelled = False
+            async with aclosing(self._step_loop(
                 run_id=run_id,
                 session_id=session_id,
                 context=context,
@@ -1716,10 +1812,31 @@ class Agent:
                 approval_resolver=_hk_resolver,
                 budget_hook=_hk_budget,
                 on_tool_completed=_hk_on_tool,
-            ):
+            )) as _steps:
+                async for event in _steps:
+                    if harness_controller is not None:
+                        harness_controller.observe_event(event)
+                    _open.observe(event)
+                    yield event
+
+                    # Checked after the event rather than before, so a cancel
+                    # never truncates a delta that was already produced.
+                    if cancel_token is not None and cancel_token.is_set():
+                        _cancelled = True
+                        break
+
+            if _cancelled:
+                for _close in _open.closing_events('Run cancelled'):
+                    if harness_controller is not None:
+                        harness_controller.observe_event(_close)
+                    yield _close
                 if harness_controller is not None:
-                    harness_controller.observe_event(event)
-                yield event
+                    for _sb_event in await harness_controller.close_sandbox():
+                        yield _sb_event
+                    harness_controller.mark_cancelled(run_id)
+                    yield harness_controller.run_finished_event('cancelled')
+                return
+
             if harness_controller is not None:
                 for _sb_event in await harness_controller.close_sandbox():
                     yield _sb_event

@@ -73,6 +73,7 @@ EventType = Literal[
     'tool-input-available',  # V5 UI Stream Protocol
     'tool-output-available',  # V5 UI Stream Protocol
     'tool-output-error',  # V5 UI Stream Protocol
+    'abort',  # V5 UI Stream Protocol (run cancelled)
     'response-metadata',
     'source',
     'file',
@@ -247,6 +248,32 @@ class ToolOutputErrorEvent(StreamEvent):
 
     def to_dict(self) -> Dict[str, Any]:
         return {**super().to_dict(), 'toolCallId': self.tool_call_id, 'errorText': self.error_text}
+
+@dataclass
+class AbortEvent(StreamEvent):
+    """The run was cancelled — by a caller, or by the client going away.
+
+    Distinct from `error`, and the distinction matters to a reader: an error
+    says something went wrong, an abort says someone stopped it. Clients render
+    them differently, and a cancelled run reported as an error looks like a bug
+    in the agent.
+
+    Emitted after every open block has been closed, so a cancelled stream is
+    still well-formed: no text or reasoning block left hanging, and every tool
+    call that had started reaches a terminal event.
+
+    Wire shape is `{type}` or `{type, reason}` and nothing else, for the reason
+    documented on ErrorEvent — a strict AI SDK client rejects unknown sibling
+    keys and discards the whole stream.
+    """
+    type: Literal['abort'] = 'abort'
+    reason: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = super().to_dict()
+        if self.reason:
+            d['reason'] = self.reason
+        return d
 
 @dataclass
 class StepStartEvent(StreamEvent):
