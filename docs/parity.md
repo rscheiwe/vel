@@ -55,6 +55,7 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
 | `tool-input-delta` | `ToolInputDeltaEvent` | ✅ Streaming tool arguments |
 | `tool-input-available` | `ToolInputAvailableEvent` | ✅ Complete tool arguments |
 | `tool-output-available` | `ToolOutputAvailableEvent` | ✅ Tool execution results |
+| `tool-output-error` | `ToolOutputErrorEvent` | ✅ Recoverable tool execution errors; strict `{type, toolCallId, errorText}` shape |
 | `reasoning-start` | `ReasoningStartEvent` | ✅ Reasoning block start |
 | `reasoning-delta` | `ReasoningDeltaEvent` | ✅ Reasoning chunks |
 | `reasoning-end` | `ReasoningEndEvent` | ✅ Reasoning completion |
@@ -89,7 +90,13 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
    - Solution: `finalize_tool_calls()` ensures emission even without deltas
    - Tracks `input_available_emitted` flag to prevent duplicates
 
-**Parity Status:** ✅ **100% Complete**
+3. **Reasoning field aliases**
+   - Supports OpenAI-compatible `reasoning_content`, `reasoning`, and
+     `reasoning_details`
+   - Chunks that carry both content and reasoning emit both event streams
+   - Reasoning blocks close before answer text starts
+
+**Parity Status:** ✅ Core compatible, with remaining tracked events listed in the summary.
 
 ---
 
@@ -135,7 +142,7 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
    - Updates with usage data on `response.completed`
    - Follows AI SDK pattern: early metadata → usage update
 
-**Parity Status:** ✅ **100% Complete**
+**Parity Status:** ✅ Core compatible, with remaining tracked events listed in the summary.
 
 ---
 
@@ -156,7 +163,7 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
    - Maps Anthropic `thinking` content blocks to `reasoning-*` events
    - Fully visible reasoning (unlike OpenAI's encrypted reasoning)
 
-**Parity Status:** ✅ **100% Complete**
+**Parity Status:** ✅ Core compatible, with remaining tracked events listed in the summary.
 
 ---
 
@@ -178,7 +185,7 @@ Based on comprehensive review of Vercel AI SDK source code and gap analysis docu
    - Maps to `SourceEvent` with web citation structure
    - Deduplicates sources by URL
 
-**Parity Status:** ✅ **100% Complete**
+**Parity Status:** ✅ Core compatible, with remaining tracked events listed in the summary.
 
 ---
 
@@ -493,8 +500,8 @@ Vel covers the core Vercel AI SDK V5 UI Stream Protocol through:
 ✅ **Reasoning normalization** (all variants)
 ✅ **Metadata timing** (early + updates)
 
-Tracked gaps include `tool-output-error`, `tool-output-denied`, `abort`, and
-`message-metadata` events.
+Tracked gaps include `tool-output-denied`, `abort`, and `message-metadata`
+events.
 ✅ **Robust error handling** (malformed responses)
 ✅ **Backwards compatible** (no breaking changes)
 

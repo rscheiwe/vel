@@ -302,7 +302,8 @@ async def run(
 
 **Raises:**
 - `RuntimeError`: If max_steps exceeded
-- `Exception`: On LLM or tool errors
+- `Exception`: On LLM or whole-run errors. Tool handler exceptions are returned
+  to the model as recoverable tool errors during multi-step execution.
 
 **Example:**
 
@@ -683,6 +684,10 @@ OpenAI provider implementation.
 **Environment Variables:**
 - `OPENAI_API_KEY` (required)
 - `OPENAI_API_BASE` (optional, default: `https://api.openai.com/v1`)
+
+`base_url` can also be supplied in the agent's `model` dictionary to target an
+OpenAI-compatible endpoint for one agent without changing process-wide
+configuration.
 
 **Supported Models:**
 - `gpt-4o`

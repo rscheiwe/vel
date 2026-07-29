@@ -692,6 +692,14 @@ return {'success': True, 'message': 'OK'}  # ✓ Valid
 
 ### Tool Execution Errors
 
+Tool handlers may either return an error-shaped value themselves or raise an
+exception. Raised exceptions become recoverable tool failures: Vel emits a
+`tool-output-error` event for the client and feeds the failure back to the model
+as a tool result so the agent can retry or explain.
+
+Use explicit `try`/`except` when you want to control the exact model-visible
+message or keep a domain error inside your declared output schema:
+
 ```python
 def safe_divide_handler(input: dict, ctx: dict) -> dict:
     try:
@@ -712,6 +720,17 @@ output_schema={
         'error': {'type': 'string'}
     }
 }
+```
+
+If the handler raises instead, Vel handles the protocol closure:
+
+```python
+def safe_divide_handler(input: dict, ctx: dict) -> dict:
+    a = input['a']
+    b = input['b']
+    if b == 0:
+        raise ValueError("Division by zero")
+    return {'result': a / b}
 ```
 
 ### Validation Errors

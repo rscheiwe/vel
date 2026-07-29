@@ -2807,6 +2807,13 @@ class Agent:
 
         provider = self._get_provider()
 
+        # The synthesis call is a step like any other, so it opens one. Without
+        # this the function still emitted `finish-step` at the end, leaving the
+        # run with one more close than open — a client tracking step boundaries
+        # sees a step end that never began, and groups the synthesized answer
+        # into the previous step.
+        yield wrap_event({'type': 'start-step'})
+
         # Stream the final response (no tools). Normalize provider event objects
         # to dicts so the synthesized output matches every other run_stream yield
         # (consumers/SSE receive dicts, never raw event objects).
@@ -2818,7 +2825,16 @@ class Agent:
                 if event_type == 'text-delta':
                     final_text += getattr(event, 'delta', '')
             elif event_type == 'finish-message':
-                yield event.to_dict() if hasattr(event, 'to_dict') else event
+                # Consumed, never forwarded — matching every other stream path
+                # (`_step_loop` and `_stream_llm_call` both `continue` here).
+                #
+                # This one used to yield it, so a run that exhausted max_steps
+                # emitted a part no other run does. `finish-message` is not in
+                # the AI SDK UI Message Stream union at all, so a strict client
+                # rejects it with unrecognized_keys -> invalid_union and throws
+                # away the whole stream — the max-steps path, and only that
+                # path, broke the browser.
+                continue
 
         # Save final response to context
         if final_text:

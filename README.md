@@ -454,7 +454,7 @@ async for event in agent.run_stream({'message': 'Solve: sqrt(169)'}):
 3. `reasoning-end` - Reasoning block ends
 4. `text-start` → `text-delta`* → `text-end` - Final answer
 
-**Note**: OpenAI encrypts reasoning content for o1/o3 models in most cases. You'll receive `reasoning-start` and `reasoning-end` events to indicate reasoning occurred, but `reasoning-delta` events may be empty. This matches the AI SDK behavior.
+**Note**: OpenAI encrypts reasoning content for o1/o3 models in most cases. You'll receive `reasoning-start` and `reasoning-end` events to indicate reasoning occurred, but `reasoning-delta` events may be empty. OpenAI-compatible gateways can send visible reasoning, and Vel normalizes `reasoning_content`, `reasoning`, and `reasoning_details` fields.
 
 **See**: [examples/responses_api.py](examples/responses_api.py) for Responses API examples, [examples/reasoning_o1.py](examples/reasoning_o1.py) for Chat Completions API
 
@@ -570,6 +570,7 @@ async for event in agent.run_stream(
 - `frequency_penalty` - Penalize repeated tokens (-2 to 2)
 - `seed` - Reproducibility seed (integer)
 - `logit_bias` - Token probability adjustments (dict)
+- `reasoning`, `reasoning_effort`, `include_reasoning` - Reasoning controls for OpenAI-compatible endpoints
 
 #### Anthropic
 - `top_k` - Top-K sampling (integer)
@@ -727,6 +728,7 @@ Vel includes comprehensive examples demonstrating various patterns:
 - `examples/rlm_basic.py` - RLM for long contexts (5MB+ documents)
 - `examples/message_reducer_example.py` - MessageReducer for message aggregation
 - `examples/custom_data_events.py` - Custom data-* events with transient flag
+- `examples/tool_error_recovery.py` - Recover from a raised tool error and continue the answer
 - `examples/context_modes.py` - Different context management strategies
 - `examples/generation_config_example.py` - Model parameter control
 - `examples/prompt_templates.py` - Prompt template system
