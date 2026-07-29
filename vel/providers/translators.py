@@ -110,6 +110,44 @@ from ..events import (
 )
 
 
+def _reasoning_delta(delta: Dict[str, Any]) -> str:
+    """Reasoning text from a chat-completions delta, across provider spellings.
+
+    There is no single field name. OpenAI and DeepSeek-direct use
+    ``reasoning_content``. OpenAI-*compatible* gateways use ``reasoning`` —
+    OpenRouter, for one, sends both a flat ``reasoning`` string and a structured
+    ``reasoning_details`` list carrying the same text:
+
+        {"content": "", "role": "assistant", "reasoning": "We",
+         "reasoning_details": [{"type": "reasoning.text", "text": "We", ...}]}
+
+    Reading only ``reasoning_content`` meant every reasoning token from those
+    endpoints was dropped — no error, no warning, just a 200 with no trace. The
+    flat field wins when both are present so the same text is never emitted
+    twice.
+
+    The Responses translator already applies this tolerance (see the ``or``
+    chain in ``OpenAIResponsesAPITranslator.translate_chunk``); this brings the
+    chat-completions path in line with it.
+    """
+    for key in ('reasoning_content', 'reasoning'):
+        value = delta.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    details = delta.get('reasoning_details')
+    if isinstance(details, list):
+        text = ''.join(
+            part.get('text', '')
+            for part in details
+            if isinstance(part, dict) and isinstance(part.get('text'), str)
+        )
+        if text:
+            return text
+
+    return ''
+
+
 class OpenAIAPITranslator:
     """
     Translates OpenAI Chat Completions API events to Vel stream protocol.
@@ -198,30 +236,45 @@ class OpenAIAPITranslator:
                 usage=usage_dict
             )
 
-        # Handle text content
-        if 'content' in delta and delta['content']:
-            content = delta['content']
-            if self._text_block_id is None:
-                # First text chunk - queue both start and delta events
-                self._text_block_id = str(self._next_block_index)
-                self._next_block_index += 1
-                self._pending_events.append(TextDeltaEvent(block_id=self._text_block_id, delta=content))
-                return TextStartEvent(block_id=self._text_block_id)
-            # Subsequent chunks - emit delta directly
-            return TextDeltaEvent(block_id=self._text_block_id, delta=content)
+        # Reasoning and text can arrive in the SAME chunk, and only one event can
+        # be returned per call. The previous code checked text first and returned,
+        # so any reasoning riding along with it was silently dropped. Build the
+        # ordered list instead and queue everything after the first — reasoning
+        # leads, because a model that emits both in one chunk thought before it
+        # spoke.
+        emitted = []
 
-        # Handle reasoning content (o1/o3 models)
-        # OpenAI exposes reasoning via delta.reasoning_content field
-        if 'reasoning_content' in delta and delta['reasoning_content']:
-            reasoning = delta['reasoning_content']
+        reasoning = _reasoning_delta(delta)
+        if reasoning:
             if self._reasoning_block_id is None:
-                # First reasoning chunk - queue both start and delta events
                 self._reasoning_block_id = str(self._next_block_index)
                 self._next_block_index += 1
-                self._pending_events.append(ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning))
-                return ReasoningStartEvent(block_id=self._reasoning_block_id)
-            # Subsequent chunks - emit delta directly
-            return ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning)
+                emitted.append(ReasoningStartEvent(block_id=self._reasoning_block_id))
+            emitted.append(ReasoningDeltaEvent(block_id=self._reasoning_block_id, delta=reasoning))
+
+        # Truthiness, not `in`: OpenAI-compatible gateways send `content: ""`
+        # alongside reasoning-only chunks, and an empty delta is not text.
+        content = delta.get('content')
+        if content:
+            # Close an open reasoning block before the answer starts, rather than
+            # waiting for finish_reason. Otherwise the block stays open for the
+            # whole answer and every client renders the last reasoning step as
+            # still-running underneath finished text. Reopening later is fine:
+            # a model that returns to reasoning after speaking gets a second
+            # block, which is what actually happened.
+            if self._reasoning_block_id is not None:
+                emitted.append(ReasoningEndEvent(block_id=self._reasoning_block_id))
+                self._reasoning_block_id = None
+
+            if self._text_block_id is None:
+                self._text_block_id = str(self._next_block_index)
+                self._next_block_index += 1
+                emitted.append(TextStartEvent(block_id=self._text_block_id))
+            emitted.append(TextDeltaEvent(block_id=self._text_block_id, delta=content))
+
+        if emitted:
+            self._pending_events.extend(emitted[1:])
+            return emitted[0]
 
         # Handle tool calls
         # AI SDK parity: Robust handling of malformed tool_calls

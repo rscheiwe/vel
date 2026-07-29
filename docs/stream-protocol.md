@@ -465,13 +465,13 @@ async for event in agent.run_stream({'message': 'Latest weather news'}):
 
 **Fields:**
 - `type`: `"error"`
-- `error`: Error message (string)
+- `errorText`: Error message (string)
 
 **Example:**
 ```json
 {
   "type": "error",
-  "error": "Rate limit exceeded"
+  "errorText": "Rate limit exceeded"
 }
 ```
 
@@ -935,7 +935,7 @@ const { messages } = useChat({
 ```json
 {"type": "text-start", "id": "block_1"}
 {"type": "text-delta", "id": "block_1", "delta": "Let me"}
-{"type": "error", "error": "Rate limit exceeded"}
+{"type": "error", "errorText": "Rate limit exceeded"}
 ```
 
 ## Handling Events
@@ -1365,10 +1365,12 @@ async def stream_response(message: str):
         async for event in agent.run_stream({'message': message}):
             # SSE format: data: {json}\n\n
             yield f"data: {json.dumps(event)}\n\n"
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         event_generator(),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
+        headers={"x-vercel-ai-ui-message-stream": "v1"},
     )
 ```
 

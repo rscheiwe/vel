@@ -364,25 +364,35 @@ class Agent:
         self.providers = ProviderRegistry.default()
         self._custom_provider = None
 
-        # Check if model config has api_key - if so, create custom provider instance
-        if 'api_key' in self.model_cfg:
+        # Check if model config has api_key or base_url - if so, create custom
+        # provider instance. `base_url` is honored for the OpenAI-shaped
+        # providers only, since it is what lets one process reach an
+        # OpenAI-compatible gateway without hijacking OPENAI_API_BASE for every
+        # other agent in the same process.
+        if 'api_key' in self.model_cfg or 'base_url' in self.model_cfg:
             provider_name = self.model_cfg['provider']
-            api_key = self.model_cfg['api_key']
+            api_key = self.model_cfg.get('api_key')
+            base_url = self.model_cfg.get('base_url')
 
             # Import provider classes
             from .providers import OpenAIProvider, OpenAIResponsesProvider, GeminiProvider, AnthropicProvider
 
             # Create provider instance with API key
             if provider_name == 'openai':
-                self._custom_provider = OpenAIProvider(api_key=api_key)
+                self._custom_provider = OpenAIProvider(api_key=api_key, base_url=base_url)
             elif provider_name == 'openai-responses':
-                self._custom_provider = OpenAIResponsesProvider(api_key=api_key)
+                self._custom_provider = OpenAIResponsesProvider(api_key=api_key, base_url=base_url)
             elif provider_name == 'google':
                 self._custom_provider = GeminiProvider(api_key=api_key)
             elif provider_name == 'anthropic':
                 self._custom_provider = AnthropicProvider(api_key=api_key)
             else:
                 raise ValueError(f"Unknown provider: {provider_name}. Cannot create instance with custom API key.")
+
+            if base_url and provider_name not in ('openai', 'openai-responses'):
+                raise ValueError(
+                    f"base_url is only supported for OpenAI-compatible providers, not '{provider_name}'."
+                )
 
         self.toolreg = ToolRegistry.default()
 

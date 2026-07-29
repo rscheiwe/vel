@@ -58,17 +58,16 @@ async def resume_agent(approval: dict, session_id: str):
     ):
         yield event
 
-# Cancellation support
-task = asyncio.create_task(launch_agent(input, session_id))
-# ... later
-task.cancel()  # Graceful cancellation
+# Stop consuming a stream by closing the client connection. Full run-level
+# cancellation is a tracked runtime gap and should not be modeled as a bare
+# task.cancel() in application code.
 ```
 
 ## Benefits
 
 - ✓ Streaming enables real-time pause/resume
 - ✓ Database persistence enables resume after restart
-- ✓ AsyncIO cancellation support
+- ✓ Async streaming over simple Python APIs
 - ✓ Session context preserved across interruptions
 
 **See:** [Getting Started - Streaming Mode](../getting-started#streaming-mode)

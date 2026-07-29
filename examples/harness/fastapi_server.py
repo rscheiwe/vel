@@ -96,8 +96,14 @@ async def stream_run(run_id: str, cursor: int = 0) -> StreamingResponse:
             # `_cursor`; echo it as the SSE `id:` so the browser's EventSource
             # sends Last-Event-ID on reconnect (mapped back to ?cursor=).
             eid = event.get("_cursor", "")
-            yield f"id: {eid}\ndata: {json.dumps(event)}\n\n"
-    return StreamingResponse(event_source(), media_type="text/event-stream")
+            payload = {key: value for key, value in event.items() if key != "_cursor"}
+            yield f"id: {eid}\ndata: {json.dumps(payload)}\n\n"
+        yield "data: [DONE]\n\n"
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"x-vercel-ai-ui-message-stream": "v1"},
+    )
 
 
 @app.post("/runs/{run_id}/approvals")
@@ -121,7 +127,7 @@ async def status(run_id: str) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
-# Browser flow (useChat-compatible):
+# Browser flow (reconnectable EventSource):
 #   1. POST /runs -> { run_id }
 #   2. open EventSource("/runs/{run_id}/stream?cursor=0")
 #   3. on `data-harness-approval-required`, render the approval card

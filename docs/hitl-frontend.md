@@ -162,10 +162,12 @@ async def chat(request: Request):
         ):
             # Stream as Vercel AI SDK format
             yield f"data: {json.dumps(event)}\n\n"
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         generate(),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
+        headers={"x-vercel-ai-ui-message-stream": "v1"},
     )
 
 @app.post("/api/approvals/{approval_id}")
@@ -621,8 +623,13 @@ async def chat(request: Request):
     async def generate():
         async for event in agent.run_stream({'message': message}):
             yield f"data: {json.dumps(event)}\n\n"
+        yield "data: [DONE]\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"x-vercel-ai-ui-message-stream": "v1"},
+    )
 
 @app.post("/api/approvals/{approval_id}")
 async def approve(approval_id: str, request: Request):

@@ -6,14 +6,14 @@ nav_order: 11
 
 # Vercel AI SDK V5 Stream Protocol Parity
 
-Complete reference for Vel's parity with the Vercel AI SDK V5 UI Stream Protocol.
+Reference for Vel's compatibility with the Vercel AI SDK V5 UI Stream Protocol.
 
 ## Overview
 
-Vel implements **100% event-level parity** with the Vercel AI SDK V5 UI Stream Protocol, ensuring seamless frontend integration with AI SDK components like `useChat` and `useCompletion`.
+Vel implements the core Vercel AI SDK V5 UI Stream Protocol used by frontend components like `useChat` and `useCompletion`. Some protocol events remain tracked gaps and are called out below.
 
-**Key Achievement:**
-- ✅ All stream protocol events match AI SDK V5 specification
+**Implemented coverage:**
+- ✅ Core stream protocol events match AI SDK V5 naming and payload conventions
 - ✅ Provider-executed tools support (OpenAI web_search, computer)
 - ✅ Source/citation events for RAG and grounding
 - ✅ Early metadata emission with usage updates
@@ -486,13 +486,15 @@ const { messages } = useChat({
 
 ## Summary
 
-Vel achieves **complete event-level parity** with Vercel AI SDK V5 UI Stream Protocol through:
+Vel covers the core Vercel AI SDK V5 UI Stream Protocol through:
 
-✅ **All gaps addressed** (6 of 6 from gap analysis)
 ✅ **Provider-executed tools** (web_search, computer)
 ✅ **Sources/citations** (web, file)
 ✅ **Reasoning normalization** (all variants)
 ✅ **Metadata timing** (early + updates)
+
+Tracked gaps include `tool-output-error`, `tool-output-denied`, `abort`, and
+`message-metadata` events.
 ✅ **Robust error handling** (malformed responses)
 ✅ **Backwards compatible** (no breaking changes)
 

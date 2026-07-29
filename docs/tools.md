@@ -1043,9 +1043,9 @@ agent = Agent(
 
 When `enabled` returns `False`, the tool is omitted from the schema sent to the LLM.
 
-### Per-Tool Policies
+### Per-Tool Policy Metadata
 
-Configure timeout, retries, and fallback per tool:
+`ToolSpec` can store timeout, retries, and fallback metadata:
 
 ```python
 tool = ToolSpec(
@@ -1053,16 +1053,15 @@ tool = ToolSpec(
     input_schema={...},
     output_schema={...},
     handler=slow_handler,
-    timeout=5.0,           # Cancel after 5 seconds
-    retries=2,             # Retry up to 2 times
-    fallback='return_error'  # What to do when all retries fail
+    timeout=5.0,             # Stored policy metadata
+    retries=2,               # Stored policy metadata
+    fallback='return_error'  # Stored policy metadata
 )
 ```
 
-**Fallback Options:**
-- `'return_error'` - Return error to LLM
-- `'call_other_tool'` - Try alternative tool (future)
-- Custom handler (future)
+These fields are reserved policy metadata in the current release. Runtime
+enforcement of timeout/retry/fallback behavior is tracked separately; handler
+code should still implement any required timeout or retry behavior directly.
 
 ## Tool Organization & Imports
 

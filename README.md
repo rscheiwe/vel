@@ -29,8 +29,8 @@ A production-ready AI agent runtime aligned with [12-Factor Agent principles](ht
 - **Multiple LLM Providers**: OpenAI, Google Gemini, and Anthropic Claude with plug-and-play architecture
 - **RLM (Recursive Language Model)**: Handle 5MB+ documents through iterative reasoning, context probing, and budget-controlled execution
 - **Generation Configuration**: Full control over model parameters (temperature, max_tokens, top_p, etc.) with per-run override support - matches Vercel AI SDK flexibility
-- **Stream Protocol**: Vercel AI SDK **V5 UI Stream Protocol** compatible - works seamlessly with React `useChat()` and frontend components (100% parity)
-  - Exact event naming (`tool-call`, `tool-result`, etc.)
+- **Stream Protocol**: Vercel AI SDK **V5 UI Stream Protocol** compatible - works with React `useChat()` and frontend components; see the parity page for currently tracked gaps
+  - V5 tool event naming (`tool-input-available`, `tool-output-available`, etc.)
   - Custom `data-*` events with transient flag for RAG citations, progress tracking, and analytics
   - Response metadata (token usage tracking)
   - Source events (citations and grounding)
@@ -119,7 +119,7 @@ response = await agent.run({'messages': messages})
 - [Memory System](https://rscheiwe.github.io/vel/memory) - Optional memory with Fact Store and ReasoningBank
 - [API Reference](https://rscheiwe.github.io/vel/api-reference) - Complete API docs
 - [12-Factor Alignment](https://rscheiwe.github.io/vel/12-factor-alignment) - Production-ready agent principles
-- [Stream Protocol Parity](PARITY_STATUS.md) - Vercel AI SDK V5 UI Stream Protocol compatibility status (100% parity)
+- [Stream Protocol Parity](https://rscheiwe.github.io/vel/parity) - Vercel AI SDK V5 UI Stream Protocol compatibility status
 
 ## Project Structure
 
