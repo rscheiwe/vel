@@ -2157,7 +2157,23 @@ class Agent:
             return observer, None
         obs_config = self._observability_config
         name = (obs_config.trace_name if obs_config else None) or self.id
-        trace_ctx = observer.start_trace(trace_id=run_id, name=name)
+        # `input` is a REQUIRED parameter of ObservabilityHandler.start_trace, so
+        # omitting it raised TypeError and killed the run — but only on a
+        # resume/recover leg, which is why it surfaced as an intermittent
+        # failure rather than a broken build. A leg has no new caller input (it
+        # continues an existing run whose input was recorded when the trace was
+        # first opened at `_run_stream_impl`), so an empty mapping is the honest
+        # value here; passing None would be reported to the backend as an input
+        # of null rather than "nothing new was supplied".
+        trace_ctx = observer.start_trace(
+            trace_id=run_id,
+            name=name,
+            input={},
+            metadata=obs_config.metadata if obs_config else None,
+            tags=obs_config.tags if obs_config else None,
+            user_id=obs_config.user_id if obs_config else None,
+            session_id=obs_config.session_id if obs_config else None,
+        )
         self.ctxmgr.set_observer(observer, trace_ctx)
         return observer, trace_ctx
 
