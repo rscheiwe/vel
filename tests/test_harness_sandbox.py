@@ -137,8 +137,25 @@ async def test_local_sandbox_reuses_explicit_root_for_warm_lifecycles(tmp_path):
     await session1.close()
 
 
+def _e2b_sdk_installed() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec('e2b') is not None
+
+
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    _e2b_sdk_installed(),
+    reason='asserts the SDK-absent path; with e2b installed the call gets as far as auth',
+)
 async def test_e2b_provider_soft_imports_optional_sdk():
+    """Without the optional extra, asking for an e2b sandbox must say so.
+
+    The assertion is about the missing-extra message, so it is only meaningful
+    when the SDK is genuinely absent — which is the case in CI, where only
+    `[dev]` is installed. On a machine that has e2b the call reaches
+    authentication instead and this would fail for a reason unrelated to what it
+    is testing."""
     provider = E2BSandboxProvider()
     with pytest.raises(ImportError, match='sandbox-e2b'):
         await provider.create(SandboxConfig(provider='e2b'))
