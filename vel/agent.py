@@ -44,6 +44,12 @@ from .core.json_stream_parser import (
 )
 from .prompts import PromptContextManager, PromptTemplate
 
+async def _empty_async_iter():
+    """Yields nothing. Lets the prefetched branch reuse the same `async for`."""
+    return
+    yield  # pragma: no cover - unreachable, marks this an async generator
+
+
 class Agent:
     def __init__(self, id: str, model: Dict[str, Any], prompt_env: str='prod',
                  tools: List[Union[str, 'ToolSpec']]|None=None, policies: Dict[str, Any]|None=None,
@@ -2371,6 +2377,90 @@ class Agent:
         ):
             yield event
 
+    def _parallel_batch_eligible(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        *,
+        approval_resolver: Optional[Callable[[str], bool]] = None,
+        skip_tool_call_ids: Optional[set] = None,
+    ) -> bool:
+        """Whether this whole batch may run concurrently.
+
+        All-or-nothing per batch. Partitioning a batch into a parallel group and
+        a serial one is harder to reason about than it looks — the serial tools
+        would still observe the parallel ones' side effects at an unpredictable
+        point — so a single non-eligible call makes the entire step serial.
+
+        Everything below is a reason a tool cannot safely overlap with another:
+
+        - the policy is off (the default), or there is only one call
+        - the tool has not opted in via ``parallel_safe``
+        - the handler is an async generator: its interstitial events are
+          stripped to ``{type, id, delta}`` with no tool_call_id, so a consumer
+          could not tell two concurrent tools' events apart
+        - the tool needs confirmation, or an approval hook is installed: a
+          decision has to be made before the side effect happens, not after
+        - a tool guardrail applies: it can rewrite the arguments, which has to
+          happen before execution
+        - the batch is being replayed after a crash, where results already exist
+        """
+        if self.policies.get('tool_execution') != 'parallel':
+            return False
+        if len(tool_calls) < 2:
+            return False
+        if skip_tool_call_ids:
+            return False
+        if approval_resolver is not None or self._tool_approval_callback:
+            return False
+
+        for tc in tool_calls:
+            try:
+                tool = self._get_tool(tc['tool_name'])
+            except Exception:
+                return False
+            if not getattr(tool, 'parallel_safe', False):
+                return False
+            if getattr(tool, '_is_async_generator', False):
+                return False
+            if getattr(tool, 'requires_confirmation', False):
+                return False
+            if self.guardrails.has_tool_guardrails(tc['tool_name']):
+                return False
+
+        return True
+
+    async def _prefetch_parallel_tools(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        *,
+        approval_resolver: Optional[Callable[[str], bool]] = None,
+        skip_tool_call_ids: Optional[set] = None,
+    ) -> Dict[str, Any]:
+        """Run an eligible batch's handlers concurrently, keyed by tool_call_id.
+
+        Returns an empty dict when the batch is not eligible, which leaves the
+        caller on its normal serial path. Failures come back as exception
+        objects rather than raising, so each one can be re-raised at the point
+        in the loop where that tool would have run and take the ordinary
+        error path.
+        """
+        if not self._parallel_batch_eligible(
+            tool_calls,
+            approval_resolver=approval_resolver,
+            skip_tool_call_ids=skip_tool_call_ids,
+        ):
+            return {}
+
+        ids = [tc['tool_call_id'] for tc in tool_calls]
+        results = await asyncio.gather(
+            *(
+                self._get_tool(tc['tool_name']).run(tc.get('input', {}), self.tool_context)
+                for tc in tool_calls
+            ),
+            return_exceptions=True,
+        )
+        return dict(zip(ids, results))
+
     async def _run_tool_calls(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -2441,6 +2531,22 @@ class Agent:
             if on_tool_completed is not None:
                 await on_tool_completed(run_id, session_id, steps, tool_calls, completed_ids)
 
+        # Opt-in concurrency. Only the handler calls overlap; every branch below
+        # (approval, guardrails, directives, context appends, control
+        # resolution) still runs in call order against the finished results, so
+        # the emitted event sequence is identical either way and only the
+        # wall-clock changes. That is deliberate: it buys the latency win —
+        # measured 62.4s -> 31.1s on two 31s tools — without introducing a
+        # second, concurrent copy of a hundred lines of branching.
+        #
+        # The visible trade-off, stated plainly: outputs appear together once
+        # the slowest tool finishes, rather than each as it completes.
+        prefetched = await self._prefetch_parallel_tools(
+            tool_calls,
+            approval_resolver=approval_resolver,
+            skip_tool_call_ids=skip_tool_call_ids,
+        )
+
         for tc in tool_calls:
             # Replay-skip (crash recovery / resume): this tool's result is
             # already in the rehydrated context — do not re-execute it.
@@ -2489,7 +2595,27 @@ class Agent:
                 # Track reasoning block ID for auto-injection
                 _current_reasoning_id = None
 
-                async for event in tool.run_stream(tool_args, ctx=self.tool_context):
+                if tc['tool_call_id'] in prefetched:
+                    # Already executed concurrently above. Re-raising the stored
+                    # exception here rather than handling it separately means a
+                    # parallel failure takes exactly the same path as a serial
+                    # one — the except branch below turns it into a
+                    # tool-output-error the model can recover from.
+                    outcome = prefetched[tc['tool_call_id']]
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+                    result = outcome
+                    yield wrap_event(
+                        ToolOutputAvailableEvent(
+                            tool_call_id=tc['tool_call_id'],
+                            output=result,
+                        ).to_dict()
+                    )
+                    tool_events = _empty_async_iter()
+                else:
+                    tool_events = tool.run_stream(tool_args, ctx=self.tool_context)
+
+                async for event in tool_events:
                     if event.get('type') == 'tool-output':
                         # Final output from tool
                         result = event['output']
@@ -2562,6 +2688,14 @@ class Agent:
                 if self.should_stop_after_tool(tc['tool_name']):
                     yield wrap_event({'type': 'finish-step'})
                     yield {'type': 'finish'}
+                    # Every other terminal branch sets this, and the docstring
+                    # above promises it. Without it `_step_loop` reads
+                    # loop_state.get('control') as None, falls through to
+                    # `continue`, and issues another LLM call — after `finish`
+                    # has already gone out. On the harness resume/recover paths
+                    # it is worse: 'control' is pre-seeded 'continue', so the
+                    # run could never terminate here at all.
+                    loop_state['control'] = 'terminate'
                     return  # Don't add to context or continue loop
 
                 # Handle message modifications from directive

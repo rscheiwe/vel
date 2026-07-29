@@ -26,7 +26,8 @@ class ToolSpec:
         is_async: Optional[bool] = None,  # Explicit async indicator (auto-detected if None)
         category: Optional[str] = None,  # Tool category for organization (e.g., 'data', 'api', 'filesystem')
         tags: Optional[List[str]] = None,  # Tags for filtering/grouping tools
-        requires_confirmation: bool = False  # Flag for HITL confirmation routing
+        requires_confirmation: bool = False,  # Flag for HITL confirmation routing
+        parallel_safe: bool = False,  # Opt in to concurrent execution — see below
     ):
         self.name = name
         self.input_schema = input_schema
@@ -53,6 +54,13 @@ class ToolSpec:
         self.category = category
         self.tags = tags or []
         self.requires_confirmation = requires_confirmation
+        # Concurrency is OPT-IN. Vel has always run a step's tool calls one
+        # after another, so callers are entitled to assume their tools see
+        # each other's side effects in order, share mutable state, or hold a
+        # connection from a bounded pool. Flipping that on by default would
+        # break them silently and only under timing. Mark a tool parallel_safe
+        # when it touches nothing another tool in the same step touches.
+        self.parallel_safe = parallel_safe
 
     def is_enabled(self, ctx: Optional[Dict[str, Any]] = None) -> bool:
         """
