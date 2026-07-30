@@ -122,13 +122,22 @@ class OpenAIProvider(BaseProvider):
         if 'response_format' in config:
             payload['response_format'] = config['response_format']
 
-        # Reasoning controls. The whitelist above is closed — there is no
-        # `**config` spread — so these were dropped silently, which is the worst
-        # failure mode available: a caller asking for reasoning got a normal 200
-        # with no trace and no diagnostic. Spellings differ by endpoint
-        # (`reasoning_effort` on OpenAI, `reasoning` / `include_reasoning` on
-        # OpenRouter), so each is passed through as given rather than translated.
-        for key in ('reasoning', 'reasoning_effort', 'include_reasoning'):
+        # Reasoning and routing controls. The whitelist above is closed — there
+        # is no `**config` spread — so these were dropped silently, which is the
+        # worst failure mode available: a caller asking for reasoning got a
+        # normal 200 with no trace and no diagnostic. Spellings differ by
+        # endpoint (`reasoning_effort` on OpenAI, `reasoning` /
+        # `include_reasoning` on OpenRouter), so each is passed through as given
+        # rather than translated.
+        #
+        # `provider` is OpenRouter's routing preference, and it is not cosmetic:
+        # OpenRouter load-balances one model across backing providers whose
+        # time-to-first-token differs by an order of magnitude. Measured on
+        # deepseek-v4-pro with an identical one-word prompt, default routing gave
+        # 1.4s and 9.8s on consecutive calls (StreamLake), while
+        # `{"sort": "latency"}` gave 1.2s and 0.66s (Together). Without this key
+        # a caller has no way to avoid the slow route.
+        for key in ('reasoning', 'reasoning_effort', 'include_reasoning', 'provider'):
             if key in config:
                 payload[key] = config[key]
 
@@ -300,13 +309,22 @@ class OpenAIProvider(BaseProvider):
         if 'response_format' in config:
             payload['response_format'] = config['response_format']
 
-        # Reasoning controls. The whitelist above is closed — there is no
-        # `**config` spread — so these were dropped silently, which is the worst
-        # failure mode available: a caller asking for reasoning got a normal 200
-        # with no trace and no diagnostic. Spellings differ by endpoint
-        # (`reasoning_effort` on OpenAI, `reasoning` / `include_reasoning` on
-        # OpenRouter), so each is passed through as given rather than translated.
-        for key in ('reasoning', 'reasoning_effort', 'include_reasoning'):
+        # Reasoning and routing controls. The whitelist above is closed — there
+        # is no `**config` spread — so these were dropped silently, which is the
+        # worst failure mode available: a caller asking for reasoning got a
+        # normal 200 with no trace and no diagnostic. Spellings differ by
+        # endpoint (`reasoning_effort` on OpenAI, `reasoning` /
+        # `include_reasoning` on OpenRouter), so each is passed through as given
+        # rather than translated.
+        #
+        # `provider` is OpenRouter's routing preference, and it is not cosmetic:
+        # OpenRouter load-balances one model across backing providers whose
+        # time-to-first-token differs by an order of magnitude. Measured on
+        # deepseek-v4-pro with an identical one-word prompt, default routing gave
+        # 1.4s and 9.8s on consecutive calls (StreamLake), while
+        # `{"sort": "latency"}` gave 1.2s and 0.66s (Together). Without this key
+        # a caller has no way to avoid the slow route.
+        for key in ('reasoning', 'reasoning_effort', 'include_reasoning', 'provider'):
             if key in config:
                 payload[key] = config[key]
 
