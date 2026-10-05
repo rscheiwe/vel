@@ -370,6 +370,13 @@ class Agent:
         # Dynamic instructions
         self.instruction = instruction
 
+        # Per-run system messages (scratchpad summary, instruction, output schema)
+        # and structured-output retry prompts. Kept out of conversation history so
+        # session-based runs don't accumulate them; prepended/appended to a copy
+        # of the history on every model call (see _messages_for_call).
+        self._run_system_messages: Dict[str, List[Dict[str, Any]]] = {}
+        self._run_retry_messages: Dict[str, List[Dict[str, Any]]] = {}
+
         # Direct system prompt (takes priority over prompt templates)
         self._system_prompt = system_prompt
 
@@ -556,6 +563,51 @@ class Agent:
             Resolved system prompt string, or None if no prompt configured
         """
         return self._get_system_prompt(run_id='', context=context)
+
+    def _build_run_system_messages(self) -> List[Dict[str, Any]]:
+        """System messages that apply to one run, in send order:
+        output_type schema prompt, instruction, previous-run scratchpad summary."""
+        messages: List[Dict[str, Any]] = []
+        if self.output_type:
+            messages.append({'role': 'system', 'content': get_json_mode_system_prompt(self.output_type)})
+        if self.instruction:
+            instruction_text = (
+                self.instruction(self.tool_context) if callable(self.instruction) else self.instruction
+            )
+            messages.append({'role': 'system', 'content': instruction_text})
+        if self._scratchpad_config and self._scratchpad_summary:
+            messages.append({
+                'role': 'system',
+                'content': f"[Previous Run Context]\n{self._scratchpad_summary}"
+            })
+        return messages
+
+    def _messages_for_call(
+        self,
+        run_id: str,
+        session_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Messages for one model call: system prompt, the run's system messages,
+        a copy of the conversation history, then any structured-output retry prompts.
+
+        Run system messages are built on the run's first call (fresh, resumed or
+        recovered runs alike) and never written into history.
+        """
+        history = list(self.ctxmgr.messages_for_llm(run_id, session_id))
+        if run_id not in self._run_system_messages:
+            self._run_system_messages[run_id] = self._build_run_system_messages()
+        prefix: List[Dict[str, Any]] = []
+        system_prompt = self._get_system_prompt(run_id, context=context)
+        if system_prompt:
+            prefix.append({'role': 'system', 'content': system_prompt})
+        prefix.extend(self._run_system_messages[run_id])
+        return prefix + history + self._run_retry_messages.get(run_id, [])
+
+    def _end_run_messages(self, run_id: str) -> None:
+        """Drop a finished run's system and retry messages."""
+        self._run_system_messages.pop(run_id, None)
+        self._run_retry_messages.pop(run_id, None)
 
     def _get_tool(self, name: str) -> ToolSpec:
         """
@@ -799,9 +851,9 @@ class Agent:
             description=tool_desc
         )
 
-    async def _call_llm_generate(self, run_id: str, session_id: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _call_llm_generate(self, run_id: str, session_id: Optional[str] = None, generation_config: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Non-streaming LLM call"""
-        messages = self.ctxmgr.messages_for_llm(run_id, session_id)
+        messages = self._messages_for_call(run_id, session_id, context=context)
         provider = self._get_provider()
         # Merge agent-level and call-level generation configs
         config = {**self.generation_config, **(generation_config or {})}
@@ -1154,25 +1206,10 @@ class Agent:
             scratchpad = Scratchpad(self._scratchpad_config)
             for tool in get_scratchpad_tools(scratchpad):
                 self._injected_tools[tool.name] = tool
-            # Inject previous run's summary into context
-            if self._scratchpad_summary:
-                self.ctxmgr._by_run[run_id].insert(0, {
-                    'role': 'system',
-                    'content': f"[Previous Run Context]\n{self._scratchpad_summary}"
-                })
+            # The previous run's summary is sent via _messages_for_call
 
-        # Add dynamic instruction if set
-        if self.instruction:
-            if callable(self.instruction):
-                instruction_text = self.instruction(self.tool_context)
-            else:
-                instruction_text = self.instruction
-            self.ctxmgr._by_run[run_id].insert(0, {'role': 'system', 'content': instruction_text})
-
-        # Add structured output schema prompt if output_type is set
-        if self.output_type:
-            schema_prompt = get_json_mode_system_prompt(self.output_type)
-            self.ctxmgr._by_run[run_id].insert(0, {'role': 'system', 'content': schema_prompt})
+        # Instruction and output schema prompt: run-scoped, sent via _messages_for_call
+        self._run_system_messages[run_id] = self._build_run_system_messages()
 
         # Run input guardrails
         if self.guardrails.has_input_guardrails:
@@ -1215,7 +1252,7 @@ class Agent:
                             )
                         llm_start_time = time.time()
 
-                        step = await self._call_llm_generate(run_id, session_id, generation_config)
+                        step = await self._call_llm_generate(run_id, session_id, generation_config, context=context)
 
                         # Log LLM generation
                         if trace_ctx and observer:
@@ -1377,7 +1414,7 @@ class Agent:
 
                                 # Retry: add error message and continue
                                 retry_prompt = get_retry_prompt(self.output_type, e)
-                                self.ctxmgr._by_run[run_id].append({'role': 'system', 'content': retry_prompt})
+                                self._run_retry_messages.setdefault(run_id, []).append({'role': 'system', 'content': retry_prompt})
                                 event = {'kind': 'start'}  # Restart to call LLM again
                                 structured_retry = True
                                 break
@@ -1413,10 +1450,7 @@ class Agent:
                     self.ctxmgr.append(run_id, synthesis_msg, session_id)
 
                     # Make final LLM call without tools
-                    messages = self.ctxmgr.messages_for_llm(run_id, session_id)
-                    system_prompt = self._get_system_prompt(run_id, context=context)
-                    if system_prompt:
-                        messages = [{'role': 'system', 'content': system_prompt}] + messages
+                    messages = self._messages_for_call(run_id, session_id, context=context)
 
                     provider = self._get_provider()
                     response = await provider.generate(messages, self.model_cfg.get('model', 'gpt-4o'), tools=[])
@@ -1451,6 +1485,7 @@ class Agent:
             ))
             raise
         finally:
+            self._end_run_messages(run_id)
             # Capture scratchpad summary for next run
             if scratchpad:
                 self._scratchpad_summary = scratchpad.get_summary()
@@ -1720,25 +1755,10 @@ class Agent:
             scratchpad = Scratchpad(self._scratchpad_config)
             for tool in get_scratchpad_tools(scratchpad):
                 self._injected_tools[tool.name] = tool
-            # Inject previous run's summary into context
-            if self._scratchpad_summary:
-                self.ctxmgr._by_run[run_id].insert(0, {
-                    'role': 'system',
-                    'content': f"[Previous Run Context]\n{self._scratchpad_summary}"
-                })
+            # The previous run's summary is sent via _messages_for_call
 
-        # Add dynamic instruction if set
-        if self.instruction:
-            if callable(self.instruction):
-                instruction_text = self.instruction(self.tool_context)
-            else:
-                instruction_text = self.instruction
-            self.ctxmgr._by_run[run_id].insert(0, {'role': 'system', 'content': instruction_text})
-
-        # Add structured output schema prompt if output_type is set
-        if self.output_type:
-            schema_prompt = get_json_mode_system_prompt(self.output_type)
-            self.ctxmgr._by_run[run_id].insert(0, {'role': 'system', 'content': schema_prompt})
+        # Instruction and output schema prompt: run-scoped, sent via _messages_for_call
+        self._run_system_messages[run_id] = self._build_run_system_messages()
 
         # Run input guardrails
         if self.guardrails.has_input_guardrails:
@@ -1892,6 +1912,7 @@ class Agent:
             yield error_event.to_dict()
             raise
         finally:
+            self._end_run_messages(run_id)
             final_answer = loop_state['final_answer']
             # Capture scratchpad summary for next run
             if scratchpad:
@@ -1989,6 +2010,7 @@ class Agent:
             ):
                 yield event
         finally:
+            self._end_run_messages(run_id)
             self._end_leg_trace(observer, trace_ctx)
 
     async def _resume_reflection(
@@ -2146,6 +2168,7 @@ class Agent:
             ):
                 yield event
         finally:
+            self._end_run_messages(run_id)
             self._end_leg_trace(observer, trace_ctx)
 
     def _begin_leg_trace(self, run_id: str):
@@ -2246,13 +2269,8 @@ class Agent:
                 async for _hook_event in pre_step_hook(run_id, session_id, steps):
                     yield _hook_event
 
-            # Get messages and stream LLM response
-            messages = self.ctxmgr.messages_for_llm(run_id, session_id)
-
-            # Prepend system prompt if set (for prompt caching)
-            system_prompt = self._get_system_prompt(run_id, context=context)
-            if system_prompt:
-                messages = [{'role': 'system', 'content': system_prompt}] + messages
+            # Get messages and stream LLM response (system prompt first, for caching)
+            messages = self._messages_for_call(run_id, session_id, context=context)
 
             # Start step span for observability
             if trace_ctx and observer:
@@ -2427,7 +2445,7 @@ class Agent:
                             # max_steps budget — offset the loop-top increment so
                             # this retry does not consume a tool step.
                             retry_prompt = get_retry_prompt(self.output_type, e)
-                            self.ctxmgr._by_run[run_id].append({'role': 'system', 'content': retry_prompt})
+                            self._run_retry_messages.setdefault(run_id, []).append({'role': 'system', 'content': retry_prompt})
                             steps -= 1
                             continue  # Go back to LLM
 
@@ -3067,10 +3085,7 @@ class Agent:
         self.ctxmgr.append(run_id, synthesis_msg, session_id)
 
         # Make final LLM call without tools
-        messages = self.ctxmgr.messages_for_llm(run_id, session_id)
-        system_prompt = self._get_system_prompt(run_id, context=context)
-        if system_prompt:
-            messages = [{'role': 'system', 'content': system_prompt}] + messages
+        messages = self._messages_for_call(run_id, session_id, context=context)
 
         provider = self._get_provider()
 
