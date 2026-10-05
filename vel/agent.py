@@ -607,6 +607,15 @@ class Agent:
         prefix.extend(self._run_system_messages[run_id])
         return prefix + history + self._run_retry_messages.get(run_id, [])
 
+    @staticmethod
+    def _close_open_step(loop_state: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """finish-step for a step that is still open, so a run ending on an
+        error still closes its last step (no-op when none is open)."""
+        if loop_state is not None and loop_state.get('step_open'):
+            loop_state['step_open'] = False
+            return [{'type': 'finish-step'}]
+        return []
+
     def _end_run_messages(self, run_id: str) -> None:
         """Drop a finished run's system and retry messages."""
         self._run_system_messages.pop(run_id, None)
@@ -1911,6 +1920,8 @@ class Agent:
                 step=loop_state['steps']
             ))
 
+            for _close_ev in self._close_open_step(loop_state):
+                yield _close_ev
             error_event = ErrorEvent(error=error_msg)
             yield error_event.to_dict()
             raise
@@ -2285,6 +2296,7 @@ class Agent:
 
             # Emit start-step event (V5 UI Stream Protocol for multi-step agents)
             yield wrap_event(StepStartEvent().to_dict())
+            loop_state['step_open'] = True
             messages_for_obs = messages.copy()  # Copy for observability
             llm_start_time = time.time()
             provider = self._get_provider()
@@ -2337,7 +2349,8 @@ class Agent:
                 # Forward all other stream protocol events. A structured-output
                 # run's text is the raw JSON; it reaches consumers as data-object-*
                 # parts, and as text only if the policy asks for it.
-                if not (
+                # Provider error events are yielded once, by the error branch below.
+                if event.type != 'error' and not (
                     json_parser
                     and event.type in _TEXT_EVENT_TYPES
                     and not self.structured_output_policy.stream_text
@@ -2383,6 +2396,9 @@ class Agent:
                     }
                     logger.error(f"Agent error: {error_context}")
 
+                    for _close_ev in self._close_open_step(loop_state):
+                        yield wrap_event(_close_ev)
+
                     # Yield the full error event (includes all context)
                     yield event.to_dict()
                     yield {'type': 'finish'}
@@ -2420,6 +2436,8 @@ class Agent:
                     passed, modified, error = await self.guardrails.check_output(answer, ctx)
                     if not passed:
                         error_event = ErrorEvent(error=f"Output guardrail failed: {error}")
+                        for _close_ev in self._close_open_step(loop_state):
+                            yield wrap_event(_close_ev)
                         yield error_event.to_dict()
                         yield {'type': 'finish'}
                         return
@@ -2444,6 +2462,8 @@ class Agent:
                                 error_event = ErrorEvent(
                                     error=f"Structured output validation failed: {e}"
                                 )
+                                for _close_ev in self._close_open_step(loop_state):
+                                    yield wrap_event(_close_ev)
                                 yield error_event.to_dict()
                                 yield {'type': 'finish'}
                                 return
@@ -2468,6 +2488,7 @@ class Agent:
 
                 # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
                 yield wrap_event({'type': 'finish-step'})
+                loop_state['step_open'] = False
 
                 # Emit finish event (AI SDK v5 spec: simple event, no fields)
                 yield {'type': 'finish'}
@@ -2524,6 +2545,8 @@ class Agent:
 
             # If we got here with no text and no tool calls, something's wrong
             error_event = ErrorEvent(error='No response from LLM')
+            for _close_ev in self._close_open_step(loop_state):
+                yield wrap_event(_close_ev)
             yield error_event.to_dict()
             yield {'type': 'finish'}
             return
@@ -2746,6 +2769,8 @@ class Agent:
                     passed, modified_args, error = await self.guardrails.check_tool(tc['tool_name'], tool_args, ctx)
                     if not passed:
                         error_event = ErrorEvent(error=f"Tool guardrail failed: {error}")
+                        for _close_ev in self._close_open_step(loop_state):
+                            yield wrap_event(_close_ev)
                         yield error_event.to_dict()
                         yield {'type': 'finish'}
                         loop_state['control'] = 'terminate'
@@ -2835,11 +2860,14 @@ class Agent:
                 # Handle directive decision
                 if directive.decision == ToolUseDecision.STOP:
                     yield wrap_event({'type': 'finish-step'})
+                    loop_state['step_open'] = False
                     yield {'type': 'finish'}
                     loop_state['control'] = 'terminate'
                     return
                 elif directive.decision == ToolUseDecision.ERROR:
                     error_event = ErrorEvent(error=f"Tool handler returned ERROR for {tc['tool_name']}")
+                    for _close_ev in self._close_open_step(loop_state):
+                        yield wrap_event(_close_ev)
                     yield error_event.to_dict()
                     yield {'type': 'finish'}
                     loop_state['control'] = 'terminate'
@@ -2848,6 +2876,7 @@ class Agent:
                 # Check if we should stop after this tool (non-custom behavior)
                 if self.should_stop_after_tool(tc['tool_name']):
                     yield wrap_event({'type': 'finish-step'})
+                    loop_state['step_open'] = False
                     yield {'type': 'finish'}
                     # Every other terminal branch sets this, and the docstring
                     # above promises it. Without it `_step_loop` reads
@@ -2938,6 +2967,7 @@ class Agent:
 
         # Emit finish-step event (AI SDK v5 spec: simple event, no fields)
         yield wrap_event({'type': 'finish-step'})
+        loop_state['step_open'] = False
 
         loop_state['control'] = 'continue'
 

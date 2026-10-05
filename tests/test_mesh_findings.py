@@ -145,7 +145,6 @@ def _assert_step_closed_before_error(events):
     assert before.count('start-step') == before.count('finish-step'), types
 
 
-@pytest.mark.xfail(strict=True, reason='pending fix 3')
 @pytest.mark.asyncio
 async def test_provider_exception_closes_the_step_then_raises():
     agent = _agent([[RuntimeError('provider returned 503')]])
@@ -158,7 +157,6 @@ async def test_provider_exception_closes_the_step_then_raises():
     _assert_step_closed_before_error(events)
 
 
-@pytest.mark.xfail(strict=True, reason='pending fix 3')
 @pytest.mark.asyncio
 async def test_provider_error_event_closes_the_step():
     agent = _agent([[ErrorEvent(error='rate limited')]])
@@ -166,6 +164,7 @@ async def test_provider_error_event_closes_the_step():
     events = await _collect(agent.run_stream({'message': 'hi'}))
 
     _assert_step_closed_before_error(events)
+    assert [e['type'] for e in events].count('error') == 1  # was forwarded twice
     assert events[-1]['type'] == 'finish'
 
 
