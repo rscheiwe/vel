@@ -170,7 +170,6 @@ async def test_provider_error_event_closes_the_step():
 
 # 4. JSON tool results -------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason='pending fix 4')
 @pytest.mark.asyncio
 async def test_tool_results_reach_the_model_as_json():
     async def lookup(product_id: str) -> dict:
@@ -188,7 +187,6 @@ async def test_tool_results_reach_the_model_as_json():
     }
 
 
-@pytest.mark.xfail(strict=True, reason='pending fix 4')
 def test_non_json_tool_results_fall_back_to_str():
     from vel.core.context import ContextManager
 

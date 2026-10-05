@@ -1,5 +1,6 @@
 # context.py
 from __future__ import annotations
+import json
 
 import time
 from typing import Any, Dict, List, Optional, Callable, TypedDict, TYPE_CHECKING
@@ -191,6 +192,18 @@ def build_memory_adapters(cfg: MemoryConfig) -> MemoryAdapters:
 # =========================
 # Existing Context Managers
 # =========================
+
+
+def _tool_result_content(result: Any) -> str:
+    """Tool result as message content: strings as-is, everything else as JSON
+    (non-serializable values via str()), so the model reads structured results
+    as JSON rather than a Python repr."""
+    if isinstance(result, str):
+        return result
+    try:
+        return json.dumps(result, default=str)
+    except (TypeError, ValueError):
+        return str(result)
 
 class ContextManager:
     """
@@ -393,9 +406,9 @@ class ContextManager:
         Uses OpenAI's expected format with role='tool' and tool_call_id when provided.
         Falls back to legacy format for backwards compatibility.
         """
+        content = _tool_result_content(result)
         if tool_call_id:
             # OpenAI format: role='tool' with tool_call_id
-            content = result if isinstance(result, str) else str(result)
             self.append(run_id, {
                 'role': 'tool',
                 'tool_call_id': tool_call_id,
@@ -405,7 +418,7 @@ class ContextManager:
             # Legacy format for backwards compatibility
             self.append(run_id, {
                 'role': 'user',
-                'content': f"Tool {tool_name} returned: {result}"
+                'content': f"Tool {tool_name} returned: {content}"
             }, session_id)
 
     def get_session_context(self, session_id: str) -> List[Dict[str, Any]]:
