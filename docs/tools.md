@@ -990,6 +990,45 @@ agent = Agent(
 When enabled, after each tool call Vel adds a system message:
 > "The previous tool did not resolve the request; reconsider tool selection."
 
+### Forcing or Forbidding Tools (`tool_choice`)
+
+Pass `tool_choice` in `generation_config` (on the agent or per run) to control whether the model may, must, or must not call tools:
+
+```python
+# Must call run_workflow on this turn
+async for event in agent.run_stream(
+    {'message': brief},
+    generation_config={'tool_choice': {'type': 'function', 'name': 'run_workflow'}},
+):
+    ...
+
+# No tool calls this turn
+await agent.run({'message': 'thanks!'}, generation_config={'tool_choice': 'none'})
+```
+
+| Value | Meaning | OpenAI wire value | Anthropic wire value |
+|-------|---------|-------------------|----------------------|
+| `'auto'` (default) | model decides | `'auto'` | API default (or `{'type': 'auto'}` if passed explicitly) |
+| `'required'` | must call some tool | `'required'` | `{'type': 'any'}` |
+| `'none'` | must not call tools | `'none'` | `{'type': 'none'}` |
+| `{'type': 'function', 'name': X}` | must call `X` | `{'type': 'function', 'function': {'name': X}}` (Responses API: `{'type': 'function', 'name': X}`) | `{'type': 'tool', 'name': X}` |
+
+A forcing choice (`'required'` or a named function) applies **until a tool has run in the current turn**; after that, Vel uses `'auto'`, so the model can answer instead of calling the tool again. Set `policies={'tool_choice_scope': 'run'}` to keep it forced for the whole run. Forcing a tool the agent doesn't offer raises `ValueError`. Some current Claude models reject forced choices; that API error is surfaced unchanged.
+
+### Turning Tools On and Off (`enabled`)
+
+`ToolSpec(enabled=...)` takes a bool or a callable that receives the agent's `tool_context`. A disabled tool is not offered to the model and can't be called:
+
+```python
+state = {'slots_complete': False}
+run_tool = ToolSpec.from_function(run_workflow, enabled=lambda ctx: ctx['state']['slots_complete'])
+agent = Agent(id='assistant', model=..., tools=[run_tool], tool_context={'state': state})
+```
+
+### Stopping on a Tool
+
+When the loop stops on a tool (`stop_on_first_use`, `STOP_AFTER_TOOL`, `STOP_AT_TOOLS`, or a custom handler's `STOP`/`ERROR`), the tool's result is still recorded, and any later tool calls from the same step are recorded as not run. That keeps session history valid for the next turn.
+
 ### Use Cases
 
 **1. Intent Detection / Routing**

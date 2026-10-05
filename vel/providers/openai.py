@@ -25,6 +25,39 @@ def _max_tokens_param(model: str) -> str:
     return "max_tokens"
 
 
+
+_TOOL_CHOICE_MODES = ('auto', 'required', 'none')
+
+
+def _forced_tool_name(choice: Any) -> Optional[str]:
+    """Tool name from a forced tool_choice, accepting vel's
+    {'type': 'function', 'name': X}, the Chat Completions
+    {'type': 'function', 'function': {'name': X}}, or {'name': X}."""
+    if not isinstance(choice, dict):
+        return None
+    return choice.get('name') or (choice.get('function') or {}).get('name')
+
+
+def _resolve_tool_choice(config: Dict[str, Any], tool_names: List[str], *, responses_api: bool) -> Any:
+    """generation_config['tool_choice'] in the wire format of the target API.
+
+    Accepts 'auto' (default), 'required', 'none', or a forced function. A forced
+    function must be one of the tools offered on this call.
+    """
+    choice = config.get('tool_choice', 'auto')
+    if isinstance(choice, str):
+        if choice not in _TOOL_CHOICE_MODES:
+            raise ValueError(f"tool_choice must be one of {_TOOL_CHOICE_MODES} or a function, got {choice!r}")
+        return choice
+    name = _forced_tool_name(choice)
+    if not name:
+        raise ValueError(f"tool_choice dict must name a function, got {choice!r}")
+    if name not in tool_names:
+        raise ValueError(f"tool_choice forces {name!r}, which is not among the offered tools {tool_names}")
+    if responses_api:
+        return {'type': 'function', 'name': name}
+    return {'type': 'function', 'function': {'name': name}}
+
 class OpenAIProvider(BaseProvider):
     """OpenAI provider implementing stream protocol"""
     name = 'openai'
@@ -96,7 +129,9 @@ class OpenAIProvider(BaseProvider):
         }
         if oaitools:
             payload['tools'] = oaitools
-            payload['tool_choice'] = 'auto'
+            payload['tool_choice'] = _resolve_tool_choice(
+                config, [t['function']['name'] for t in oaitools], responses_api=False
+            )
             # Disable parallel tool calls if specified (prevents duplicate calls in same response)
             if config.get('parallel_tool_calls') is False:
                 payload['parallel_tool_calls'] = False
@@ -283,7 +318,9 @@ class OpenAIProvider(BaseProvider):
         payload = {'model': model, 'messages': msgs}
         if oaitools:
             payload['tools'] = oaitools
-            payload['tool_choice'] = 'auto'
+            payload['tool_choice'] = _resolve_tool_choice(
+                config, [t['function']['name'] for t in oaitools], responses_api=False
+            )
             # Disable parallel tool calls if specified (prevents duplicate calls in same response)
             if config.get('parallel_tool_calls') is False:
                 payload['parallel_tool_calls'] = False
@@ -451,12 +488,14 @@ class OpenAIResponsesProvider(BaseProvider):
         }
 
         # Only include tools if there are any (reasoning models don't support tools)
-        if response_tools:
-            payload['tools'] = response_tools
-            payload['tool_choice'] = 'auto'
-
         # Add generation config parameters
         config = generation_config or {}
+
+        if response_tools:
+            payload['tools'] = response_tools
+            payload['tool_choice'] = _resolve_tool_choice(
+                config, [t['function']['name'] for t in response_tools], responses_api=True
+            )
         if 'temperature' in config:
             payload['temperature'] = config['temperature']
         if 'max_tokens' in config:

@@ -10,6 +10,28 @@ import logging
 
 logger = logging.getLogger('vel.providers.anthropic')
 
+
+def _anthropic_tool_choice(config: Dict[str, Any], tool_names: List[str]) -> Optional[Dict[str, Any]]:
+    """generation_config['tool_choice'] as an Anthropic tool_choice, or None to
+    leave the API default. 'required' maps to {'type': 'any'}; a forced function
+    to {'type': 'tool', 'name': X}. Some current Claude models reject forced
+    choices; the API error is surfaced unchanged."""
+    if 'tool_choice' not in config:
+        return None
+    choice = config['tool_choice']
+    if choice in ('auto', 'none'):
+        return {'type': choice}
+    if choice == 'required':
+        return {'type': 'any'}
+    name = None
+    if isinstance(choice, dict):
+        name = choice.get('name') or (choice.get('function') or {}).get('name')
+    if not name:
+        raise ValueError(f"tool_choice must be 'auto', 'required', 'none' or a function, got {choice!r}")
+    if name not in tool_names:
+        raise ValueError(f"tool_choice forces {name!r}, which is not among the offered tools {tool_names}")
+    return {'type': 'tool', 'name': name}
+
 class AnthropicProvider(BaseProvider):
     """Anthropic Claude provider implementing stream protocol"""
     name = 'anthropic'
@@ -109,11 +131,14 @@ class AnthropicProvider(BaseProvider):
                 "cache_control": {"type": "ephemeral"}
             }]
 
-        if anthropic_tools:
-            payload['tools'] = anthropic_tools
-
         # Add generation config parameters
         config = generation_config or {}
+
+        if anthropic_tools:
+            payload['tools'] = anthropic_tools
+            tool_choice = _anthropic_tool_choice(config, [t['name'] for t in anthropic_tools])
+            if tool_choice is not None:
+                payload['tool_choice'] = tool_choice
         if 'temperature' in config:
             payload['temperature'] = config['temperature']
         if 'max_tokens' in config:
@@ -265,11 +290,14 @@ class AnthropicProvider(BaseProvider):
                 "cache_control": {"type": "ephemeral"}
             }]
 
-        if anthropic_tools:
-            payload['tools'] = anthropic_tools
-
         # Add generation config parameters
         config = generation_config or {}
+
+        if anthropic_tools:
+            payload['tools'] = anthropic_tools
+            tool_choice = _anthropic_tool_choice(config, [t['name'] for t in anthropic_tools])
+            if tool_choice is not None:
+                payload['tool_choice'] = tool_choice
         if 'temperature' in config:
             payload['temperature'] = config['temperature']
         if 'max_tokens' in config:

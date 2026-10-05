@@ -379,6 +379,8 @@ class Agent:
         # of the history on every model call (see _messages_for_call).
         self._run_system_messages: Dict[str, List[Dict[str, Any]]] = {}
         self._run_retry_messages: Dict[str, List[Dict[str, Any]]] = {}
+        # Runs in which a tool has produced a result (ends a forced tool_choice)
+        self._runs_with_tool_results: set = set()
 
         # Direct system prompt (takes priority over prompt templates)
         self._system_prompt = system_prompt
@@ -607,6 +609,71 @@ class Agent:
         prefix.extend(self._run_system_messages[run_id])
         return prefix + history + self._run_retry_messages.get(run_id, [])
 
+    def _step_generation_config(
+        self,
+        generation_config: Optional[Dict[str, Any]],
+        run_id: str,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Generation config for one model call.
+
+        A forcing tool_choice ('required' or a named function) applies only
+        until a tool has run in the current turn, unless
+        policies['tool_choice_scope'] is 'run'; after that, calls use 'auto' so
+        the run can't loop on the forced tool. "Current turn" means after the
+        latest user message, so resumed and recovered runs behave the same.
+        """
+        config = {**self.generation_config, **(generation_config or {})}
+        choice = config.get('tool_choice')
+        forcing = choice == 'required' or isinstance(choice, dict)
+        if (
+            forcing
+            and self.policies.get('tool_choice_scope', 'first_step') == 'first_step'
+            and self._tool_ran_this_turn(run_id, session_id)
+        ):
+            config['tool_choice'] = 'auto'
+        return config
+
+    def _tool_ran_this_turn(self, run_id: str, session_id: Optional[str]) -> bool:
+        """True if a tool ran in this run, or a tool result follows the latest
+        user message (covers resumed runs, whose history comes from a checkpoint)."""
+        if run_id in self._runs_with_tool_results:
+            return True
+        for message in reversed(self.ctxmgr.messages_for_llm(run_id, session_id)):
+            if message.get('role') == 'tool':
+                return True
+            if message.get('role') == 'user':
+                return False
+        return False
+
+    def _record_stopped_tool_calls(
+        self,
+        run_id: str,
+        session_id: Optional[str],
+        tool_calls: List[Dict[str, Any]],
+        current: Dict[str, Any],
+        result: Any,
+    ) -> None:
+        """Keep the history valid when the loop stops on a tool.
+
+        The assistant message with the tool calls is already in the history,
+        so every call needs a result before the next model call (OpenAI rejects
+        unanswered tool calls). Records the stopping tool's result, and marks the
+        step's later calls as not run.
+        """
+        self._runs_with_tool_results.add(run_id)
+        self.ctxmgr.append_tool_result(
+            run_id, current['tool_name'], result, session_id, tool_call_id=current['tool_call_id']
+        )
+        for later in tool_calls[tool_calls.index(current) + 1:]:
+            self.ctxmgr.append_tool_result(
+                run_id,
+                later['tool_name'],
+                {'skipped': f"not run: the turn ended after {current['tool_name']}"},
+                session_id,
+                tool_call_id=later['tool_call_id'],
+            )
+
     @staticmethod
     def _close_open_step(loop_state: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """finish-step for a step that is still open, so a run ending on an
@@ -620,6 +687,7 @@ class Agent:
         """Drop a finished run's system and retry messages."""
         self._run_system_messages.pop(run_id, None)
         self._run_retry_messages.pop(run_id, None)
+        self._runs_with_tool_results.discard(run_id)
 
     def _get_tool(self, name: str) -> ToolSpec:
         """
@@ -638,13 +706,14 @@ class Agent:
         Raises:
             KeyError: If tool not found or not authorized for this agent
         """
-        # Check injected tools first (highest precedence - dynamically added during run)
-        if name in self._injected_tools:
-            return self._injected_tools[name]
-
-        # Check instance tools (ToolSpec instances passed directly)
-        if name in self._instance_tools:
-            return self._instance_tools[name]
+        # Check injected tools first (highest precedence - dynamically added during run),
+        # then instance tools (ToolSpec instances passed directly). A disabled tool
+        # isn't offered to the model and can't be called.
+        for tools in (self._injected_tools, self._instance_tools):
+            if name in tools:
+                if not tools[name].is_enabled(self.tool_context):
+                    raise KeyError(f"Tool '{name}' is not enabled for this agent right now.")
+                return tools[name]
 
         # Check if tool was passed by name (string) in tools array
         # Only allow global registry lookup if the tool was explicitly listed
@@ -675,6 +744,8 @@ class Agent:
             if tool_name in self._injected_tools:
                 # Injected tool (highest precedence)
                 tool = self._injected_tools[tool_name]
+                if not tool.is_enabled(self.tool_context):
+                    continue
                 schemas[tool_name] = {
                     'input': tool.input_schema,
                     'output': tool.output_schema,
@@ -683,6 +754,8 @@ class Agent:
             elif tool_name in self._instance_tools:
                 # Instance tool
                 tool = self._instance_tools[tool_name]
+                if not tool.is_enabled(self.tool_context):
+                    continue
                 schemas[tool_name] = {
                     'input': tool.input_schema,
                     'output': tool.output_schema,
@@ -868,7 +941,7 @@ class Agent:
         messages = self._messages_for_call(run_id, session_id, context=context)
         provider = self._get_provider()
         # Merge agent-level and call-level generation configs
-        config = {**self.generation_config, **(generation_config or {})}
+        config = self._step_generation_config(generation_config, run_id, session_id)
         # Get schemas from instance tools + global registry
         tool_schemas = self._get_tool_schemas()
         step = await provider.generate(messages, model=self.model_cfg['model'], tools=tool_schemas, generation_config=config)
@@ -1375,6 +1448,7 @@ class Agent:
                             pass
 
                         # Normal behavior: add to context and continue
+                        self._runs_with_tool_results.add(run_id)
                         self.ctxmgr.append_tool_result(run_id, tool_name, result, session_id)
 
                         # Add reset tool choice message if enabled
@@ -2301,8 +2375,9 @@ class Agent:
             llm_start_time = time.time()
             provider = self._get_provider()
 
-            # Merge agent-level and per-run generation configs
-            config = {**self.generation_config, **(generation_config or {})}
+            # Merge agent-level and per-run generation configs (a forced
+            # tool_choice applies to the first step only; see _step_generation_config)
+            config = self._step_generation_config(generation_config, run_id, session_id)
 
             # Track what happened during streaming
             full_text = []
@@ -2759,6 +2834,7 @@ class Agent:
                         output=error_result
                     )
                     yield wrap_event(output_event.to_dict())
+                    self._runs_with_tool_results.add(run_id)
                     self.ctxmgr.append_tool_result(run_id, tc['tool_name'], error_result, session_id, tool_call_id=tc['tool_call_id'])
                     await _mark_completed(tc['tool_call_id'])
                     continue  # Skip to next tool call
@@ -2859,12 +2935,14 @@ class Agent:
 
                 # Handle directive decision
                 if directive.decision == ToolUseDecision.STOP:
+                    self._record_stopped_tool_calls(run_id, session_id, tool_calls, tc, result)
                     yield wrap_event({'type': 'finish-step'})
                     loop_state['step_open'] = False
                     yield {'type': 'finish'}
                     loop_state['control'] = 'terminate'
                     return
                 elif directive.decision == ToolUseDecision.ERROR:
+                    self._record_stopped_tool_calls(run_id, session_id, tool_calls, tc, result)
                     error_event = ErrorEvent(error=f"Tool handler returned ERROR for {tc['tool_name']}")
                     for _close_ev in self._close_open_step(loop_state):
                         yield wrap_event(_close_ev)
@@ -2875,6 +2953,7 @@ class Agent:
 
                 # Check if we should stop after this tool (non-custom behavior)
                 if self.should_stop_after_tool(tc['tool_name']):
+                    self._record_stopped_tool_calls(run_id, session_id, tool_calls, tc, result)
                     yield wrap_event({'type': 'finish-step'})
                     loop_state['step_open'] = False
                     yield {'type': 'finish'}
@@ -2886,7 +2965,7 @@ class Agent:
                     # it is worse: 'control' is pre-seeded 'continue', so the
                     # run could never terminate here at all.
                     loop_state['control'] = 'terminate'
-                    return  # Don't add to context or continue loop
+                    return  # Result recorded above; don't continue the loop
 
                 # Handle message modifications from directive
                 if directive.replace_messages is not None:
@@ -2899,6 +2978,7 @@ class Agent:
                             self.ctxmgr._by_run[run_id].append(msg)
 
                 # Add to context for next iteration (with tool_call_id for proper OpenAI format)
+                self._runs_with_tool_results.add(run_id)
                 self.ctxmgr.append_tool_result(run_id, tc['tool_name'], result, session_id, tool_call_id=tc['tool_call_id'])
 
                 # Add reset tool choice message if enabled
@@ -2953,6 +3033,7 @@ class Agent:
                 # Without this the assistant message announcing the tool call is
                 # left with no matching `role: 'tool'` reply, which both OpenAI
                 # and Anthropic reject if the transcript is ever resumed.
+                self._runs_with_tool_results.add(run_id)
                 self.ctxmgr.append_tool_result(
                     run_id, tc['tool_name'], error_result, session_id,
                     tool_call_id=tc['tool_call_id'],
