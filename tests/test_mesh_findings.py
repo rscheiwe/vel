@@ -201,7 +201,6 @@ def test_non_json_tool_results_fall_back_to_str():
 
 # 5. from_function ctx -------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason='pending fix 5')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('param', ['ctx', 'context', '_context'])
 async def test_from_function_tools_receive_ctx(param):
@@ -224,7 +223,6 @@ async def test_from_function_tools_receive_ctx(param):
     assert param not in tool.input_schema.get('properties', {})
 
 
-@pytest.mark.xfail(strict=True, reason='pending fix 5')
 @pytest.mark.asyncio
 async def test_from_function_ctx_with_default_none_is_filled():
     seen: Dict[str, Any] = {}
