@@ -9,6 +9,10 @@ import inspect
 from typing import Any, Callable, Dict, List, Optional, Union, get_type_hints, get_origin, get_args
 
 
+
+# Function parameters that receive the tool context instead of model input.
+CONTEXT_PARAM_NAMES = ('ctx', '_context', 'context')
+
 def generate_input_schema_from_function(fn: Callable) -> Dict[str, Any]:
     """
     Generate JSON schema from function signature using type hints.
@@ -45,8 +49,8 @@ def generate_input_schema_from_function(fn: Callable) -> Dict[str, Any]:
     required = []
 
     for param_name, param in sig.parameters.items():
-        # Skip context parameters
-        if param_name in ['ctx', '_context', 'context']:
+        # Skip context parameters (filled by ToolSpec at call time, not the model)
+        if param_name in CONTEXT_PARAM_NAMES:
             continue
 
         # Get type hint or default to str

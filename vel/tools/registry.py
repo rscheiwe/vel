@@ -4,9 +4,19 @@ import inspect
 from typing import Any, Dict, Callable, Optional, AsyncGenerator, List
 from jsonschema import validate, Draft202012Validator
 from .schema_generator import (
+    CONTEXT_PARAM_NAMES,
     generate_input_schema_from_function,
     generate_output_schema_from_function
 )
+
+
+def _context_param_name(fn: Callable) -> Optional[str]:
+    """The parameter of ``fn`` that should receive the tool context, if any."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return None
+    return next((name for name in CONTEXT_PARAM_NAMES if name in params), None)
 
 class ToolSpec:
     def __init__(
@@ -45,6 +55,10 @@ class ToolSpec:
         self.fallback = fallback
         # Whether handler expects **kwargs unpacking (from_function style)
         self._unpack_args = _unpack_args
+        # from_function: name of the parameter that receives ctx (or None)
+        self._ctx_param: Optional[str] = (
+            _context_param_name(handler) if _unpack_args else None
+        )
         # Valis Harness integration fields
         if is_async is None:
             # Auto-detect: True if handler is coroutine or async generator
@@ -186,13 +200,22 @@ class ToolSpec:
             **kwargs
         )
 
+    def _function_kwargs(self, input: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """Keyword arguments for a from_function handler: the model's input,
+        plus the tool context under the handler's ctx/context/_context param."""
+        if self._ctx_param is None:
+            return dict(input)
+        return {**input, self._ctx_param: ctx}
+
     async def run(self, input: Dict[str,Any], ctx: Dict[str,Any]) -> Dict[str,Any]:
         """Execute non-streaming tool (returns single result)"""
         if self._unpack_args:
-            # from_function style: handler expects **kwargs (e.g., email_send(to, subject, body))
+            # from_function style: handler expects **kwargs (e.g., email_send(to, subject, body)),
+            # plus ctx under its declared parameter name if it takes one
+            kwargs = self._function_kwargs(input, ctx)
             if asyncio.iscoroutinefunction(self._handler):
-                return await self._handler(**input)
-            return self._handler(**input)
+                return await self._handler(**kwargs)
+            return self._handler(**kwargs)
         else:
             # Traditional style: handler expects (input, ctx) signature
             if asyncio.iscoroutinefunction(self._handler):
@@ -214,8 +237,8 @@ class ToolSpec:
         else:
             # Streaming tool: yield all events from async generator
             if self._unpack_args:
-                # from_function style: handler expects **kwargs
-                async for event in self._handler(**input):
+                # from_function style: handler expects **kwargs (+ ctx if declared)
+                async for event in self._handler(**self._function_kwargs(input, ctx)):
                     yield event
             else:
                 # Traditional style: handler expects (input, ctx)

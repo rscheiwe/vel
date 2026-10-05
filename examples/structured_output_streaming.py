@@ -15,6 +15,7 @@ import asyncio
 from typing import List
 from pydantic import BaseModel, Field
 from vel import Agent
+from vel.core import StructuredOutputPolicy
 
 
 # =============================================================================
@@ -59,6 +60,8 @@ async def array_streaming_example():
         id='agent-idea-generator',
         model={'provider': 'openai', 'model': 'gpt-4o-mini'},
         output_type=List[AIAgentIdea],  # Array mode - streams elements one-by-one
+        # Also stream the raw JSON as text-delta (hidden by default)
+        structured_output_policy=StructuredOutputPolicy(stream_text=True),
         instruction="You are a creative AI product strategist. Generate innovative AI agent ideas."
     )
 
@@ -117,6 +120,7 @@ async def object_streaming_example():
         id='weather-agent',
         model={'provider': 'openai', 'model': 'gpt-4o-mini'},
         output_type=WeatherResponse,  # Object mode - streams partial updates
+        structured_output_policy=StructuredOutputPolicy(stream_text=True),
         instruction="You provide weather information. Always respond with realistic weather data."
     )
 
