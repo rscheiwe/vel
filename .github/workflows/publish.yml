@@ -1,0 +1,127 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    uses: ./.github/workflows/tests.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    # Only run if commit message doesn't contain [skip ci]
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    permissions:
+      contents: write  # Needed for creating tags and pushing
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for version detection
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine toml
+
+      - name: Get current version
+        id: get_version
+        run: |
+          import toml
+          import os
+          with open('pyproject.toml', 'r') as f:
+              data = toml.load(f)
+          version = data['project']['version']
+          print(f"Current version: {version}")
+
+          # Parse version (e.g., "0.1.6" -> major=0, minor=1, patch=6)
+          parts = version.split('.')
+          major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
+
+          # Bump patch version
+          new_patch = patch + 1
+          new_version = f"{major}.{minor}.{new_patch}"
+          print(f"New version: {new_version}")
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"current_version={version}\n")
+              f.write(f"new_version={new_version}\n")
+        shell: python
+
+      - name: Check if version already published
+        id: check_pypi
+        run: |
+          NEW_VERSION="${{ steps.get_version.outputs.new_version }}"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/vel-ai/${NEW_VERSION}/json")
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Version ${NEW_VERSION} already exists on PyPI"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version ${NEW_VERSION} is new"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump version in files
+        if: steps.check_pypi.outputs.skip != 'true'
+        run: |
+          NEW_VERSION="${{ steps.get_version.outputs.new_version }}"
+
+          # Update pyproject.toml (vel has no __version__ attribute)
+          sed -i "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" pyproject.toml
+
+          echo "Updated version to ${NEW_VERSION}"
+          grep "^version" pyproject.toml
+
+      - name: Build package
+        if: steps.check_pypi.outputs.skip != 'true'
+        run: python -m build
+
+      - name: Publish to PyPI
+        if: steps.check_pypi.outputs.skip != 'true'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: python -m twine upload dist/*
+
+      - name: Create and push tag
+        if: steps.check_pypi.outputs.skip != 'true'
+        run: |
+          NEW_VERSION="${{ steps.get_version.outputs.new_version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Commit version bump
+          git add pyproject.toml
+          git commit -m "Bump version to ${NEW_VERSION} [skip ci]"
+
+          # Create tag
+          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
+
+          # Push commit and tag
+          git push origin main
+          git push origin "v${NEW_VERSION}"
+
+          echo "Created and pushed tag v${NEW_VERSION}"
+
+      - name: Create GitHub Release
+        if: steps.check_pypi.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.get_version.outputs.new_version }}
+          name: Release v${{ steps.get_version.outputs.new_version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
