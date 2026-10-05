@@ -186,11 +186,7 @@ agent = Agent(
 )
 
 async for event in agent.run_stream({'message': 'Generate 5 AI agent ideas'}):
-    if event['type'] == 'text-delta':
-        # Raw JSON tokens (for debugging or custom parsing)
-        print(event['delta'], end='')
-
-    elif event['type'] == 'data-object-element':
+    if event['type'] == 'data-object-element':
         # Validated array element - update UI immediately!
         agent_data = event['data']['element']
         index = event['data']['index']
@@ -238,10 +234,12 @@ async for event in agent.run_stream({'message': 'Weather in Tokyo?'}):
 
 | Event | When | Data |
 |-------|------|------|
-| `text-delta` | Every token | `{delta: "..."}` - raw JSON text |
+| `text-delta` | Every token, **only with `StructuredOutputPolicy(stream_text=True)`** | `{delta: "..."}` - raw JSON text |
 | `data-object-element` | Array item complete | `{index: N, element: {...}}` - validated item |
 | `data-object-partial` | Object field complete | `{partial: {...}}` - partial object (unvalidated) |
 | `data-object-complete` | Stream finished | `{object: ..., mode: "array"\|"object"}` - final validated output |
+
+By default a structured-output stream does not include the model's raw JSON as `text-*` events, so a chat UI doesn't show the JSON as an assistant message. Pass `structured_output_policy=StructuredOutputPolicy(stream_text=True)` to receive it as well (for example, for a typing indicator or custom parsing).
 
 ### Frontend Integration (useChat)
 

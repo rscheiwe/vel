@@ -22,9 +22,14 @@ class StructuredOutputPolicy:
             - "raise": Raise StructuredOutputValidationError
             - "return_raw": Return the raw string output
             - "return_last_valid": Return last valid output if any, else raise
+        stream_text: In run_stream(), also forward the model's raw JSON as
+            text-start/text-delta/text-end (default: False). The object is
+            always streamed as data-object-partial / data-object-element /
+            data-object-complete.
     """
     max_retries: int = 1
     on_failure: Literal["raise", "return_raw", "return_last_valid"] = "raise"
+    stream_text: bool = False
 
 
 # =============================================================================

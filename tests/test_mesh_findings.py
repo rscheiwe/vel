@@ -113,7 +113,6 @@ async def test_schema_prompt_is_sent_once_per_call_in_a_session():
 
 # 2. Structured-output text --------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason='pending fix 2')
 @pytest.mark.asyncio
 async def test_structured_output_stream_hides_json_text_by_default():
     agent = _agent([_text(SLOTS_JSON)], output_type=Slots)
@@ -126,7 +125,6 @@ async def test_structured_output_stream_hides_json_text_by_default():
     assert complete[0]['data']['object'] == {'vertical': 'Retail', 'budget': 30000.0}
 
 
-@pytest.mark.xfail(strict=True, reason='pending fix 2')
 @pytest.mark.asyncio
 async def test_structured_output_text_can_be_streamed_on_request():
     agent = _agent([_text(SLOTS_JSON)], output_type=Slots,

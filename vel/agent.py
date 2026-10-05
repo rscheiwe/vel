@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 
 # Configure logger for error surfacing
 logger = logging.getLogger('vel.agent')
+
+# Text block events, hidden from structured-output streams by default
+_TEXT_EVENT_TYPES = ('text-start', 'text-delta', 'text-end')
 from .core import State, reduce, ContextManager
 from .core.tool_behavior import (
     ToolUseBehavior, ToolUseDecision, ToolEvent, ToolUseDirective, HandoffConfig
@@ -2331,8 +2334,15 @@ class Agent:
                     yield wrap_event(event.to_dict())
                     continue
 
-                # Forward all other stream protocol events
-                yield wrap_event(event.to_dict())
+                # Forward all other stream protocol events. A structured-output
+                # run's text is the raw JSON; it reaches consumers as data-object-*
+                # parts, and as text only if the policy asks for it.
+                if not (
+                    json_parser
+                    and event.type in _TEXT_EVENT_TYPES
+                    and not self.structured_output_policy.stream_text
+                ):
+                    yield wrap_event(event.to_dict())
 
                 # Track text content
                 if event.type == 'text-delta':
