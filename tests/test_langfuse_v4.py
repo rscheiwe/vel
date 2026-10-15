@@ -60,7 +60,11 @@ class ScriptedProvider(BaseProvider):
             yield ev
 
     async def generate(self, messages, model, tools, generation_config=None):
-        return {}
+        if self._fail:
+            raise RuntimeError("provider exploded")
+        batch = self._script.pop(0) if self._script else _text("done")
+        text = "".join(ev.delta for ev in batch if isinstance(ev, TextDeltaEvent))
+        return {"done": True, "answer": text, "usage": {"total_tokens": 3}}
 
 
 def _text(t: str) -> List[Any]:
@@ -188,8 +192,13 @@ async def test_a_tool_call_is_a_tool_observation_under_its_step(lf):
 
 @pytest.mark.asyncio
 async def test_a_failed_run_ends_its_root_as_an_error(lf):
-    events = await _stream(_agent(lf, [], fail=True))
-    assert any(e["type"] == "error" for e in events)
+    agent = _agent(lf, [], fail=True)
+    try:
+        events = await _stream(agent)
+    except RuntimeError as exc:  # vel re-raises a provider failure from run_stream
+        assert "provider exploded" in str(exc)
+    else:
+        assert any(e["type"] == "error" for e in events)
 
     (root,) = _by_type(_spans(lf), "agent")
     assert root.attributes[LEVEL] == "ERROR"
@@ -380,3 +389,16 @@ def test_the_langfuse_extra_requires_sdk_4_7_and_below_6():
     for name in ("langfuse", "observability"):
         assert extras[name] == ["langfuse>=4.7,<6"], name
     assert "langfuse>=4.7,<6" in extras["dev"], "CI installs .[dev] and must run these tests"
+
+
+def test_a_passed_v2_client_gets_the_legacy_handler():
+    class V2Client:
+        def trace(self, **kw):  # v2 only: no start_observation
+            return None
+
+    from vel.integrations.langfuse import LegacyLangfuseHandler
+
+    handler = build_handler(_config(), "a", client=V2Client())
+
+    assert isinstance(handler, LegacyLangfuseHandler)
+    assert not isinstance(handler, LangfuseHandler)
