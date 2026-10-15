@@ -1,8 +1,10 @@
+"""The legacy (Langfuse SDK v2) handler, kept as LegacyLangfuseHandler for projects still pinned to v2 (vel 0.6.0;
+the v4+ handler is tested in test_langfuse_v4.py)."""
 from datetime import datetime
 
 from vel.integrations.base import GenerationData, SpanContext
 from vel.integrations.langfuse import (
-    LangfuseHandler,
+    LegacyLangfuseHandler as LangfuseHandler,
     TraceState,
     _normalize_usage_details,
 )
