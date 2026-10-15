@@ -52,7 +52,7 @@ class ToolResultHookEvent(HookEvent):
     duration_ms: float = 0
     step: int = 0
     tool_call_id: Optional[str] = None
-    observation_id: Optional[str] = None  # Langfuse observation id for this tool span
+    observation_id: Optional[str] = None  # Langfuse observation id of this tool span (assigned by Langfuse under the OTel SDK)
 
 
 @dataclass
@@ -71,7 +71,7 @@ class LLMResponseHookEvent(HookEvent):
     duration_ms: float = 0
     step: int = 0
     usage: Optional[Dict[str, int]] = None
-    observation_id: Optional[str] = None  # Langfuse observation id for this generation
+    observation_id: Optional[str] = None  # Langfuse observation id of this generation (assigned by Langfuse under the OTel SDK)
 
 
 @dataclass

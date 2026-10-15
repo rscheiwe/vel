@@ -59,12 +59,15 @@ dev = [
     "ruff>=0.6.9",
     "black>=24.8.0",
     "mypy>=1.11.0",
+    "langfuse>=4.7,<6",
 ]
+# Langfuse OpenTelemetry SDK (v4/v5). SDK v2 still works through the deprecated
+# LegacyLangfuseHandler, but Langfuse Cloud drops v2 ingestion on 2026-11-16.
 langfuse = [
-    "langfuse>=2.0.0",
+    "langfuse>=4.7,<6",
 ]
 observability = [
-    "langfuse>=2.0.0",
+    "langfuse>=4.7,<6",
 ]
 harness = []
 harness-postgres = [

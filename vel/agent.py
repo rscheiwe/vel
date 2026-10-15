@@ -163,6 +163,7 @@ class Agent:
                  scratchpad: Optional[Any]=None,  # bool, dict, or ScratchpadConfig
                  # Observability
                  observability: Optional[Union['ObservabilityConfig', Dict[str, Any]]]=None,
+                 observability_client: Optional[Any]=None,
                  # Tool approval callback (for CLI/TUI approval flows)
                  tool_approval_callback: Optional[Any]=None,  # Callable[[str, Dict], Awaitable[bool]]
                  # Deprecated (backwards compatibility)
@@ -302,6 +303,12 @@ class Agent:
                         tags=['production']
                     )
 
+            observability_client: Optional backend client for the handler to use, e.g. one
+                ``langfuse.Langfuse`` shared by every agent of an app. The handler uses it as is,
+                never creates its own and never shuts it down (the caller owns its lifecycle).
+                Pair with ``ObservabilityConfig(flush_after_run=False)`` to flush on the app's
+                schedule instead of after every run. Ignored without ``observability``.
+
             session_storage: [DEPRECATED] Use session_persistence instead
                 - 'memory' → use 'transient'
                 - 'database' → use 'persistent'
@@ -435,7 +442,7 @@ class Agent:
                 self._observability_config = observability
             # Build handler if enabled
             if self._observability_config.enabled and self._observability_config.provider != 'none':
-                self._observer = build_handler(self._observability_config, self.id)
+                self._observer = build_handler(self._observability_config, self.id, client=observability_client)
 
         # Tool approval callback for CLI/TUI approval flows
         # Signature: async def callback(tool_name: str, tool_args: Dict) -> bool
@@ -1559,7 +1566,7 @@ class Agent:
                     observer.end_span(trace_ctx, error=str(e))
                 else:
                     observer.end_trace(trace_ctx, error=str(e))
-                    observer.flush()
+                    self._flush_observer(observer)
 
             # Emit error hook
             await self.hooks.emit('on_error', ErrorHookEvent(
@@ -1584,7 +1591,7 @@ class Agent:
                     observer.end_span(trace_ctx, output=final_answer)
                 else:
                     observer.end_trace(trace_ctx, output=final_answer)
-                    observer.flush()
+                    self._flush_observer(observer)
 
             # Clear observer from ContextManager
             self.ctxmgr.clear_observer()
@@ -1983,7 +1990,7 @@ class Agent:
                     observer.end_span(trace_ctx, error=error_msg)
                 else:
                     observer.end_trace(trace_ctx, error=error_msg)
-                    observer.flush()
+                    self._flush_observer(observer)
 
             # Emit error hook
             await self.hooks.emit('on_error', ErrorHookEvent(
@@ -2014,7 +2021,7 @@ class Agent:
                     observer.end_span(trace_ctx, output=final_answer)
                 else:
                     observer.end_trace(trace_ctx, output=final_answer)
-                    observer.flush()
+                    self._flush_observer(observer)
 
             # Clear observer from ContextManager
             self.ctxmgr.clear_observer()
@@ -2288,10 +2295,18 @@ class Agent:
         self.ctxmgr.set_observer(observer, trace_ctx)
         return observer, trace_ctx
 
+    def _flush_observer(self, observer) -> None:
+        """Flush the handler after a run unless the config opted out (``flush_after_run=False``,
+        for an app that shares one Langfuse client and flushes it on its own schedule)."""
+        cfg = self._observability_config
+        if cfg is not None and not getattr(cfg, 'flush_after_run', True):
+            return
+        observer.flush()
+
     def _end_leg_trace(self, observer, trace_ctx) -> None:
         if trace_ctx and observer:
             observer.end_trace(trace_ctx, output=None)
-            observer.flush()
+            self._flush_observer(observer)
             self.ctxmgr.clear_observer()
 
     async def _step_loop(
