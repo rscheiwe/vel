@@ -10,12 +10,16 @@ in Vel agents. Langfuse provides full visibility into agent executions including
 - User and session tracking
 
 Requirements:
-    pip install vel-ai[langfuse]
+    pip install 'vel-ai[langfuse]'   # Langfuse SDK >= 4.7 (OpenTelemetry-based)
 
     # Set environment variables (or provide in config)
     export LANGFUSE_PUBLIC_KEY=pk-...
     export LANGFUSE_SECRET_KEY=sk-...
-    # Optional: export LANGFUSE_HOST=https://your-instance.langfuse.com
+    # Optional (self-hosted / region): export LANGFUSE_BASE_URL=https://your-instance.langfuse.com
+    # (LANGFUSE_HOST is still read by the SDK)
+
+Each run is one Langfuse trace: a root `agent` observation with the run's input and output, a
+`span` per step, a `generation` per model call and a `tool` observation per tool call.
 
 Usage:
     python langfuse_example.py
@@ -95,7 +99,7 @@ async def full_config_example():
             # API keys loaded from .env file
             public_key=os.getenv('LANGFUSE_PUBLIC_KEY'),
             secret_key=os.getenv('LANGFUSE_SECRET_KEY'),
-            host=os.getenv('LANGFUSE_HOST', 'https://cloud.langfuse.com'),
+            host=os.getenv('LANGFUSE_BASE_URL') or os.getenv('LANGFUSE_HOST', 'https://cloud.langfuse.com'),
 
             # User and session tracking
             user_id='user-12345',
@@ -226,6 +230,31 @@ async def dict_config_example():
     print(f"Result: {result}")
 
 
+async def shared_client_example():
+    """One Langfuse client shared by every agent of an app (the app owns flush/shutdown)."""
+    print("\n=== Shared Langfuse Client ===\n")
+    from langfuse import Langfuse
+
+    langfuse = Langfuse()  # reads LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL
+
+    def make_agent(agent_id: str) -> Agent:
+        return Agent(
+            id=agent_id,
+            model={'provider': 'openai', 'model': 'gpt-4o-mini'},
+            tools=[ToolSpec.from_function(get_weather)],
+            # flush_after_run=False: runs do not block on export; the app flushes on its own schedule
+            observability=ObservabilityConfig(provider='langfuse', flush_after_run=False),
+            # the handler uses this client as is and never shuts it down
+            observability_client=langfuse,
+        )
+
+    for agent_id in ('triage-agent', 'weather-agent'):
+        result = await make_agent(agent_id).run({'message': 'What is the weather in Tokyo?'})
+        print(f"{agent_id}: {result}")
+
+    langfuse.shutdown()  # flushes, then stops the exporter (do this once, at app shutdown)
+
+
 async def main():
     """Run all examples."""
     # Check for required environment variables
@@ -240,6 +269,7 @@ async def main():
     # await per_request_context_example()
     await streaming_example()
     # await dict_config_example()
+    # await shared_client_example()
 
     print("\n=== All examples completed ===")
     print("\nView your traces in the Langfuse dashboard!")

@@ -85,7 +85,9 @@ class GenerationData:
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     error: Optional[str] = None
-    observation_id: Optional[str] = None  # supply to force the Langfuse id; else auto-generated + returned
+    # Legacy (SDK v2) handler only: a supplied id is used verbatim. Under the OTel SDK (LangfuseHandler)
+    # Langfuse assigns ids, so this is ignored and the created observation's real id is returned.
+    observation_id: Optional[str] = None
 
 
 @dataclass
@@ -102,7 +104,9 @@ class ToolData:
     output: Optional[Any] = None
     error: Optional[str] = None
     latency_ms: Optional[float] = None
-    observation_id: Optional[str] = None  # supply to force the Langfuse id; else auto-generated + returned
+    # Legacy (SDK v2) handler only: a supplied id is used verbatim. Under the OTel SDK (LangfuseHandler)
+    # Langfuse assigns ids, so this is ignored and the created observation's real id is returned.
+    observation_id: Optional[str] = None
 
 
 @dataclass
@@ -218,7 +222,9 @@ class ObservabilityHandler(ABC):
             kind: Semantic type of span
             input: Input data for this span
             metadata: Additional metadata
-            observation_id: Optional supplied span id (deterministic join keys)
+            observation_id: Optional supplied span id (deterministic join keys). Honoured only by
+                handlers that can choose ids (the legacy SDK v2 handler); under OpenTelemetry the
+                backend assigns ids and the returned SpanContext.span_id is the real one.
 
         Returns:
             SpanContext for the new span
@@ -261,7 +267,9 @@ class ObservabilityHandler(ABC):
             data: GenerationData with all LLM call details
 
         Returns:
-            The observation id assigned to the generation (for join keys), if any.
+            The observation id assigned to the generation (for join keys), if any. Under the
+            Langfuse OTel SDK this is the created observation's real id; a supplied
+            ``data.observation_id`` cannot be honoured there.
         """
         ...
 
@@ -277,6 +285,10 @@ class ObservabilityHandler(ABC):
         Args:
             context: Parent SpanContext (typically a step span)
             data: ToolData with tool call details
+
+        Returns:
+            The observation id assigned to the tool call, if any (the real id under the
+            Langfuse OTel SDK; a supplied ``data.observation_id`` cannot be honoured there).
         """
         ...
 

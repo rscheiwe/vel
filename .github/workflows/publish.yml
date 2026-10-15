@@ -51,33 +51,46 @@ jobs:
           parts = version.split('.')
           major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
 
-          # Bump patch version
-          new_patch = patch + 1
-          new_version = f"{major}.{minor}.{new_patch}"
-          print(f"New version: {new_version}")
+          # Candidate patch bump (used only when the current version is already on PyPI)
+          bumped_version = f"{major}.{minor}.{patch + 1}"
+          print(f"Bumped version (if needed): {bumped_version}")
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"current_version={version}\n")
-              f.write(f"new_version={new_version}\n")
+              f.write(f"bumped_version={bumped_version}\n")
         shell: python
 
-      - name: Check if version already published
+      # A version set by hand in pyproject.toml (e.g. a minor release) that is not on PyPI yet is
+      # published as is. Otherwise the patch number is bumped, as before.
+      - name: Decide release version
         id: check_pypi
         run: |
-          NEW_VERSION="${{ steps.get_version.outputs.new_version }}"
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/vel-ai/${NEW_VERSION}/json")
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "Version ${NEW_VERSION} already exists on PyPI"
+          CURRENT="${{ steps.get_version.outputs.current_version }}"
+          BUMPED="${{ steps.get_version.outputs.bumped_version }}"
+          on_pypi() {
+            [ "$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/vel-ai/$1/json")" = "200" ]
+          }
+          if ! on_pypi "$CURRENT"; then
+            echo "Version ${CURRENT} is not on PyPI: publishing it as is"
+            echo "new_version=${CURRENT}" >> $GITHUB_OUTPUT
+            echo "bump=false" >> $GITHUB_OUTPUT
+            echo "skip=false" >> $GITHUB_OUTPUT
+          elif on_pypi "$BUMPED"; then
+            echo "Version ${BUMPED} already exists on PyPI"
+            echo "new_version=${BUMPED}" >> $GITHUB_OUTPUT
+            echo "bump=true" >> $GITHUB_OUTPUT
             echo "skip=true" >> $GITHUB_OUTPUT
           else
-            echo "Version ${NEW_VERSION} is new"
+            echo "Version ${CURRENT} is on PyPI: bumping to ${BUMPED}"
+            echo "new_version=${BUMPED}" >> $GITHUB_OUTPUT
+            echo "bump=true" >> $GITHUB_OUTPUT
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Bump version in files
-        if: steps.check_pypi.outputs.skip != 'true'
+        if: steps.check_pypi.outputs.skip != 'true' && steps.check_pypi.outputs.bump == 'true'
         run: |
-          NEW_VERSION="${{ steps.get_version.outputs.new_version }}"
+          NEW_VERSION="${{ steps.check_pypi.outputs.new_version }}"
 
           # Update pyproject.toml (vel has no __version__ attribute)
           sed -i "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" pyproject.toml
@@ -99,20 +112,20 @@ jobs:
       - name: Create and push tag
         if: steps.check_pypi.outputs.skip != 'true'
         run: |
-          NEW_VERSION="${{ steps.get_version.outputs.new_version }}"
+          NEW_VERSION="${{ steps.check_pypi.outputs.new_version }}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Commit version bump
-          git add pyproject.toml
-          git commit -m "Bump version to ${NEW_VERSION} [skip ci]"
+          # Commit the version bump (only when one was made)
+          if [ "${{ steps.check_pypi.outputs.bump }}" = "true" ]; then
+            git add pyproject.toml
+            git commit -m "Bump version to ${NEW_VERSION} [skip ci]"
+            git push origin main
+          fi
 
           # Create tag
           git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
-
-          # Push commit and tag
-          git push origin main
           git push origin "v${NEW_VERSION}"
 
           echo "Created and pushed tag v${NEW_VERSION}"
@@ -121,8 +134,8 @@ jobs:
         if: steps.check_pypi.outputs.skip != 'true'
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ steps.get_version.outputs.new_version }}
-          name: Release v${{ steps.get_version.outputs.new_version }}
+          tag_name: v${{ steps.check_pypi.outputs.new_version }}
+          name: Release v${{ steps.check_pypi.outputs.new_version }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

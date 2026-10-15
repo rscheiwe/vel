@@ -5,7 +5,7 @@ This module provides observability integrations for monitoring and tracing
 agent executions.
 
 Supported Providers:
-- Langfuse: Full tracing with LLM generations, tool spans, and cost tracking
+- Langfuse (SDK >= 4.7, OpenTelemetry): full tracing with LLM generations, tool spans, and cost tracking
 
 Usage:
     from vel import Agent
@@ -29,7 +29,7 @@ from .base import (
     GenerationData,
     ToolData,
 )
-from .langfuse import ObservabilityConfig, LangfuseHandler
+from .langfuse import ObservabilityConfig, LangfuseHandler, LegacyLangfuseHandler, build_handler
 
 __all__ = [
     # Base classes
@@ -41,4 +41,6 @@ __all__ = [
     # Langfuse
     'ObservabilityConfig',
     'LangfuseHandler',
+    'LegacyLangfuseHandler',
+    'build_handler',
 ]
