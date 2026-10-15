@@ -12,7 +12,7 @@
 | Feature | Description |
 |---------|-------------|
 | **Harness Mode** | Opt-in durable long-horizon execution: checkpointable suspend/resume, durable human-in-the-loop approval, auto context compaction, run budgets, sandbox-as-tool, and skills. Default-off bolt-on. See [`docs/harness.md`](docs/harness.md) |
-| **Langfuse Observability** | Built-in tracing with Langfuse: LLM generations, tool executions, memory operations, nested spans. Non-blocking with sampling support. `pip install vel-ai[langfuse]` |
+| **Langfuse Observability** | Built-in tracing with Langfuse (SDK >= 4.7, OpenTelemetry): one trace per run with LLM generations, tool executions, memory operations, nested spans. Non-blocking with sampling support; share one client across agents with `observability_client=` and `flush_after_run=False`. `pip install vel-ai[langfuse]` |
 | **Agents-as-Tools** | Enhanced `as_tool()` with custom schemas and context passthrough for hierarchical agent composition |
 | **ReasoningBank Phase 2** | Full auto-learning pipeline: TrajectoryStore, LLM-as-Judge, StrategyExtractor, MemoryConsolidator |
 | **Scratchpad** | Ephemeral working memory with 8 entry types, thread-safety, and automatic summary injection between runs |
